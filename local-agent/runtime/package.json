@@ -1,0 +1,14 @@
+{
+  "name": "@local-agent/runtime",
+  "version": "0.2.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "description": "App-owned offline llama.cpp lifecycle, verified GGUF management and hardware fitting for Local Agent Desktop",
+  "exports": "./index.ts",
+  "engines": {
+    "node": ">=24.10.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.ts"
+  }
+}

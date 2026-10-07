@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+resources/goose/
+resources/inference/
+.cache/
+*.tar.gz
+*.tar.bz2
+*.zip
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/build/
+local-agent/research/dist/
+*.log

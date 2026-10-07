@@ -1,0 +1,61 @@
+Local Agent desktop alpha
+Copyright 2026 Local Agent contributors
+
+The custom application source is distributed under the Apache License, Version
+2.0. See LICENSE. This project is an independent custom distribution; it is not
+an official Goose, llama.cpp, Google, Alibaba, OpenAI, or Anthropic product.
+
+Goose
+  Upstream: https://github.com/aaif-goose/goose
+  Pinned release: v1.53.0
+  License: Apache-2.0
+  The source is retained in vendor/goose with offline model-metadata feature
+  gating for this application. Native distributions build that source without
+  default features, enabling rustls-tls and disable-update. The bundled manifest
+  records offline mode, build features, and the resulting binary SHA-256.
+  Preserve vendor/goose/LICENSE and original copyright/license notices.
+
+Native inference engine
+  llama.cpp / ggml: https://github.com/ggml-org/llama.cpp — MIT
+  Pinned version: v0.6.0, official binary build b11429
+  Source commit: d81235049384534c167caea52b85a694f6103d14
+  Inference resources retain pinned license texts for llama.cpp and bundled
+  third-party source components, plus archive-provided library notices.
+  resources/inference/NOTICE and licenses/ accompany the packaged engine.
+  GPU drivers and GPU SDKs are system dependencies and are not redistributed.
+  Windows resources include unmodified signed Visual Studio C++ redistributable
+  files under Microsoft's applicable redistribution terms, identified by the
+  inference manifest and NOTICE. LLVM OpenMP notices accompany its libraries.
+
+Main desktop dependencies
+  Electron: https://github.com/electron/electron — MIT
+  React / React DOM: https://github.com/facebook/react — MIT
+  react-markdown: https://github.com/remarkjs/react-markdown — MIT
+  remark-gfm: https://github.com/remarkjs/remark-gfm — MIT
+  Agent Client Protocol SDK: https://github.com/agentclientprotocol/typescript-sdk
+    — Apache-2.0
+  Model Context Protocol TypeScript SDK:
+    https://github.com/modelcontextprotocol/typescript-sdk — MIT
+  Zod: https://github.com/colinhacks/zod — MIT
+
+Main research dependencies
+  Model Context Protocol Python SDK:
+    https://github.com/modelcontextprotocol/python-sdk — MIT
+  DDGS: https://github.com/deedy5/ddgs — MIT
+  HTTPX: https://github.com/encode/httpx — BSD-3-Clause
+  Beautiful Soup: https://www.crummy.com/software/BeautifulSoup/ — MIT
+  pypdf: https://github.com/py-pdf/pypdf — BSD-3-Clause
+
+This list is an attribution summary, not a replacement for license texts.
+Transitive dependencies retain their own licenses. npm-installed dependencies
+contain their upstream license files; Electron distributions include Chromium
+and other third-party license notices. The research build collects installed
+dependency license texts into local-agent/research/THIRD_PARTY_NOTICES.txt and
+includes that file in the native sidecar bundle. Do not remove these notices when
+redistributing packages.
+
+Model weights are not bundled. The user downloads or imports models explicitly.
+Model license references
+are included in the curated runtime catalog. Verify each upstream model license
+when adding or redistributing weights; no license for those weights is granted
+by Local Agent's Apache-2.0 license.

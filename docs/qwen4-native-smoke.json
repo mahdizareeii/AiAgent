@@ -1,0 +1,199 @@
+{
+  "timestamp": "2026-10-07T13:37:50.163Z",
+  "model": "qwen3.5:4b",
+  "artifact": "/private/tmp/local-agent-inference-smoke/models/Qwen3.5-4B-Q4_K_M.gguf",
+  "networkDenied": true,
+  "events": [],
+  "verified": {
+    "model": "qwen3.5:4b",
+    "digest": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+    "sizeBytes": 2740937888,
+    "capabilities": [
+      "completion",
+      "tools"
+    ],
+    "toolCapable": true,
+    "verifiedAt": "2026-10-07T13:37:51.437Z"
+  },
+  "hardware": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5",
+    "cpuCores": 10,
+    "totalMemoryBytes": 25769803776,
+    "availableMemoryBytes": 6639566848,
+    "freeDiskBytes": 534989729792,
+    "gpus": [
+      {
+        "name": "Apple M5",
+        "backend": "metal",
+        "totalMemoryBytes": 19069403136,
+        "freeMemoryBytes": 19068354560,
+        "unifiedMemory": true
+      }
+    ]
+  },
+  "fit": {
+    "id": "qwen3.5:4b",
+    "title": "Qwen3.5 4B",
+    "description": "Compact coding and research model.",
+    "estimatedDownloadBytes": 2740937888,
+    "minimumMemoryGB": 8,
+    "license": "Apache-2.0",
+    "sourceUrl": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF",
+    "quantization": "Q4_K_M",
+    "repository": "unsloth/Qwen3.5-4B-GGUF",
+    "revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+    "filename": "Qwen3.5-4B-Q4_K_M.gguf",
+    "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+    "architecture": "qwen35",
+    "toolCapable": true,
+    "workingMemoryGB": 4.5,
+    "memoryEstimate": {
+      "weightsBytes": 2740937888,
+      "contextBytes": 1017158496,
+      "scratchBytes": 1073741824,
+      "osReserveBytes": 5153960755.200001,
+      "systemBudgetBytes": 20615843020.8,
+      "gpuBudgetBytes": 19068354560
+    },
+    "fit": "recommended",
+    "fitReason": "Estimated weights, 8K context and scratch memory fit both the accelerator budget and the system budget after the operating-system reserve. Actual loading and calibration are checked.",
+    "installed": true,
+    "sizeBytes": 2740937888,
+    "digest": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+    "blockedReason": null
+  },
+  "loadMilliseconds": 2202.2999999999997,
+  "prepared": {
+    "model": "local-agent-qwen3-5-4b",
+    "contextTokens": 8192,
+    "outputTokens": 1024,
+    "toolCapable": true,
+    "measuredTokensPerSecond": 37.47807172438049
+  },
+  "profile": {
+    "contextTokens": 8192,
+    "outputTokens": 1024,
+    "batchTokens": 512,
+    "microBatchTokens": 128,
+    "backend": "metal",
+    "index": 0
+  },
+  "properties": {
+    "build_info": "b11429-d81235049",
+    "total_slots": 1,
+    "ui": false,
+    "cors_proxy_enabled": false,
+    "chat_template_caps": {
+      "supports_object_arguments": true,
+      "supports_parallel_tool_calls": true,
+      "supports_preserve_reasoning": false,
+      "supports_reasoning_effort": false,
+      "supports_string_content": true,
+      "supports_system_role": true,
+      "supports_tool_calls": true,
+      "supports_tools": true,
+      "supports_typed_content": true
+    }
+  },
+  "chat": {
+    "inputTokens": 18,
+    "usage": {
+      "completion_tokens": 4,
+      "prompt_tokens": 18,
+      "total_tokens": 22,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "message": {
+      "role": "assistant",
+      "content": "LOCAL_MODEL_OK"
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 18,
+      "prompt_ms": 100.603,
+      "prompt_per_token_ms": 5.589055555555555,
+      "prompt_per_second": 178.92110573243343,
+      "predicted_n": 4,
+      "predicted_ms": 80.503,
+      "predicted_per_token_ms": 26.834333333333333,
+      "predicted_per_second": 37.265691961790246
+    },
+    "systemFingerprint": "b11429-d81235049"
+  },
+  "tool": {
+    "inputTokens": 285,
+    "usage": {
+      "completion_tokens": 30,
+      "prompt_tokens": 285,
+      "total_tokens": 315,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "type": "function",
+          "function": {
+            "name": "local_smoke_probe",
+            "arguments": "{\"word\":\"VERIFIED\"}"
+          },
+          "id": "uu3NVb51TpNinfuUK1k4UNPTh7Ebj3bc"
+        }
+      ]
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 285,
+      "prompt_ms": 386.108,
+      "prompt_per_token_ms": 1.3547649122807017,
+      "prompt_per_second": 738.1354439690449,
+      "predicted_n": 30,
+      "predicted_ms": 774.876,
+      "predicted_per_token_ms": 26.719862068965515,
+      "predicted_per_second": 37.425342893572655
+    }
+  },
+  "reused": true,
+  "agent": {
+    "answer": "The exact value of LOCAL_FIXTURE_MARKER is:\n\n**LOCAL_FIXTURE_224c5231-b5e3-4f22-b597-b5bcb12f7167**",
+    "tools": [
+      {
+        "type": "tool",
+        "id": "xlld2CxJGSln4QRbDfalfvdJmhw7whxV",
+        "title": "local files and research: read file · /private/tmp/local-agent-inference-smoke/project/fixture.txt",
+        "status": "pending",
+        "input": {
+          "path": "/private/tmp/local-agent-inference-smoke/project/fixture.txt"
+        }
+      },
+      {
+        "type": "tool",
+        "id": "xlld2CxJGSln4QRbDfalfvdJmhw7whxV",
+        "title": "Tool",
+        "status": "completed",
+        "output": {
+          "ok": true,
+          "path": "/private/tmp/local-agent-inference-smoke/project/fixture.txt",
+          "sha256": "a5112cf73fb1bcaf5ef500bbf4fac97f6900ef5db8315695500c16379ac43895",
+          "size": 72,
+          "total_lines": 1,
+          "start_line": 1,
+          "start_column": 1,
+          "text": "1: LOCAL_FIXTURE_MARKER=LOCAL_FIXTURE_224c5231-b5e3-4f22-b597-b5bcb12f7167",
+          "eof": true,
+          "next_cursor": null,
+          "truncated": false
+        }
+      }
+    ]
+  },
+  "success": true,
+  "stopped": true
+}
