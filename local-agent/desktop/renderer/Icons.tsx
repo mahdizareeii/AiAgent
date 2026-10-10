@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 
-type IconName = 'brand' | 'plus' | 'arrow' | 'folder' | 'attach' | 'code' | 'search' | 'spark' | 'settings' | 'check' | 'close' | 'download' | 'stop' | 'external' | 'undo' | 'chevron' | 'chat' | 'shield' | 'monitor' | 'sun' | 'moon';
+type IconName = 'brand' | 'plus' | 'arrow' | 'folder' | 'attach' | 'code' | 'search' | 'spark' | 'settings' | 'check' | 'close' | 'download' | 'stop' | 'external' | 'undo' | 'chevron' | 'chat' | 'shield' | 'monitor' | 'sun' | 'moon' | 'plugin' | 'back';
 
 const paths: Record<IconName, string> = {
   brand: 'M8 18V6h9M8 12h7',
@@ -24,6 +24,8 @@ const paths: Record<IconName, string> = {
   monitor: 'M3 4h18v13H3Zm5 17h8m-4-4v4',
   sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5',
   moon: 'M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z',
+  plugin: 'M9 3H4v6a3 3 0 1 1 0 6v6h6a3 3 0 1 1 6 0h5v-6a3 3 0 1 0 0-6V3h-6a3 3 0 1 1-6 0Z',
+  back: 'M19 12H5m6-6-6 6 6 6',
 };
 
 export default function Icon({ name, size = 18, style }: { name: IconName; size?: number; style?: CSSProperties }) {

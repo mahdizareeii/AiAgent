@@ -1,6 +1,16 @@
 # Free Local Agent compatibility report
 
-## Current 0.3.0-alpha.2 research update — 2026-10-10
+## Current 0.4.0-alpha.1 workspace/plugin update — 2026-10-10
+
+The update retains the existing inference engine and hardware profiles. The
+macOS arm64 package, **123 app/runtime tests**, **10 separate renderer checks**,
+and packaged offline smoke passed. No new model-speed or task-quality benchmark
+was run. Native screenshots are blocked by desktop inspection timeouts, and
+Windows/Linux native execution remains pending. See the
+[workspace and plugin record](workspace-plugin-validation.md) for artifact
+details and the distinction between protocol, renderer, and visible GUI evidence.
+
+## Earlier 0.3.0-alpha.2 research update — 2026-10-10
 
 The research update uses the existing bundled inference and hardware profiles.
 One native Qwen4B research-to-file task ran on the Apple M5 with an 8K context,

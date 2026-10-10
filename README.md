@@ -12,7 +12,7 @@ model server is required. Model weights are a separate download or local GGUF
 import. Once a compatible model is installed, chat and local file work can run
 offline.
 
-**Current version: 0.3.0-alpha.2.** macOS Apple Silicon is the tested platform.
+**Current version: 0.4.0-alpha.1.** macOS Apple Silicon is the tested platform.
 Windows and Linux packaging/CI is configured; native validation is still pending.
 
 ## What Free Local Agent does
@@ -20,7 +20,7 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 - **Build in Agent mode.** New tasks start in Agent mode. Choose or create a
   workspace, then ask the model to inspect files, build a project, fix code, or
   run checks using the enabled tools. It reports what its tools actually did.
-- **Chat locally.** Agent, Research, and Chat modes use the same locally
+- **Chat locally.** Agent, Read-only research, and Chat modes use the same locally
   stored conversations. Responses come from the model running on your machine;
   tool-capable models stream replies, while chat-only imports return completed replies.
 - **Work with a project.** Search selected project files, propose edits, run
@@ -33,21 +33,23 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 - **Choose a model for this computer.** Hardware detection and model cards explain
   memory fit, quantization, download size, licenses, and tool compatibility.
   Optional calibration checks tool calling and measures generation speed.
-- **Control the utilities.** File reading, project search, editing, terminal
-  commands, and web research have individual controls. Web research is off by
-  default.
-- **Research before implementation.** A bundled task-research skill checks
-  project versions and changing requirements. Enable **Tools → Web research**
-  in Agent or Research to consult current official documentation, release notes,
-  and migration guidance. The agent cites what it fetched, then continues the
-  requested implementation and checks. Offline work labels current facts unverified.
-- **Choose light or dark.** The light theme uses porcelain surfaces with cobalt
-  and violet accents. The theme toggle remembers your choice.
+- **Control the utilities.** **Tools** controls file reading, project search,
+  editing, and terminal commands. These local Agent tools work independently of
+  the optional research plugin.
+- **Add research when needed.** Open **Plugins → Enable Research** for a bundled
+  workflow that checks project versions and changing requirements. Separately
+  enable **Allow web research** to consult official documentation, release notes,
+  and migration guidance. Both settings default off on new installations. The
+  agent cites fetched sources, then continues the task using your enabled tools.
+- **Use a focused task workspace.** A neutral, Codex-inspired interface places
+  saved tasks in a sidebar, the conversation in the center, and the composer at
+  the bottom. Mode, workspace, model, and tool controls sit beside your message.
+  The light/dark theme preference is remembered locally.
 
 | Mode | Use it for |
 | --- | --- |
-| Agent | Researching and creating or changing a project, then running approved checks in a selected workspace. Web research requires opt-in; Agent requires a validated tool-capable model. |
-| Research | Reading sources and comparing findings. Optional web research stays off until enabled. |
+| Agent | Creating or changing a project, then running approved checks in a selected workspace. Research is an optional plugin; Agent requires a validated tool-capable model. |
+| Read-only research | Reading sources and comparing findings. The mode choice appears when Research is enabled; existing saved research tasks remain readable with the plugin off. Web tools require both plugin activation and web permission. |
 | Chat | Conversation, writing, and attached-file reading. Project changes and commands require an Agent task. |
 
 ## Models and hardware
@@ -92,7 +94,15 @@ still process attached files through the app's local reading stages.
 | Project search | Searches the selected workspace in Agent mode. Read-only searches need no per-action approval. |
 | File editing | Proposes workspace changes in Agent mode. Each edit, write, or new-file batch needs approval; saved file snapshots support undo. Creation batches cannot replace existing files. |
 | Terminal commands | Shows the proposed command in Agent mode and asks for approval each time. Commands run as your operating-system account. |
-| Web research | Available in Agent and Research only when enabled. Searches and public-page fetching use the internet. Queries go to DuckDuckGo; fetched URLs go to the source sites. |
+| Web research | Available in Agent and Read-only research only with **Enable Research** and **Allow web research** turned on and a validated tool-capable model. Searches and public-page fetching use the internet. Queries go to DuckDuckGo; fetched URLs go to the source sites. |
+
+Disabling Research omits its skill instructions and web tools while leaving local
+Agent utilities available. The two research preferences are saved separately;
+disabling the plugin retains your web permission for a later explicit enable.
+Existing version 1/2 settings with explicit web consent migrate with Research on.
+A version 3 store missing its plugin preference defaults off. Plugins currently
+contains this bundled Research plugin; arbitrary external plugin installation is
+not supported.
 
 Disabled web tools are excluded from tool registration. Approved shell commands
 can still access the network and files beyond the project; they have your account's
@@ -102,15 +112,16 @@ source hashes and never automatically repeats an agent edit or command.
 
 ## Get started
 
-For a packaged macOS build, unzip `Free Local Agent-0.3.0-alpha.2-arm64-mac.zip`, move
+For a packaged macOS build, unzip `Free Local Agent-0.4.0-alpha.1-arm64-mac.zip`, move
 `Free Local Agent.app` to Applications, and open it. Apple Silicon and macOS 13.3 or newer are
 required. This alpha is unsigned and not notarized.
 
-1. Open **Models & setup** and review your detected hardware.
+1. Open **Models & hardware** and review your detected hardware.
 2. Download a model that fits, or **Import GGUF** from a local file.
 3. Select the model; optionally run **Check tools & speed**.
-4. Start **New agent task**, choose or create a workspace, and describe what to build.
-   Use **Research** or **Chat** for read-only work and attachments.
+4. Start **New task**, keep **Agent** selected, choose or create a workspace with
+   **Choose folder**, and describe what to build. Use **Chat** for conversation
+   and attachments; enable Research in **Plugins** for its read-only mode.
 5. Review each proposed edit or command before approving it.
 
 See the [setup and developer guide](docs/setup-guide.md) for detailed setup,
@@ -122,7 +133,9 @@ For a task that depends on changing software:
 > Explain relevant changes with source links, implement a compatible solution,
 > and run available checks. Do not upgrade unrelated dependencies.
 
-Enable **Web research** first to verify online facts. Research is bounded and
+Enable **Plugins → Enable Research → Allow web research** first to verify online
+facts. The plugin can also work with local sources when web permission is off;
+it identifies changing facts it could not verify. Research is bounded and
 uses primary sources rather than treating search snippets as documentation.
 Fetch timestamps record when the app retrieved a page; page-supplied publication,
 modification, and canonical metadata remain unverified claims. The skill does
@@ -156,6 +169,10 @@ and edit snapshots are stored locally. The legacy `Local Agent` data-folder name
 is retained to preserve existing installations. The app adds no disk encryption.
 
 ## Validation and current limits
+
+The [0.4 workspace and plugin validation record](docs/workspace-plugin-validation.md)
+tracks the redesigned interface and independent research controls. The model
+setup image above is historical 0.3 evidence, not a capture of the new workspace.
 
 Earlier checks on a **24 GB Apple M5** with Qwen3.5 4B passed real local chat, native tool calling,
 token counting, and a Goose/MCP file-read smoke with public networking blocked.

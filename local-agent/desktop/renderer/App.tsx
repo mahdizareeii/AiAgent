@@ -5,11 +5,12 @@ import remarkGfm from 'remark-gfm';
 import Icon from './Icons';
 import ModelSetup from './ModelSetup';
 import Utilities from './Utilities';
+import Plugins from './Plugins';
 import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, Mode, PermissionRequest, StageProgress, ToolActivity, UtilityPreferences } from './types';
 
 const modes: { id: Mode; name: string; icon: 'code' | 'search' | 'spark'; description: string; examples: string[] }[] = [
   { id: 'coding', name: 'Agent', icon: 'code', description: 'Turn an idea into files, code, and a working project.', examples: ['Create a WordPress project in this workspace', 'Build a simple website from my idea', 'Explore this project and fix a bug'] },
-  { id: 'research', name: 'Research', icon: 'search', description: 'Explore questions with sources you can review.', examples: ['Research a topic and compare reliable sources', 'Summarize a document I attach', 'Compare approaches and explain the tradeoffs'] },
+  { id: 'research', name: 'Read-only research', icon: 'search', description: 'Explore questions with sources you can review.', examples: ['Research a topic and compare reliable sources', 'Summarize a document I attach', 'Compare approaches and explain the tradeoffs'] },
   { id: 'assistant', name: 'Chat', icon: 'spark', description: 'Write, plan, and work through ideas.', examples: ['Help me work through an idea', 'Turn these notes into a clear plan', 'Explain something step by step'] },
 ];
 
@@ -34,7 +35,7 @@ function modelIsUsable(status: AgentStatus | null) {
 
 function trapDialogFocus(event: KeyboardEvent<HTMLElement>, container: HTMLElement | null) {
   if (event.key !== 'Tab') return;
-  const focusable = [...(container?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), summary, [tabindex="0"]') ?? [])];
+  const focusable = [...(container?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]') ?? [])];
   const first = focusable[0];
   const last = focusable.at(-1);
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
@@ -84,6 +85,7 @@ export default function App() {
   const [importing, setImporting] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [utilitiesOpen, setUtilitiesOpen] = useState(false);
+  const [view, setView] = useState<'workspace' | 'plugins'>('workspace');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('free-local-agent-theme') === 'dark' ? 'dark' : 'light'; }
     catch { return 'light'; }
@@ -107,25 +109,20 @@ export default function App() {
   const loadingSessionRef = useRef(false);
   const selectingProjectRef = useRef(false);
   const downloadCancelRef = useRef(false);
+  const settingsBusyRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const setupRef = useRef<HTMLDivElement>(null);
+  const utilitiesRef = useRef<HTMLDivElement>(null);
+  const pluginHeadingRef = useRef<HTMLHeadingElement>(null);
   const chosenMode = modes.find((item) => item.id === mode) ?? modes[0];
   const selectedModel = status?.models.find((model) => model.id === status.selectedModel);
   const ready = modelIsUsable(status);
   const agentModel = selectedModel?.toolCapable === true;
   const calibrated = agentModel && selectedModel?.measuredTokensPerSecond !== undefined;
   const researchMode = mode === 'coding' || mode === 'research';
-  const webActive = researchMode && !!status?.utilities.webResearch && calibrated;
-  const capabilities = [
-    { id: 'fileReading' as const, label: 'Read attachments', available: true },
-    ...(mode === 'coding' ? [
-      { id: 'projectSearch' as const, label: 'Search project', available: agentModel && !!projectPath },
-      { id: 'fileEditing' as const, label: 'Create & edit files', available: agentModel && !!projectPath },
-      { id: 'terminal' as const, label: 'Terminal', available: agentModel && !!projectPath },
-    ] : []),
-    ...(researchMode ? [{ id: 'webResearch' as const, label: 'Web research', available: agentModel }] : []),
-  ];
+  const researchEnabled = status?.plugins.taskResearch === true;
+  const webActive = researchMode && researchEnabled && !!status?.utilities.webResearch && calibrated;
 
   const refresh = useCallback(async () => {
     if (!bridge) throw new Error('The desktop connection is unavailable. Launch Free Local Agent as a desktop app to connect to its local runtime.');
@@ -185,6 +182,13 @@ export default function App() {
     setupRef.current?.querySelector<HTMLElement>('button:not(:disabled), summary')?.focus();
   }, [setupOpen]);
   useEffect(() => {
+    if (view === 'plugins') pluginHeadingRef.current?.focus();
+    else if (!setupOpen && !utilitiesOpen) inputRef.current?.focus();
+  }, [view, setupOpen, utilitiesOpen]);
+  useEffect(() => {
+    if (utilitiesOpen) utilitiesRef.current?.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled)')?.focus();
+  }, [utilitiesOpen]);
+  useEffect(() => {
     if (!inputRef.current) return;
     inputRef.current.style.height = 'auto';
     inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 180)}px`;
@@ -196,19 +200,20 @@ export default function App() {
   }
 
   function newChat(nextMode: Mode = 'coding') {
-    if (busyRef.current || loadingSessionRef.current || selectingProjectRef.current) return;
+    if (busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current) return;
     setSessionId(null); sessionRef.current = null;
-    setMode(nextMode); setMessages([]); setTools([]); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
+    setView('workspace'); setMode(nextMode); setMessages([]); setTools([]); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
     inputRef.current?.focus();
   }
 
   async function loadSession(id: string) {
-    if (!bridge || busyRef.current || loadingSessionRef.current || selectingProjectRef.current) return;
+    if (!bridge || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current) return;
     loadingSessionRef.current = true;
     setLoadingSession(true); setError(null);
     try {
       const loaded = await bridge.loadSession(id);
       setSessionId(loaded.id); sessionRef.current = loaded.id;
+      setView('workspace');
       setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setTools([]); setFiles([]); setDraft(''); setStage(loaded.stage ?? null);
     } catch (reason) { setError(errorMessage(reason)); }
     finally { loadingSessionRef.current = false; setLoadingSession(false); }
@@ -223,7 +228,7 @@ export default function App() {
   }
 
   async function chooseProject() {
-    if (!bridge || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || sessionRef.current) return null;
+    if (!bridge || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || sessionRef.current) return null;
     selectingProjectRef.current = true; setSelectingProject(true); setError(null);
     try {
       const selected = await bridge.selectProject();
@@ -234,7 +239,7 @@ export default function App() {
 
   async function sendMessage() {
     const text = draft.trim();
-    if (!bridge || !ready || !text || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || download || calibrating || importing || settingsBusy || setupBusy) return;
+    if (!bridge || !ready || !text || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || download || calibrating || importing || settingsBusyRef.current || setupBusy) return;
     if (mode === 'coding' && selectedModel?.toolCapable === false) { setError('This model supports chat only. Choose a model with agent tools to create a project, or switch to Chat.'); return; }
     if (files.length && !status?.utilities.fileReading) { setError('Enable Read files in Tools to use your attached files.'); return; }
     let taskProjectPath = projectPath;
@@ -318,19 +323,24 @@ export default function App() {
   }
 
   async function settingsAction(operation: () => Promise<void>) {
-    setSettingsBusy(true); setError(null);
+    if (busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current) return;
+    settingsBusyRef.current = true; setSettingsBusy(true); setError(null);
     try { await operation(); await refresh(); }
     catch (reason) { setError(errorMessage(reason)); }
-    finally { setSettingsBusy(false); }
+    finally { settingsBusyRef.current = false; setSettingsBusy(false); }
   }
 
   async function setUtilities(preferences: UtilityPreferences) {
     if (bridge) await settingsAction(() => bridge.setUtilities(preferences));
   }
 
+  async function setResearchPlugin(enabled: boolean) {
+    if (bridge) await settingsAction(() => bridge.setPlugins({ taskResearch: enabled }));
+  }
+
   async function resumeTask() {
     const id = sessionRef.current;
-    if (!id || !bridge || !ready || busyRef.current || loadingSessionRef.current || selectingProjectRef.current) return;
+    if (!id || !bridge || !ready || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || download || calibrating || importing || setupBusy) return;
     setError(null); setBusy(true); busyRef.current = true; setThinking(false); setPermissions([]); setTools([]);
     setStage({ stage: 'resuming', message: 'Resuming from the saved checkpoint' });
     try {
@@ -351,57 +361,43 @@ export default function App() {
     setPermissions((current) => current.filter((item) => item.requestId !== request.requestId));
   }
 
-  const selectedModelName = selectedModel?.name ?? 'Choose a model';
   const locked = busy || loadingSession || selectingProject || !!download || !!calibrating || importing || settingsBusy || setupBusy;
 
   return <div className="app-shell">
-    <aside className="sidebar" aria-label="Chat navigation">
-      <div className="brand"><span className="brand-mark"><Icon name="brand" size={21} /></span><span><span className="brand-name">Free<span className="brand-name-secondary">Local Agent</span></span><span className="brand-tag">YOUR AI. YOUR FREEDOM.</span></span></div>
-      <button className="new-chat" disabled={locked} onClick={() => newChat()}><Icon name="plus" size={18} />New agent task<span className="key-hint">+</span></button>
-      <button className="sidebar-workspace" disabled={locked || !bridge || !!sessionId} onClick={() => void action(chooseProject)} title={projectPath ?? 'Choose or create a workspace folder'}><Icon name="folder" size={17} /><span><small>WORKSPACE</small><strong>{folderName(projectPath)}</strong></span><Icon name="chevron" size={13} /></button>
-      <div className="sidebar-heading">YOUR CHATS<span>{status?.sessions.length || ''}</span></div>
-      <nav className="session-list" aria-label="Saved chats">
-        {!status?.sessions.length && <p className="empty-history">Your conversations stay here,<br />on this computer.</p>}
-        {status?.sessions.map((session) => <button key={session.id} className={`session-item ${sessionId === session.id ? 'selected' : ''}`} disabled={locked} onClick={() => void loadSession(session.id)} title={session.title}><Icon name="chat" size={16} /><span>{session.title || 'Untitled chat'}</span>{session.resumable && <small className="session-paused">Paused</small>}</button>)}
+    <aside className="sidebar" aria-label="Task navigation">
+      <div className="brand"><Icon name="brand" size={20} /><span>Free Local Agent</span></div>
+      <button className="new-chat" disabled={locked} onClick={() => newChat()}><Icon name="plus" size={17} />New task</button>
+      <button className={`sidebar-link plugins-link ${view === 'plugins' ? 'selected' : ''}`} aria-label="Plugins" aria-current={view === 'plugins' ? 'page' : undefined} onClick={() => setView('plugins')}><Icon name="plugin" size={17} />Plugins{researchEnabled && <span className="nav-count" aria-hidden="true" title="One plugin enabled">1</span>}</button>
+      <div className="sidebar-heading">Tasks</div>
+      <nav className="session-list" aria-label="Saved tasks">
+        {!status?.sessions.length && <p className="empty-history">Your tasks will appear here.</p>}
+        {status?.sessions.map((session) => <button key={session.id} className={`session-item ${view === 'workspace' && sessionId === session.id ? 'selected' : ''}`} disabled={locked} onClick={() => void loadSession(session.id)} title={session.title}><Icon name="chat" size={15} /><span>{session.title || 'Untitled task'}</span>{session.resumable && <small className="session-paused">Paused</small>}</button>)}
       </nav>
       <div className="sidebar-bottom">
-        <button className="sidebar-link" disabled={locked} onClick={() => setSetupOpen(true)}><Icon name="settings" size={17} />Models & setup<Icon name="chevron" size={14} /></button>
-        <div className="local-badge"><span className={`status-dot ${ready ? 'online' : ''}`} /><div><strong>{ready ? 'Running locally' : 'Setup needed'}</strong><span>{ready ? 'Your model. Your computer.' : 'Connect a local model to begin.'}</span></div><Icon name="monitor" size={17} /></div>
+        <button className="sidebar-link" disabled={locked} onClick={() => setSetupOpen(true)}><Icon name="monitor" size={17} />Models & hardware</button>
+        <div className="sidebar-preferences"><span className="local-badge"><span className={`status-dot ${ready ? 'online' : ''}`} />{ready ? 'Local model ready' : 'Choose a model'}</span><button className="icon-button theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}><Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} /></button></div>
       </div>
     </aside>
 
     <main className="main-panel">
       <header className="topbar">
-        <div className="breadcrumb"><span>Workspace</span><Icon name="chevron" size={13} /><strong>{sessionId ? status?.sessions.find((session) => session.id === sessionId)?.title || 'Conversation' : 'New conversation'}</strong></div>
-        <div className="header-actions"><button className="text-button undo-button" disabled={locked || !bridge} onClick={() => void action(async () => { const result = await bridge!.undo(); setNotice(result.restored ? `Restored ${result.restored} file${result.restored === 1 ? '' : 's'}.` : 'No file changes to undo.'); })} title="Undo the most recent file change"><Icon name="undo" size={16} />Undo change</button><span className="offline-label"><Icon name="shield" size={14} />LOCAL INFERENCE</span><button className="icon-button theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}><Icon name={theme === 'light' ? 'moon' : 'sun'} size={17} /></button></div>
+        <div className="breadcrumb">{view === 'plugins' ? <><Icon name="plugin" size={15} /><strong>Plugins</strong></> : <><Icon name={projectPath ? 'folder' : chosenMode.icon} size={15} /><strong>{sessionId ? status?.sessions.find((session) => session.id === sessionId)?.title || 'Task' : 'New task'}</strong>{projectPath && <span className="breadcrumb-project" title={projectPath}>{folderName(projectPath)}</span>}</>}</div>
+        <div className="header-actions">{view === 'plugins' ? <>{busy && <button type="button" className="stop-button" onClick={() => void action(async () => { if (sessionRef.current) await bridge!.cancel(sessionRef.current); })}><Icon name="stop" size={13} />Stop task</button>}<button className="text-button back-to-task" onClick={() => setView('workspace')}><Icon name="back" size={15} />Back to task</button></> : <button className="text-button undo-button" disabled={locked || !bridge} onClick={() => void action(async () => { const result = await bridge!.undo(); setNotice(result.restored ? `Restored ${result.restored} file${result.restored === 1 ? '' : 's'}.` : 'No file changes to undo.'); })} title="Undo the most recent file change"><Icon name="undo" size={15} />Undo</button>}</div>
       </header>
-
-      <div className="conversation-controls">
-        <div className="mode-tabs" role="group" aria-label="Task mode">{modes.map((item) => <button key={item.id} aria-pressed={mode === item.id} className={mode === item.id ? 'active' : ''} disabled={locked} title={item.id === 'coding' ? 'Create projects with file and terminal tools' : item.description} onClick={() => mode !== item.id && newChat(item.id)}><Icon name={item.icon} size={15} />{item.name}</button>)}</div>
-        <div className="workspace-controls"><span className="mode-purpose">{mode === 'coding' ? 'Build with local tools' : mode === 'research' ? 'Explore with sources' : 'Conversation & ideas'}</span><button className={`tools-toggle ${utilitiesOpen ? 'active' : ''}`} disabled={!status} onClick={() => setUtilitiesOpen((current) => !current)} aria-expanded={utilitiesOpen} aria-controls="utility-panel"><Icon name="settings" size={14} />Tools</button></div>
-      </div>
-      <section className="workspace-context" aria-label="Workspace and available capabilities"><button className={`workspace-folder ${projectPath ? 'has-project' : ''}`} disabled={locked || !bridge || !!sessionId} onClick={() => void action(chooseProject)} title={projectPath ? `${projectPath}${sessionId ? ' · Start a new task to change workspace' : ''}` : 'Choose or create a folder for your project'}><span className="workspace-folder-icon"><Icon name="folder" size={18} /></span><span className="workspace-folder-copy"><small>{mode === 'coding' ? 'AGENT WORKSPACE' : 'WORK FOLDER'}</small><strong>{selectingProject ? 'Choosing workspace…' : folderName(projectPath)}</strong><span>{projectPath ?? (mode === 'coding' ? 'Choose where your project will be created' : 'Optional for this mode')}</span></span>{!sessionId && <Icon name="chevron" size={14} />}</button><div className="workspace-capabilities"><span className="capabilities-label">{mode === 'coding' ? 'PROJECT TOOLS' : 'AVAILABLE TOOLS'}</span><div>{capabilities.map((capability) => {
-        const enabled = !!status?.utilities[capability.id];
-        const active = enabled && capability.available && (capability.id === 'fileReading' || calibrated);
-        const reason = !enabled ? 'Off' : capability.id !== 'fileReading' && !agentModel ? 'Unavailable' : !capability.available ? 'Choose folder' : capability.id !== 'fileReading' && !calibrated ? 'Check tools' : null;
-        return <span key={capability.id} className={`capability-chip ${active ? 'capability-active' : 'capability-unavailable'}`} title={capability.id === 'fileEditing' || capability.id === 'terminal' ? 'Each file change or command requires your approval' : undefined}><span className="capability-dot" />{capability.label}{reason && <small> · {reason}</small>}</span>;
-      })}</div></div></section>
-      {utilitiesOpen && status && <section className="utility-panel" id="utility-panel" aria-label="Tool controls"><div className="utility-panel-heading"><h2>Choose the tools for your next task</h2><span>{selectedModel?.toolCapable === false ? 'Chat model · agent tools unavailable' : webActive ? 'Research skill · web enabled' : researchMode ? 'Research skill · local sources only' : `${chosenMode.name} mode`}</span></div><Utilities preferences={status.utilities} mode={mode} toolCapable={selectedModel?.toolCapable} projectSelected={!!projectPath} calibrated={calibrated} disabled={locked || !bridge} onChange={setUtilities} />{researchMode && <p className="research-skill-note">Research before implementation checks the project’s versions, then uses official documentation and release notes when web research is enabled. Sources include retrieval dates; a recent fetch does not prove a page is up to date.</p>}</section>}
 
       {error && !setupOpen && <div className="banner error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError(null)}><Icon name="close" size={16} /></button></div>}
       {notice && <div className="banner notice-banner" role="status"><span><Icon name="check" size={15} />{notice}</span><button className="icon-button" aria-label="Dismiss notice" onClick={() => setNotice(null)}><Icon name="close" size={16} /></button></div>}
       {stage && !setupOpen && <div className={`stage-banner ${stage.resumable && !busy ? 'stage-paused' : ''}`} role="status"><div><span className={`stage-marker ${busy ? 'stage-active' : ''}`} /><strong>{stage.message || stage.stage.replace(/[_-]/g, ' ')}</strong>{stage.total !== undefined && stage.total > 0 && <span className="stage-count">{stage.completed ?? 0} / {stage.total}</span>}</div>{stage.total !== undefined && stage.total > 0 && <progress value={stage.completed ?? 0} max={stage.total} aria-label={`${stage.stage} progress`} />}{stage.resumable && !busy && sessionId && <button className="secondary-button" disabled={locked || !ready} onClick={() => void resumeTask()}><Icon name="arrow" size={13} />Resume task</button>}</div>}
 
+      {view === 'plugins' ? <section className="plugins-page" aria-labelledby="plugins-title"><div className="page-heading"><h1 id="plugins-title" tabIndex={-1} ref={pluginHeadingRef}>Plugins</h1><span>Bundled</span></div><Plugins status={status} disabled={locked || !bridge} onEnable={setResearchPlugin} onWebResearch={(enabled) => status ? setUtilities({ ...status.utilities, webResearch: enabled }) : Promise.resolve()} /></section> : <>
       <div className={`conversation ${messages.length ? 'has-messages' : ''}`} aria-label="Conversation" aria-busy={busy || loadingSession}>
-        {loadingSession ? <div className="loading-state"><span className="spinner" />Opening your chat…</div> : !messages.length ? <div className="welcome">
-          <div className="welcome-symbol"><Icon name="brand" size={32} /><span className="welcome-orbit" /></div>
-          <p className="eyebrow">YOUR AI. YOUR FREEDOM.</p>
-          <h1>{mode === 'coding' ? 'What will you build?' : 'Your ideas. Your own AI.'}</h1>
-          <p className="welcome-description">{chosenMode.description}<br /><span>A local model, running on your computer.</span></p>
-          <div className="suggestions">{chosenMode.examples.map((example, index) => <button key={example} disabled={locked} onClick={() => { setDraft(example); inputRef.current?.focus(); }}><span className="suggestion-number">0{index + 1}</span><span>{example}</span><Icon name="chevron" size={15} /></button>)}</div>
-          {!ready && <button className="setup-prompt" onClick={() => setSetupOpen(true)}><span className="status-dot" />Set up your local model<Icon name="chevron" size={13} /></button>}
+        {loadingSession ? <div className="loading-state"><span className="spinner" />Opening your task…</div> : !messages.length ? <div className="welcome">
+          <h1>{mode === 'coding' ? 'What would you like to build?' : mode === 'research' ? 'What would you like to explore?' : 'What’s on your mind?'}</h1>
+          <p className="welcome-description">{chosenMode.description}</p>
+          <div className="suggestions">{chosenMode.examples.map((example) => <button key={example} disabled={locked} onClick={() => { setDraft(example); inputRef.current?.focus(); }}><Icon name={chosenMode.icon} size={16} /><span>{example}</span></button>)}</div>
+          {!ready && <button className="setup-prompt" onClick={() => setSetupOpen(true)}><span className="status-dot" />Choose a local model to begin<Icon name="chevron" size={13} /></button>}
         </div> : <div className="message-list">
-          {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-avatar">{message.role === 'assistant' ? <Icon name="brand" size={17} /> : 'Y'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}{message.role === 'assistant' && <span>{selectedModelName}</span>}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></div></article>)}
+          {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></div></article>)}
           {tools.length > 0 && <div className="tool-activity" aria-label="Tool activity">{tools.map((tool) => <details key={tool.id}><summary><span className={`tool-dot ${tool.status === 'completed' || tool.status === 'success' ? 'complete' : tool.status === 'failed' || tool.status === 'error' ? 'failed' : ''}`} /><span>{tool.title}</span><span className="tool-status">{tool.status}</span></summary>{tool.input !== undefined && <pre>{displayValue(tool.input)}</pre>}{tool.output !== undefined && <pre>{displayValue(tool.output)}</pre>}</details>)}</div>}
           {busy && <div className="working-status" role="status"><span className="working-dots"><i /><i /><i /></span>{permissions.length ? 'Waiting for your approval' : thinking ? 'Thinking locally…' : 'Working…'}</div>}
         </div>}
@@ -409,16 +405,28 @@ export default function App() {
       </div>
 
       <div className="composer-area">
-        {mode === 'coding' && !projectPath && <div className="project-prompt"><span className="project-prompt-icon"><Icon name="folder" size={19} /></span><div className="project-prompt-copy"><strong>Give your agent a place to build.</strong><p>Choose or create a folder. Enabled project tools can create files and run commands with your approval.</p></div><button className="secondary-button" disabled={locked || !bridge} onClick={() => sessionId ? newChat('coding') : void action(chooseProject)}>{sessionId ? 'New agent task' : 'Choose workspace'}<Icon name="chevron" size={13} /></button></div>}
-        {selectedModel?.toolCapable === false ? <div className="model-limitation"><Icon name="monitor" size={15} /><span>{mode === 'coding' ? 'This model is chat only. Choose an agent model to create or change project files.' : 'Chat-only model. Project and web tools are unavailable; selected files can still be attached.'}</span><button className="text-button" disabled={locked} onClick={() => setSetupOpen(true)}>Choose model<Icon name="chevron" size={12} /></button></div> : mode === 'coding' && selectedModel && !calibrated ? <div className="model-limitation model-calibration"><Icon name="monitor" size={15} /><span>Agent tools need validation on this computer. Check tools & speed in Models & setup.</span><button className="text-button" disabled={locked} onClick={() => setSetupOpen(true)}>Check model<Icon name="chevron" size={12} /></button></div> : mode === 'assistant' && <div className="model-limitation chat-mode-note"><Icon name="chat" size={15} /><span>Chat works with text and attachments. Start an Agent task to create a project.</span><button className="text-button" disabled={locked} onClick={() => newChat('coding')}>Use Agent<Icon name="chevron" size={12} /></button></div>}
+        {selectedModel?.toolCapable === false ? <div className="model-limitation"><Icon name="monitor" size={15} /><span>{mode === 'coding' ? 'This model is chat only. Choose an agent model to create or change project files.' : 'Chat-only model. Selected files can still be attached.'}</span><button className="text-button" disabled={locked} onClick={() => setSetupOpen(true)}>Choose model</button></div> : researchMode && selectedModel && !calibrated ? <div className="model-limitation model-calibration"><Icon name="monitor" size={15} /><span>Check tools & speed before using agent tools on this computer.</span><button className="text-button" disabled={locked} onClick={() => setSetupOpen(true)}>Check model</button></div> : null}
         <form className={`composer ${busy ? 'working' : ''}`} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-        {files.length > 0 && <div className="attachment-list">{files.map((file) => <span className="attachment" key={file.path} title={file.path}><Icon name="attach" size={13} />{file.name}<button type="button" className="icon-button" aria-label={`Remove ${file.name}`} disabled={busy} onClick={() => setFiles((current) => current.filter((item) => item.path !== file.path))}><Icon name="close" size={12} /></button></span>)}</div>}
-        <label className="sr-only" htmlFor="message-input">Message Free Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} placeholder={ready ? (mode === 'coding' ? 'Ask about your project, or describe what to build…' : 'Ask anything, or add a file to work with…') : 'Set up a local model to start a conversation…'} rows={2} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
-        <div className="composer-toolbar"><div className="composer-left"><button className="icon-button" type="button" disabled={locked || !bridge || !status?.utilities.fileReading} title={status?.utilities.fileReading ? 'Attach local files' : 'Enable Read files in Tools to attach documents'} aria-label="Attach local files" onClick={() => void action(async () => { const selected = await bridge!.selectFiles(); setFiles((current) => [...current, ...selected.filter((file) => !current.some((existing) => existing.path === file.path))]); })}><Icon name="attach" size={19} /></button><span className="toolbar-divider" /><label className="model-select"><span className="sr-only">Local model</span><select value={selectedModel?.id ?? ''} disabled={locked || !status?.runtime.ready || !bridge} onChange={(event) => void settingsAction(() => bridge!.selectModel(event.target.value))}><option value="" disabled>Choose a model</option>{status?.models.filter((model) => model.installed).map((model) => <option key={model.id} value={model.id} disabled={!!model.blockedReason || model.fit === 'insufficient' || (model.fit === 'slow' && !status?.slowMode)}>{model.name}</option>)}</select></label></div>{busy ? <button type="button" className="stop-button" aria-label="Stop response" onClick={() => void action(async () => { if (sessionRef.current) await bridge!.cancel(sessionRef.current); })}><Icon name="stop" size={14} />Stop</button> : <button className="send-button" type="submit" aria-label="Send message" disabled={!draft.trim() || !ready || locked}><Icon name="arrow" size={20} /></button>}</div>
-      </form><p className="composer-note"><span>Inference stays on this computer.</span>{selectedModel?.toolCapable === false ? 'Chat model · agent tools unavailable.' : mode === 'coding' ? `Edits and commands need approval. ${webActive ? 'Web research on.' : 'Web research off.'}` : mode === 'research' ? webActive ? 'Web research uses the internet.' : 'Web research is off.' : 'Review important answers.'}<span className="enter-note">↵ to send · ⇧↵ new line</span></p></div>
+          {files.length > 0 && <div className="attachment-list">{files.map((file) => <span className="attachment" key={file.path} title={file.path}><Icon name="attach" size={13} />{file.name}<button type="button" className="icon-button" aria-label={`Remove ${file.name}`} disabled={locked} onClick={() => setFiles((current) => current.filter((item) => item.path !== file.path))}><Icon name="close" size={12} /></button></span>)}</div>}
+          <label className="sr-only" htmlFor="message-input">Message Free Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} placeholder={ready ? (mode === 'coding' ? 'Describe a task, ask about your project, or add files…' : 'Ask a question or add files…') : 'Write a task, then choose a local model to begin…'} rows={2} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
+          <div className="composer-toolbar"><div className="composer-left">
+            <button className="icon-button" type="button" disabled={locked || !bridge || !status?.utilities.fileReading} title={status?.utilities.fileReading ? 'Attach local files' : 'Enable Read files in Tools to attach documents'} aria-label="Attach local files" onClick={() => void action(async () => { const selected = await bridge!.selectFiles(); setFiles((current) => [...current, ...selected.filter((file) => !current.some((existing) => existing.path === file.path))]); })}><Icon name="plus" size={18} /></button>
+            <label className="mode-select composer-select"><Icon name={chosenMode.icon} size={13} /><span className="sr-only">Task mode</span><select value={mode} disabled={locked || !!sessionId} title={sessionId ? 'Start a new task to change mode' : 'Choose how to work'} onChange={(event) => setMode(event.target.value as Mode)}>{modes.filter((item) => item.id !== 'research' || researchEnabled || mode === 'research').map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <button className={`composer-chip workspace-chip ${projectPath ? 'has-project' : ''}`} type="button" disabled={locked || !bridge || !!sessionId} onClick={() => void action(chooseProject)} title={projectPath ? `${projectPath}${sessionId ? ' · Start a new task to change workspace' : ''}` : 'Choose or create a workspace folder'}><Icon name="folder" size={13} /><span>{selectingProject ? 'Choosing…' : projectPath ? folderName(projectPath) : 'Choose folder'}</span></button>
+            <button className="composer-chip" type="button" disabled={!status} onClick={() => setUtilitiesOpen(true)} aria-haspopup="dialog"><Icon name="settings" size={13} /><span>Tools</span></button>
+            <button className={`composer-chip research-chip ${researchEnabled ? 'plugin-on' : ''}`} type="button" onClick={() => setView('plugins')} title={researchEnabled ? `Research plugin enabled · ${webActive ? 'web active' : 'web inactive'}` : 'Enable the optional Research plugin'}><Icon name="plugin" size={13} /><span>{researchEnabled ? 'Research' : 'Research off'}</span>{researchEnabled && <span className="chip-status" />}</button>
+          </div><div className="composer-right">
+            <label className="model-select composer-select"><span className="sr-only">Local model</span><select value={selectedModel?.id ?? ''} disabled={locked || !status?.runtime.ready || !bridge || !status?.models.some((model) => model.installed)} onChange={(event) => void settingsAction(() => bridge!.selectModel(event.target.value))}><option value="" disabled>Choose a model</option>{status?.models.filter((model) => model.installed).map((model) => <option key={model.id} value={model.id} disabled={!!model.blockedReason || model.fit === 'insufficient' || (model.fit === 'slow' && !status?.slowMode)}>{model.name}</option>)}</select></label>
+            <button className="icon-button model-settings" type="button" disabled={locked} aria-label="Manage local models" title="Manage local models" onClick={() => setSetupOpen(true)}><Icon name="monitor" size={15} /></button>
+            {busy ? <button type="button" className="stop-button" aria-label="Stop response" onClick={() => void action(async () => { if (sessionRef.current) await bridge!.cancel(sessionRef.current); })}><Icon name="stop" size={13} />Stop</button> : <button className="send-button" type="submit" aria-label="Send message" disabled={!draft.trim() || !ready || locked}><Icon name="arrow" size={18} /></button>}
+          </div></div>
+        </form><p className="composer-note"><span>Local inference</span><span>{mode === 'coding' ? 'Edits and commands need approval.' : mode === 'assistant' ? 'Chat has no project actions.' : 'Read-only research mode.'}</span>{researchMode && <span>{researchEnabled ? webActive ? 'Research · web active' : 'Research · web inactive' : 'Research plugin off'}</span>}<span className="enter-note">↵ Send · ⇧↵ New line</span></p>
+      </div>
+      </>}
     </main>
 
-    {setupOpen && <ModelSetup status={status} mode={mode} projectSelected={!!projectPath} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} importing={importing} download={download} stage={stage} error={error} hasBridge={!!bridge} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && ready && !locked && !setupBusy) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); inputRef.current?.focus(); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onSelect={(id) => settingsAction(() => bridge!.selectModel(id))} onDownload={downloadModel} onCancelDownload={cancelDownload} onUtilities={setUtilities} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
+    {utilitiesOpen && status && <div className="modal-backdrop" onKeyDown={(event) => { if (event.key === 'Escape') setUtilitiesOpen(false); trapDialogFocus(event, utilitiesRef.current); }}><section className="tools-dialog" ref={utilitiesRef} role="dialog" aria-modal="true" aria-labelledby="tools-title"><div className="tools-dialog-header"><h2 id="tools-title">Agent tools</h2><button className="icon-button" aria-label="Close tools" onClick={() => setUtilitiesOpen(false)}><Icon name="close" size={18} /></button></div><p className="muted">Choose what the agent can access. Preferences apply to your next task; changes are unavailable while a task is running.</p>{error && <p className="inline-error" role="alert">{error}</p>}<Utilities preferences={status.utilities} mode={mode} toolCapable={selectedModel?.toolCapable} projectSelected={!!projectPath} calibrated={calibrated} disabled={locked || !bridge} onChange={setUtilities} /><button className="text-button tools-plugin-link" onClick={() => { setUtilitiesOpen(false); setView('plugins'); }}><Icon name="plugin" size={15} />Manage optional Research in Plugins<Icon name="chevron" size={13} /></button></section></div>}
+    {setupOpen && <ModelSetup status={status} mode={mode} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} importing={importing} download={download} stage={stage} error={error} hasBridge={!!bridge} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && !locked) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onSelect={(id) => settingsAction(() => bridge!.selectModel(id))} onDownload={downloadModel} onCancelDownload={cancelDownload} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
     {permissions[0] && <PermissionDialog key={permissions[0].requestId} request={permissions[0]} onRespond={respondPermission} />}
   </div>;
 }

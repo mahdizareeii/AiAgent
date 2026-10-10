@@ -1,6 +1,16 @@
 # Free Local Agent verification status
 
-## Current 0.3.0-alpha.2 research update — 2026-10-10
+## Current 0.4.0-alpha.1 workspace/plugin update — 2026-10-10
+
+The focused task workspace and optional Research plugin passed **123/123**
+app/runtime tests with public networking denied, **10/10** additional isolated
+renderer checks, and the macOS arm64 packaged smoke. The new ZIP is built and
+verified. Fresh native screenshots remain blocked by desktop inspection timeouts;
+the older model image is historical. See the
+[workspace and plugin validation record](workspace-plugin-validation.md) for
+permissions, migration, artifact checksum, and exact test limitations.
+
+## Earlier 0.3.0-alpha.2 research update — 2026-10-10
 
 The bundled task-research skill, opt-in Agent web tools, provenance metadata,
 offline behavior, and current validation are recorded in the

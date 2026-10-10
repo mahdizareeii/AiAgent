@@ -28,7 +28,7 @@ test('capability instructions advertise only actually registered utilities', () 
   const noTools = { fileReading: false, projectSearch: false, fileEditing: false, terminal: false, webResearch: false };
   assert.throws(() => assertAgentCapabilities('coding', noTools, true), /utilities are disabled/);
   assert.doesNotThrow(() => assertAgentCapabilities('coding', { ...noTools, webResearch: true }, true));
-  const webOnly = taskInstructions('coding', { ...noTools, webResearch: true }).split('Available tools for this turn')[1];
+  const webOnly = taskInstructions('coding', { ...noTools, webResearch: true }, true, { taskResearch: true }).split('Available tools for this turn')[1];
   assert.match(webOnly, /web_search and web_fetch/);
   assert.doesNotMatch(webOnly, /write_file|run_command|read_file/);
 });
@@ -38,6 +38,27 @@ test('chat-only Research uses staged context without advertising disabled callab
   assert.match(instructions, /no callable tools/);
   assert.match(instructions, /staged local context/);
   assert.match(instructions, /label claims unverified/);
-  assert.match(instructions, /validated tool-capable model and enabled Web research/);
+  assert.match(instructions, /validated tool-capable model, the Task research plugin, and enabled web access/);
   assert.doesNotMatch(instructions, /web_search|web_fetch|read_file|run_command|Available tools for this turn/);
+});
+
+test('ordinary Agent instructions omit the optional research skill and keep action capabilities intact', () => {
+  for (const mode of ['coding', 'research'] as const) {
+    const preferences = { ...DEFAULT_UTILITIES, webResearch: true };
+    const disabled = taskInstructions(mode, preferences);
+    assert.doesNotMatch(disabled, /Task research|web_search|web_fetch/);
+    assert.match(disabled, /current online facts.*verified/);
+    const enabled = taskInstructions(mode, preferences, true, { taskResearch: true });
+    assert.match(enabled, /enabled Task research plugin/);
+    assert.match(enabled, /web_search and web_fetch/);
+    const localOnly = taskInstructions(mode, DEFAULT_UTILITIES, true, { taskResearch: true });
+    assert.match(localOnly, /enabled Task research plugin/);
+    assert.match(localOnly, /Web research is disabled/);
+    assert.doesNotMatch(localOnly, /web_search|web_fetch/);
+  }
+  const normalAgent = taskInstructions('coding', DEFAULT_UTILITIES);
+  assert.match(normalAgent, /create_files|write_file/);
+  assert.match(normalAgent, /run_command/);
+  assert.match(normalAgent, /approval dialog/);
+  assert.match(normalAgent, /Respect denials/);
 });

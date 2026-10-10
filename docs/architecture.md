@@ -1,6 +1,6 @@
 # Architecture and trust boundaries
 
-Free Local Agent 0.3 uses a custom Electron/React desktop, the Goose v1.53.0 agent
+Free Local Agent 0.4.0-alpha.1 uses a custom Electron/React desktop, the Goose v1.53.0 agent
 engine, a bundled llama.cpp server, and a native research/file sidecar. Goose is
 built from the vendored source with default features disabled and only
 `rustls-tls,disable-update`; online model metadata and telemetry features are not
@@ -20,10 +20,19 @@ flowchart TD
   ENGINE --> WEIGHTS[Verified local GGUF]
   GOOSE -->|MCP stdio| READS[Bundled file and research tools]
   READS --> GRANTS[Selected files and project]
-  READS -->|explicit web enablement| WEB[DuckDuckGo and public pages]
+  READS -->|Research plugin plus web permission| WEB[DuckDuckGo and public pages]
   GOOSE --> APPROVAL[Main-process approval bridge]
   APPROVAL -->|Approve once| ACTIONS[File edits and terminal commands]
 ```
+
+## Desktop workspace
+
+The desktop uses a neutral, Codex-inspired task workspace: a saved-task sidebar,
+centered conversation, and bottom composer. **New task** starts in Agent mode;
+the composer exposes mode, workspace, model, and tool controls. **Plugins** is a
+separate page for optional abilities. **Read-only research** is offered when the
+Research plugin is enabled, while legacy saved research tasks remain accessible
+with it disabled. This interface does not imply Codex-equivalent model quality.
 
 ## Inference and model fit
 
@@ -98,25 +107,45 @@ edit snapshots are independent durable app data, not a resumed Goose database.
 
 ## Tool preferences and action review
 
-The user chooses file reading, project search, file editing, terminal, and web
-research. **Web research defaults to false.** Disabled tools are omitted from the
+The user chooses file reading, project search, file editing, and terminal in
+**Tools**. The **Plugins** page separately stores **Enable Research** and
+**Allow web research**. **Both research settings default to false.** Disabled tools
+are omitted from the
 MCP tool list, including network tools. Modes and model tool support further
 constrain the offered capabilities. File reading works in every mode, project
-search/editing/terminal only in Agent, and web tools in Agent and Research when
-enabled. Chat never registers network tools, including when a saved preference
+search/editing/terminal only in Agent, and web tools in Agent and Read-only research
+only when the plugin and web permission are enabled and the model's tool support
+has been validated. Local Agent tools do not depend on the Research plugin.
+Chat never registers network tools, including when a saved preference
 is true; the sidecar enforces that mode boundary too. A chat-only
 model still uses enabled read stages for attachments but bypasses Goose and agent
 tools for the final response. The research sidecar exposes `inspect_file`
 alongside enabled file reads; inspection returns a hash/size, not document text.
 
 Agent and Research turns load the app-owned `task-research/SKILL.md` from the
-packaged ASAR before starting Goose. The loader validates identity and size;
+packaged ASAR before starting Goose **only when Research is enabled**. The loader
+validates identity and size;
 external Goose skill discovery remains disabled. These instructions guide
 version-aware primary-source research, bounded findings, and implementation
 with the existing approval tools. The complete skill enters native token counting
 alongside the request and tool schemas. Web-disabled turns cannot register web
-tools, and the skill forbids network research workarounds. Chat-only imports
+tools, and the skill forbids network research workarounds. Disabling the plugin
+omits its instructions and web tools even if web permission remains saved. A
+disabled plugin's missing assets do not block ordinary Agent startup; an enabled
+plugin with missing assets fails before Goose launches. The backend independently
+filters web registration so a raw web preference cannot bypass plugin gating.
+The shipped Research plugin is app-owned; this is not an arbitrary external
+plugin installer. Chat-only imports
 receive local-context instructions and never advertise tools they cannot call.
+
+Saved state version 3 persists plugin and web preferences independently. Missing
+plugin settings in version 1/2 or unversioned legacy stores preserve prior explicit
+web consent by enabling Research during migration. Missing plugin settings in a
+version 3 store default off. Explicit saved plugin choices always win, including
+false with web consent true. Migration preserves conversations, attachments,
+model selection, project paths, and the existing model and undo stores. Settings
+changes are rejected while a task is running; failed persistence restores the
+previous preferences.
 
 Edits and commands require a decision for each pending action in main. The UI shows
 arguments and a diff or command. Denial leaves the action unexecuted; approval
@@ -165,7 +194,8 @@ Tests of fake providers and mocked networks establish protocol/permission behavi
 not actual model competence, GPU allocation, or complete-agent speed. Native
 resource smoke tests validate pinned offline manifests, engine version, packaged
 MCP controls, and denied writes without loading an LLM or contacting a public site.
-See [current verification status](build-verification.md) and the
+See [current verification status](build-verification.md), the
+[0.4 workspace and plugin validation record](workspace-plugin-validation.md), and the
 [real-model rubric](alpha-validation.md).
 
 macOS arm64 ZIP, Windows x64 portable ZIP, and Ubuntu x64 DEB jobs are configured.

@@ -10,7 +10,8 @@ import { GooseBackend, type BackendOptions } from '../backend.ts';
 import { loadTaskResearchSkill } from '../skills/task-research.ts';
 import { LocalActions, type ActionPermission } from '../actions.ts';
 import { createActionHost } from '../action-host.ts';
-import type { AgentEvent, Mode, UtilityPreferences } from '../renderer/types.ts';
+import { DEFAULT_PLUGINS, effectiveUtilities } from '../state.ts';
+import type { AgentEvent, Mode, PluginPreferences, UtilityPreferences } from '../renderer/types.ts';
 
 // These tests use the actual downloaded Goose binary and frozen research sidecar.
 // The provider is a deterministic authenticated loopback fixture; no LLM download,
@@ -125,7 +126,9 @@ function assertToolSet(request: ChatRequest, utilities: UtilityPreferences): voi
   assert.equal(request.max_tokens, outputTokens, 'Every agent request must include the explicit local output allowance.');
 }
 
-async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, approveScaffold?: boolean) {
+async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, approveScaffold?: boolean,
+  plugins: PluginPreferences = DEFAULT_PLUGINS,
+  skillsDirectory = path.join(repository, 'local-agent', 'desktop', 'skills')) {
   assert.deepEqual(missingResources(mode), [], 'Native integration resources must be prepared when LOCAL_AGENT_REQUIRE_INTEGRATION=1.');
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-backend-integration-')));
   const project = path.join(directory, 'project');
@@ -139,7 +142,8 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
   const errors: string[] = [];
   let actionRequests = 0;
   const actionToken = 'a'.repeat(64);
-  const utilities = { ...defaults(mode), ...overrides };
+  const configuredUtilities = { ...defaults(mode), ...overrides };
+  const utilities = effectiveUtilities(mode, configuredUtilities, plugins);
   const controller = new AbortController();
   const permissions: ActionPermission[] = [];
   const actions = new LocalActions({ projectPath: project, historyDirectory: path.join(directory, 'history'), utilities,
@@ -207,9 +211,9 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
     const baseUrl = await listen(server);
     const options: BackendOptions = { executable: goose, researchExecutable: research, bridgeExecutable: bridge,
       nodeExecutable: process.execPath, dataDirectory: data, cwd: project, mode, model, baseUrl,
-      apiKey, outputTokens, utilities, contextTokens: 8192,
+      apiKey, outputTokens, utilities: configuredUtilities, plugins, contextTokens: 8192,
       grantedRoots: mode === 'coding' ? [project] : [], grantedFiles: [selectedFile],
-      skillsDirectory: path.join(repository, 'local-agent', 'desktop', 'skills'), currentDate: '2026-10-10',
+      skillsDirectory, currentDate: '2026-10-10',
       actionUrl: host?.url ?? (mode === 'coding' ? `${baseUrl}/${actionToken}` : undefined),
       onEvent: event => events.push(event) };
     backend = new GooseBackend(options);
@@ -232,9 +236,9 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
   }
 }
 
-test('real Goose research mode defaults to local files and authenticates the loopback provider',
+test('real Goose enabled research plugin without web permission uses local files and authenticates the loopback provider',
   { skip: skipReason('research'), timeout: 120_000 }, async () => {
-    const run = await fixture('research');
+    const run = await fixture('research', {}, undefined, { taskResearch: true });
     try {
       const running = run.backend.prompt('Say hello using the local fixture.');
       await assert.rejects(run.backend.prompt('Start overlapping work.'), /task is already running/);
@@ -252,6 +256,43 @@ test('real Goose research mode defaults to local files and authenticates the loo
       assert.equal(run.events.filter(event => event.type === 'message').map(event => event.text).join(''), plainReply);
       assert.equal(run.events.some(event => event.type === 'tool'), false);
       assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose ordinary Agent starts with missing optional skill assets and preserves local tools without injecting research',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', {}, undefined, DEFAULT_PLUGINS, path.join(repository, 'missing-optional-skills'));
+    try {
+      await run.backend.prompt('Say hello without calling any tool.');
+      const agentRequests = run.chats.filter(request => request.tools?.length);
+      assert.ok(agentRequests.length >= 1);
+      for (const request of agentRequests) {
+        assertToolSet(request, run.utilities);
+        const userPrompt = request.messages?.filter(message => message.role === 'user').map(message => JSON.stringify(message.content)).join('\n') ?? '';
+        assert.doesNotMatch(userPrompt, /OPTIONAL PLUGIN|Task research|Web research is enabled|Inspect local versions/);
+        assert.match(userPrompt, /create_files/);
+      }
+      assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose disabled research plugin omits web tools even with configured web permission',
+  { skip: skipReason('research'), timeout: 120_000 }, async () => {
+    const run = await fixture('research', { webResearch: true }, undefined, { taskResearch: false });
+    try {
+      await run.backend.prompt('Say hello without researching.');
+      const agentRequests = run.chats.filter(request => request.tools?.length);
+      assert.ok(agentRequests.length >= 1);
+      for (const request of agentRequests) {
+        assertToolSet(request, run.utilities);
+        assert.ok(toolNames(request).every(name => !/(?:^|__)web_(search|fetch)$/.test(name)));
+        const userPrompt = request.messages?.filter(message => message.role === 'user').map(message => JSON.stringify(message.content)).join('\n') ?? '';
+        assert.doesNotMatch(userPrompt, /OPTIONAL PLUGIN|Task research/);
+      }
+      assert.equal(run.events.some(event => event.type === 'tool'), false);
+      assert.ok(run.requests.every(request => /^\/v1\//.test(request.url)));
       assert.deepEqual(run.errors, []);
     } finally { await run.cleanup(); }
   });
@@ -345,9 +386,9 @@ test('real Goose coding mode advertises reviewed actions without built-in shell 
     } finally { await run.cleanup(); }
   });
 
-test('real Goose research mode exposes web tools only with explicit opt-in',
+test('real Goose research mode exposes web tools only with plugin and web opt-in',
   { skip: skipReason('research'), timeout: 120_000 }, async () => {
-    const run = await fixture('research', { webResearch: true });
+    const run = await fixture('research', { webResearch: true }, undefined, { taskResearch: true });
     try {
       await run.backend.prompt('Say hello without searching the web.');
       const agentRequests = run.chats.filter(request => request.tools?.length);
@@ -361,7 +402,7 @@ test('real Goose research mode exposes web tools only with explicit opt-in',
 
 test('real Goose Agent research opt-in registers only web tools when local utilities are disabled',
   { skip: skipReason('coding'), timeout: 120_000 }, async () => {
-    const run = await fixture('coding', { fileReading: false, projectSearch: false, fileEditing: false, terminal: false, webResearch: true });
+    const run = await fixture('coding', { fileReading: false, projectSearch: false, fileEditing: false, terminal: false, webResearch: true }, undefined, { taskResearch: true });
     try {
       await run.backend.prompt('Say hello without searching the web.');
       const agentRequests = run.chats.filter(request => request.tools?.length);

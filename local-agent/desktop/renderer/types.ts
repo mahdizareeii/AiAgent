@@ -19,6 +19,10 @@ export interface UtilityPreferences {
   webResearch: boolean;
 }
 
+export interface PluginPreferences {
+  taskResearch: boolean;
+}
+
 export interface ExecutionProfile {
   backend: string;
   contextTokens: number;
@@ -64,6 +68,7 @@ export interface AgentStatus {
   hardware: HardwareSnapshot;
   profile?: ExecutionProfile;
   utilities: UtilityPreferences;
+  plugins: PluginPreferences;
   slowMode: boolean;
   models: LocalModel[];
   recommendation: string | null;
@@ -139,6 +144,7 @@ export interface LocalAgentBridge {
   importModel(): Promise<void>;
   calibrateModel(id: string): Promise<void>;
   setUtilities(preferences: UtilityPreferences): Promise<void>;
+  setPlugins(preferences: PluginPreferences): Promise<void>;
   setSlowMode(enabled: boolean): Promise<void>;
   downloadModel(id: string): Promise<void>;
   cancelDownload(): Promise<void>;

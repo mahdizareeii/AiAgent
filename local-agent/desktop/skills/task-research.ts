@@ -37,5 +37,5 @@ export function taskResearchInstructions(skill: TaskResearchSkill, mode: Mode, u
   const access = utilities.webResearch
     ? 'Web research is enabled for this turn. Use only the registered web_search and web_fetch tools for online research.'
     : 'Web research is OFF for this turn. Research local evidence, label current online facts unverified, and do not research online through terminal commands.';
-  return `BUILT-IN SKILL: Task research\n${date}\n${access}\n${skill.instructions}`;
+  return `OPTIONAL PLUGIN: Task research\n${date}\n${access}\n${skill.instructions}`;
 }

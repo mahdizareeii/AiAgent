@@ -3,8 +3,9 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AgentEvent, Mode, UtilityPreferences } from './renderer/types.ts';
+import type { AgentEvent, Mode, PluginPreferences, UtilityPreferences } from './renderer/types.ts';
 import { loadTaskResearchSkill, taskResearchInstructions, type TaskResearchSkill } from './skills/task-research.ts';
+import { DEFAULT_PLUGINS, effectiveUtilities } from './state.ts';
 
 export interface BackendOptions {
   executable: string;
@@ -20,6 +21,7 @@ export interface BackendOptions {
   contextTokens: number;
   outputTokens: number;
   utilities: UtilityPreferences;
+  plugins?: PluginPreferences;
   grantedRoots: string[];
   grantedFiles: string[];
   actionUrl?: string;
@@ -32,6 +34,8 @@ const platformExtensions = ['analyze', 'todo', 'apps', 'chatrecall', 'extensionm
   'scheduler', 'summon', 'summarize', 'code_execution', 'developer', 'orchestrator', 'tom', 'skills'];
 const actionsEnabled = (options: BackendOptions) => options.mode === 'coding' &&
   (options.utilities.fileEditing || options.utilities.terminal);
+const taskResearchEnabled = (options: BackendOptions) => (options.plugins ?? DEFAULT_PLUGINS).taskResearch &&
+  (options.mode === 'coding' || options.mode === 'research');
 const denialText = 'The user denied this action. No action was taken.';
 const denialNotice = 'Action denied. This task stopped to prevent automatic retries. Completed changes are preserved; start a new task when you are ready.';
 
@@ -55,7 +59,9 @@ export function agentPrompt(options: BackendOptions, request: string, researchSk
     if (options.utilities.terminal) capabilities.push('Use run_command for necessary setup or verification, then inspect its actual result.');
     capabilities.push('Every file change and command needs approval in the app. Wait for the tool result. Respect a denial and do not retry the denied action. Report only changes and checks that succeeded.');
   } else capabilities.push('This turn has no file-writing or command tools. Describe this limit accurately if the task needs them.');
-  const research = researchSkill ? taskResearchInstructions(researchSkill, options.mode, options.utilities, options.currentDate) : '';
+  const research = researchSkill && taskResearchEnabled(options)
+    ? taskResearchInstructions(researchSkill, options.mode,
+      effectiveUtilities(options.mode, options.utilities, options.plugins), options.currentDate) : '';
   return `${capabilities.join(' ')}${research ? `\n\n${research}` : ''}\n\nUSER TASK AND LOCAL CONTEXT:\n${request}`;
 }
 
@@ -76,7 +82,7 @@ export function backendEnvironment(options: BackendOptions): NodeJS.ProcessEnv {
     OPENAI_BASE_URL: `${options.baseUrl}/v1`, OPENAI_BASE_PATH: 'v1/chat/completions', OPENAI_API_KEY: options.apiKey,
     GOOSE_MAX_TOKENS: String(options.outputTokens),
     LOCAL_AGENT_MODE: options.mode, LOCAL_AGENT_GRANTED_ROOTS: JSON.stringify(options.grantedRoots),
-    LOCAL_AGENT_UTILITIES: JSON.stringify(options.utilities),
+    LOCAL_AGENT_UTILITIES: JSON.stringify(effectiveUtilities(options.mode, options.utilities, options.plugins)),
     LOCAL_AGENT_TOOL_RESULT_CHARS: String(Math.min(4000, Math.floor(options.contextTokens / 2))),
     LOCAL_AGENT_GRANTED_FILES: JSON.stringify(options.grantedFiles),
     LOCAL_AGENT_ACTION_URL: actionsEnabled(options) ? options.actionUrl : '', ELECTRON_RUN_AS_NODE: '1',
@@ -100,7 +106,8 @@ export class GooseBackend {
 
   async start(): Promise<void> {
     const o = this.options;
-    if (o.skillsDirectory && (o.mode === 'coding' || o.mode === 'research')) {
+    if (taskResearchEnabled(o)) {
+      if (!o.skillsDirectory) throw new Error('The enabled Task research plugin could not be loaded: bundled skills directory is missing. Rebuild or reinstall Free Local Agent.');
       this.researchSkill = await loadTaskResearchSkill(o.skillsDirectory);
     }
     await mkdir(path.join(o.dataDirectory, 'config'), { recursive: true });
@@ -144,7 +151,7 @@ export class GooseBackend {
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
     }), ndJsonStream(Writable.toWeb(this.child.stdin), Readable.toWeb(this.child.stdout) as unknown as ReadableStream<Uint8Array>));
     await this.withTimeout(this.connection.initialize({ protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'free-local-agent-desktop', version: '0.3.0-alpha.2' },
+      clientInfo: { name: 'free-local-agent-desktop', version: '0.4.0-alpha.1' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
     const extensions: object[] = [{ type: 'mcp', timeout: 180,

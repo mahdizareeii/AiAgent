@@ -4,7 +4,8 @@ const call = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`local-a
 const bridge: LocalAgentBridge = {
   status: () => call('status'), setup: options => call('setup', options),
   importModel: () => call('importModel'), calibrateModel: id => call('calibrateModel', id),
-  setUtilities: preferences => call('setUtilities', preferences), setSlowMode: enabled => call('setSlowMode', enabled),
+  setUtilities: preferences => call('setUtilities', preferences), setPlugins: preferences => call('setPlugins', preferences),
+  setSlowMode: enabled => call('setSlowMode', enabled),
   downloadModel: id => call('downloadModel', id),
   cancelDownload: () => call('cancelDownload'), selectModel: id => call('selectModel', id),
   selectProject: () => call('selectProject'), selectFiles: () => call('selectFiles'),

@@ -1,6 +1,6 @@
 # Free Local Agent setup and developer guide
 
-Free Local Agent **0.3.0-alpha.2** runs local models through a bundled llama.cpp engine. The
+Free Local Agent **0.4.0-alpha.1** runs local models through a bundled llama.cpp engine. The
 packaged app includes the native inference engine, offline Goose backend, and
 research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
@@ -8,11 +8,11 @@ platform support.
 
 ## First launch
 
-On macOS Apple Silicon, unzip `Free Local Agent-0.3.0-alpha.2-arm64-mac.zip`, move `Free Local Agent.app` into
+On macOS Apple Silicon, unzip `Free Local Agent-0.4.0-alpha.1-arm64-mac.zip`, move `Free Local Agent.app` into
 Applications, and open it; the runtime is included and model weights are downloaded
 or imported separately.
 
-1. Open **Models & setup** and inspect the detected hardware and bundled runtime.
+1. Open **Models & hardware** and inspect the detected hardware and bundled runtime.
 2. Choose a model that fits, then **Download model** and **Use model**. Alternatively,
    choose **Import GGUF**. Compatible GGUF architecture and chat-template metadata
    are required; unsupported files or variants can fail validation. An imported
@@ -21,32 +21,42 @@ or imported separately.
 3. Optionally **Check tools & speed**. This checks native tool calling and measures
    generation speed, not complete agent-task quality. Enable **Allow slow mode** only if you
    accept slower CPU/offload operation for a model classified as slow.
-4. Start **New agent task**. New tasks default to **Agent** mode; choose or create
-   a workspace folder and enable the tools your task needs. File reading works
+4. Start **New task**. New tasks default to **Agent** mode; use **Choose folder**
+   to choose or create a workspace folder and enable the tools your task needs. File reading works
    in every mode; project search, file creation/editing, and terminal commands
-   work in Agent; web tools work in Agent and Research after you enable web research. Use
+   work in Agent independently of Research. Web tools work in Agent and Read-only
+   research after you enable both Research and web access in **Plugins**. Use
    **Chat** for conversation and attached-file reading. A chat-only model can
    process attached files through local read stages, but cannot run Agent tasks.
 5. Review proposed edits/commands and **Approve once** or **Deny**. **Stop** cancels
    the task. **Resume task** appears for a paused read-only checkpoint. An
    interrupted agent turn needs a new request; Resume does not replay its actions.
 
-The interface starts with a light porcelain theme and cobalt/violet accents.
-Use the moon/sun toggle in the header to switch themes. The preference is saved
-locally and restored next time the app opens.
+The neutral, Codex-inspired workspace has a task sidebar, a centered conversation,
+and a bottom composer. The composer groups mode, workspace, tool, research, and
+model controls with your message. **Plugins** and **Models & hardware** are in the
+sidebar. Use the moon/sun toggle at the bottom of the sidebar to switch light/dark
+themes; the preference is saved locally. **Read-only research** appears in the mode
+selector when its plugin is enabled. Saved research tasks can still be opened
+with the plugin disabled, without reactivating it.
 
-## Research before doing a task
+## Optional Research plugin
 
-The app bundles a [task-research skill](../local-agent/desktop/skills/task-research/SKILL.md)
-for Agent and Research turns. You do not need to install a skill or connect a
-hosted model account. It guides the local model to inspect project versions,
-resolve changing setup/API requirements, and use the findings while completing
-the task. Simple edits do not need broad research.
+The **Plugins** page contains **Research**, an optional bundled workflow backed
+by the [task-research skill](../local-agent/desktop/skills/task-research/SKILL.md).
+When enabled, it guides Agent and Read-only research tasks to inspect project
+versions, resolve changing setup/API requirements, and use the findings while
+completing the task. It needs no hosted model account or separate installation.
+There is no arbitrary external plugin installer in this version.
 
 1. Use a validated tool-capable model. In Agent, choose a workspace.
-2. Open **Tools** and enable **Web research**. It is off by default; the same
-   saved preference applies to Agent and Research. Chat never registers web tools.
-3. Ask for research and implementation together, for example:
+2. Open **Plugins** and turn on **Enable Research**. It is off by default on a
+   new installation. The plugin can use local evidence without internet access.
+3. Separately enable **Allow web research** for online sources. It also defaults
+   off. Both settings are required for web tools in Agent and Read-only research;
+   Chat never registers web tools. No per-read approval is requested for web
+   searches and public-page fetches after you grant this permission.
+4. Ask for research and implementation together, for example:
 
    > Check the official documentation and release notes for this project's
    > framework version. Implement this feature using compatible APIs, cite the
@@ -59,18 +69,28 @@ retrieval timestamps, a content hash, and explicit source date claims when
 available. Retrieval time is not a publication date or proof that a page is
 current. Missing or conflicting dates should remain uncertain.
 
-With web disabled or unavailable, the skill uses local evidence and identifies
-changing facts it could not verify. It does not use terminal commands to bypass
+With the plugin enabled and web disabled or unavailable, the skill uses local
+evidence and identifies changing facts it could not verify. It does not use terminal commands to bypass
 disabled research tools. Approved setup/install commands retain their normal
 network access and approval requirements. Research does not authorize unrelated
 upgrades, automatically update the model, or install app updates. Model quality
 still affects how well it follows the skill; verify its findings and actual checks.
 
+Turning off **Enable Research** removes research instructions and web tools from
+the next turn. File reading, project search, file editing, and terminal controls
+remain in **Tools** and work independently. Plugin and web preferences persist
+separately; disabling Research retains the saved web permission for your next
+explicit enable. Changes are unavailable while a task is running. Legacy version
+1/2 settings with explicit web research consent migrate with Research enabled;
+version 3 settings missing a plugin toggle default off. Chats, attachments,
+selected models, workspaces, and undo records are preserved. See the
+[0.4 workspace and plugin validation record](workspace-plugin-validation.md).
+
 ## Creating a WordPress project
 
 Use Agent mode for work that creates files or executes commands. An older saved
-Chat conversation remains read-only; start **New agent task** to build a project.
-The current Qwen4B test created approved files, but its complete WordPress setup
+Chat conversation remains read-only; start **New task** in Agent mode to build a project.
+An earlier Qwen4B test created approved files, but its complete WordPress setup
 failed validation and did not start a site. A separate two-file theme task passed
 file creation, readback, and static checks, but no PHP or WordPress runtime ran.
 Review generated configuration and reported checks rather than treating file
@@ -78,7 +98,7 @@ creation as successful installation.
 
 1. Select a model that has passed **Check tools & speed**. A chat-only model
    cannot create project files or run commands.
-2. Choose **Agent**, then **Choose workspace** or the workspace folder control.
+2. Choose **Agent**, then **Choose folder** in the composer.
    The native picker can create a new folder. Select an empty folder for a new
    project; start a new task if you want to change an existing task's workspace.
 3. In **Tools**, enable **Create & edit files** and **Terminal**. File
@@ -105,7 +125,7 @@ creation as successful installation.
    and a successful runtime check. File creation alone does not prove that the
    site is installed, healthy, or ready to publish.
 
-**Undo change** treats a new-file batch as a group, removing the unchanged files
+**Undo** treats a new-file batch as a group, removing the unchanged files
 it created and any newly created directories that remain empty. Files changed
 outside the app are preserved. Undo cannot reverse package installations,
 database changes, or other terminal-command side effects.

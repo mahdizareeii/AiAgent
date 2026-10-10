@@ -28,22 +28,50 @@ test('Agent and Research carry the shipped skill with actual access/date without
   const skill = await loadTaskResearchSkill(fileURLToPath(new URL('../skills/', import.meta.url)));
   const task = 'Use the current release compatible with this project.\nKeep سلام 🌍 unchanged.';
   for (const mode of ['coding', 'research'] as const) {
-    const prompt = agentPrompt({ ...options, mode, currentDate: '2026-10-10' }, task, skill);
+    const prompt = agentPrompt({ ...options, mode, plugins: { taskResearch: true }, currentDate: '2026-10-10' }, task, skill);
     assert.ok(prompt.endsWith(`USER TASK AND LOCAL CONTEXT:\n${task}`));
     assert.equal(prompt.split(skill.instructions).length, 2, 'Load the entire bundled instruction body exactly once.');
     assert.match(prompt, /Web research is OFF/);
     assert.match(prompt, /Current UTC date.*2026-10-10/);
-    const online = agentPrompt({ ...options, mode, utilities: { ...options.utilities, webResearch: true } }, task, skill);
+    const online = agentPrompt({ ...options, mode, plugins: { taskResearch: true }, utilities: { ...options.utilities, webResearch: true } }, task, skill);
     assert.match(online, /Web research is enabled/);
   }
-  assert.ok(!agentPrompt({ ...options, mode: 'assistant' }, task, skill).includes(skill.instructions));
+  assert.ok(!agentPrompt({ ...options, mode: 'assistant', plugins: { taskResearch: true } }, task, skill).includes(skill.instructions));
+  for (const mode of ['coding', 'research'] as const) {
+    const disabled = agentPrompt({ ...options, mode, utilities: { ...options.utilities, webResearch: true } }, task, skill);
+    assert.ok(!disabled.includes(skill.instructions));
+    assert.doesNotMatch(disabled, /OPTIONAL PLUGIN|Web research is enabled/);
+    assert.ok(disabled.endsWith(task));
+  }
 });
 
 test('missing packaged skill prevents backend startup before launching an executable', async () => {
   const backend = new GooseBackend({ ...options, executable: '/missing-executable-must-not-start',
+    plugins: { taskResearch: true },
     skillsDirectory: fileURLToPath(new URL('./nonexistent-skills/', import.meta.url)) });
   await assert.rejects(backend.start(), /bundled Task research skill could not be loaded/);
   await backend.stop();
+});
+
+test('an enabled plugin without a bundled skills directory fails before launching an executable', async () => {
+  const backend = new GooseBackend({ ...options, executable: '/missing-executable-must-not-start', plugins: { taskResearch: true } });
+  await assert.rejects(backend.start(), /enabled Task research plugin.*bundled skills directory is missing/);
+  await backend.stop();
+});
+
+test('backend independently removes web registration when the research plugin, permission or mode is disabled', () => {
+  for (const mode of ['coding', 'research', 'assistant'] as const) {
+    for (const taskResearch of [false, true]) {
+      for (const webResearch of [false, true]) {
+        const environment = backendEnvironment({ ...options, mode, plugins: { taskResearch }, utilities: { ...options.utilities, webResearch } });
+        const actual = JSON.parse(environment.LOCAL_AGENT_UTILITIES!);
+        assert.equal(actual.webResearch, mode !== 'assistant' && taskResearch && webResearch);
+        assert.equal(Boolean(environment.LOCAL_AGENT_ACTION_URL), mode === 'coding');
+      }
+    }
+  }
+  const missingPluginPreference = backendEnvironment({ ...options, utilities: { ...options.utilities, webResearch: true } });
+  assert.equal(JSON.parse(missingPluginPreference.LOCAL_AGENT_UTILITIES!).webResearch, false);
 });
 
 test('enabled project actions require an owned loopback approval endpoint', () => {
