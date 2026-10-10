@@ -87,6 +87,7 @@ export interface Attachment {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  thinking?: string;
 }
 
 export interface AgentSession {
@@ -150,6 +151,7 @@ export interface LocalAgentBridge {
   cancelDownload(): Promise<void>;
   selectModel(id: string): Promise<void>;
   selectProject(): Promise<string | null>;
+  createProject(options: { name: string }): Promise<string | null>;
   selectFiles(): Promise<Attachment[]>;
   createSession(options: { mode: Mode; projectPath?: string }): Promise<{ id: string }>;
   loadSession(id: string): Promise<AgentSession>;

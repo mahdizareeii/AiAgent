@@ -6,6 +6,9 @@ import Icon from './Icons';
 import ModelSetup from './ModelSetup';
 import Utilities from './Utilities';
 import Plugins from './Plugins';
+import WorkingDetails from './WorkingDetails';
+import CreateFolderDialog from './CreateFolderDialog';
+import { appendThinking } from '../thinking';
 import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, Mode, PermissionRequest, StageProgress, ToolActivity, UtilityPreferences } from './types';
 
 const modes: { id: Mode; name: string; icon: 'code' | 'search' | 'spark'; description: string; examples: string[] }[] = [
@@ -85,6 +88,8 @@ export default function App() {
   const [importing, setImporting] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [utilitiesOpen, setUtilitiesOpen] = useState(false);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
   const [view, setView] = useState<'workspace' | 'plugins'>('workspace');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('free-local-agent-theme') === 'dark' ? 'dark' : 'light'; }
@@ -146,7 +151,16 @@ export default function App() {
       if (event.sessionId && event.sessionId !== sessionRef.current) return;
       if (event.type === 'stage') { setStage(event); return; }
       if (event.type === 'message') {
-        if (event.thinking) { setThinking(true); return; }
+        if (event.thinking) {
+          setThinking(true);
+          setMessages(current => {
+            const last = current.at(-1);
+            return last?.role === 'assistant'
+              ? [...current.slice(0, -1), { ...last, thinking: appendThinking(last.thinking ?? '', event.text) }]
+              : [...current, { role: 'assistant', content: '', thinking: appendThinking('', event.text) }];
+          });
+          return;
+        }
         setThinking(false);
         setMessages((current) => {
           const last = current.at(-1);
@@ -154,7 +168,7 @@ export default function App() {
         });
       } else if (event.type === 'tool') {
         setThinking(false);
-        setTools((current) => current.some((tool) => tool.id === event.id) ? current.map((tool) => tool.id === event.id ? { ...tool, ...event } : tool) : [...current, event]);
+        setTools((current) => current.some((tool) => tool.id === event.id) ? current.map((tool) => tool.id === event.id ? { ...tool, ...event, title: event.title && event.title !== 'Tool' ? event.title : tool.title } : tool) : [...current, event]);
       } else if (event.type === 'permission') {
         setPermissions((current) => current.some((request) => request.requestId === event.requestId) ? current : [...current, event]);
       } else if (event.type === 'done') {
@@ -183,8 +197,8 @@ export default function App() {
   }, [setupOpen]);
   useEffect(() => {
     if (view === 'plugins') pluginHeadingRef.current?.focus();
-    else if (!setupOpen && !utilitiesOpen) inputRef.current?.focus();
-  }, [view, setupOpen, utilitiesOpen]);
+    else if (!setupOpen && !utilitiesOpen && !createFolderOpen) inputRef.current?.focus();
+  }, [view, setupOpen, utilitiesOpen, createFolderOpen]);
   useEffect(() => {
     if (utilitiesOpen) utilitiesRef.current?.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled)')?.focus();
   }, [utilitiesOpen]);
@@ -237,9 +251,24 @@ export default function App() {
     } finally { selectingProjectRef.current = false; setSelectingProject(false); }
   }
 
+  function openCreateFolder() {
+    if (!bridge || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || sessionRef.current) return;
+    setFolderError(null); setCreateFolderOpen(true);
+  }
+
+  async function createFolder(name: string) {
+    if (!bridge || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || sessionRef.current) return;
+    selectingProjectRef.current = true; setSelectingProject(true); setFolderError(null);
+    try {
+      const created = await bridge.createProject({ name });
+      if (created) { setProjectPath(created); setNotice(`Created workspace ${folderName(created)}.`); setCreateFolderOpen(false); await refresh(); }
+    } catch (reason) { setFolderError(errorMessage(reason)); }
+    finally { selectingProjectRef.current = false; setSelectingProject(false); }
+  }
+
   async function sendMessage() {
     const text = draft.trim();
-    if (!bridge || !ready || !text || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || download || calibrating || importing || settingsBusyRef.current || setupBusy) return;
+    if (!bridge || !ready || !text || createFolderOpen || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || download || calibrating || importing || settingsBusyRef.current || setupBusy) return;
     if (mode === 'coding' && selectedModel?.toolCapable === false) { setError('This model supports chat only. Choose a model with agent tools to create a project, or switch to Chat.'); return; }
     if (files.length && !status?.utilities.fileReading) { setError('Enable Read files in Tools to use your attached files.'); return; }
     let taskProjectPath = projectPath;
@@ -260,7 +289,7 @@ export default function App() {
         currentId = created.id;
         sessionRef.current = currentId; setSessionId(currentId);
       }
-      setMessages((current) => [...current, { role: 'user', content: text + (files.length ? `\n\nAttached: ${files.map((file) => file.name).join(', ')}` : '') }]);
+      setMessages((current) => [...current, { role: 'user', content: text + (files.length ? `\n\nAttached: ${files.map((file) => file.name).join(', ')}` : '') }, { role: 'assistant', content: '' }]);
       setDraft(''); setFiles([]); started = true;
       await bridge.send({ sessionId: currentId, text, ...(files.length ? { files } : {}) });
       await refresh();
@@ -340,8 +369,9 @@ export default function App() {
 
   async function resumeTask() {
     const id = sessionRef.current;
-    if (!id || !bridge || !ready || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || download || calibrating || importing || setupBusy) return;
+    if (!id || !bridge || !ready || createFolderOpen || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || download || calibrating || importing || setupBusy) return;
     setError(null); setBusy(true); busyRef.current = true; setThinking(false); setPermissions([]); setTools([]);
+    setMessages(current => current.at(-1)?.role === 'user' ? [...current, { role: 'assistant', content: '' }] : current);
     setStage({ stage: 'resuming', message: 'Resuming from the saved checkpoint' });
     try {
       await bridge.resume(id);
@@ -361,13 +391,18 @@ export default function App() {
     setPermissions((current) => current.filter((item) => item.requestId !== request.requestId));
   }
 
-  const locked = busy || loadingSession || selectingProject || !!download || !!calibrating || importing || settingsBusy || setupBusy;
+  const locked = busy || loadingSession || selectingProject || !!download || !!calibrating || importing || settingsBusy || setupBusy || createFolderOpen;
 
   return <div className="app-shell">
     <aside className="sidebar" aria-label="Task navigation">
       <div className="brand"><Icon name="brand" size={20} /><span>Free Local Agent</span></div>
       <button className="new-chat" disabled={locked} onClick={() => newChat()}><Icon name="plus" size={17} />New task</button>
       <button className={`sidebar-link plugins-link ${view === 'plugins' ? 'selected' : ''}`} aria-label="Plugins" aria-current={view === 'plugins' ? 'page' : undefined} onClick={() => setView('plugins')}><Icon name="plugin" size={17} />Plugins{researchEnabled && <span className="nav-count" aria-hidden="true" title="One plugin enabled">1</span>}</button>
+      <section className="workspace-section" aria-label="Workspace folder">
+        <div className="workspace-heading">Workspace</div>
+        {projectPath && <div className="sidebar-workspace" title={projectPath}><Icon name="folder" size={14} /><span>{folderName(projectPath)}</span></div>}
+        <div className="workspace-actions"><button disabled={locked || !bridge || !!sessionId} title={sessionId ? 'Start a new task to change its workspace' : 'Choose an existing workspace folder'} onClick={() => void action(chooseProject)}><Icon name="folder" size={13} />Add folder</button><button disabled={locked || !bridge || !!sessionId} title={sessionId ? 'Start a new task to change its workspace' : 'Create a new workspace folder'} onClick={openCreateFolder}><Icon name="plus" size={13} />Create folder</button></div>
+      </section>
       <div className="sidebar-heading">Tasks</div>
       <nav className="session-list" aria-label="Saved tasks">
         {!status?.sessions.length && <p className="empty-history">Your tasks will appear here.</p>}
@@ -397,9 +432,11 @@ export default function App() {
           <div className="suggestions">{chosenMode.examples.map((example) => <button key={example} disabled={locked} onClick={() => { setDraft(example); inputRef.current?.focus(); }}><Icon name={chosenMode.icon} size={16} /><span>{example}</span></button>)}</div>
           {!ready && <button className="setup-prompt" onClick={() => setSetupOpen(true)}><span className="status-dot" />Choose a local model to begin<Icon name="chevron" size={13} /></button>}
         </div> : <div className="message-list">
-          {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></div></article>)}
-          {tools.length > 0 && <div className="tool-activity" aria-label="Tool activity">{tools.map((tool) => <details key={tool.id}><summary><span className={`tool-dot ${tool.status === 'completed' || tool.status === 'success' ? 'complete' : tool.status === 'failed' || tool.status === 'error' ? 'failed' : ''}`} /><span>{tool.title}</span><span className="tool-status">{tool.status}</span></summary>{tool.input !== undefined && <pre>{displayValue(tool.input)}</pre>}{tool.output !== undefined && <pre>{displayValue(tool.output)}</pre>}</details>)}</div>}
-          {busy && <div className="working-status" role="status"><span className="working-dots"><i /><i /><i /></span>{permissions.length ? 'Waiting for your approval' : thinking ? 'Thinking locally…' : 'Working…'}</div>}
+          {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-body">
+            {message.role === 'assistant' && (message.thinking || (index === messages.length - 1 && (busy || tools.length > 0))) && <WorkingDetails thinking={message.thinking} active={busy && index === messages.length - 1} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={index === messages.length - 1 ? tools : undefined} />}
+            {message.content && <><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></>}
+          </div></article>)}
+          {messages.at(-1)?.role !== 'assistant' && (busy || tools.length > 0) && <WorkingDetails active={busy} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={tools} />}
         </div>}
         <div ref={endRef} />
       </div>
@@ -426,6 +463,7 @@ export default function App() {
     </main>
 
     {utilitiesOpen && status && <div className="modal-backdrop" onKeyDown={(event) => { if (event.key === 'Escape') setUtilitiesOpen(false); trapDialogFocus(event, utilitiesRef.current); }}><section className="tools-dialog" ref={utilitiesRef} role="dialog" aria-modal="true" aria-labelledby="tools-title"><div className="tools-dialog-header"><h2 id="tools-title">Agent tools</h2><button className="icon-button" aria-label="Close tools" onClick={() => setUtilitiesOpen(false)}><Icon name="close" size={18} /></button></div><p className="muted">Choose what the agent can access. Preferences apply to your next task; changes are unavailable while a task is running.</p>{error && <p className="inline-error" role="alert">{error}</p>}<Utilities preferences={status.utilities} mode={mode} toolCapable={selectedModel?.toolCapable} projectSelected={!!projectPath} calibrated={calibrated} disabled={locked || !bridge} onChange={setUtilities} /><button className="text-button tools-plugin-link" onClick={() => { setUtilitiesOpen(false); setView('plugins'); }}><Icon name="plugin" size={15} />Manage optional Research in Plugins<Icon name="chevron" size={13} /></button></section></div>}
+    {createFolderOpen && <CreateFolderDialog busy={selectingProject} error={folderError} onCreate={createFolder} onClose={() => { if (!selectingProjectRef.current) setCreateFolderOpen(false); }} onKeyDown={(event, container) => { if (event.key === 'Escape' && !selectingProjectRef.current) setCreateFolderOpen(false); trapDialogFocus(event, container); }} />}
     {setupOpen && <ModelSetup status={status} mode={mode} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} importing={importing} download={download} stage={stage} error={error} hasBridge={!!bridge} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && !locked) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onSelect={(id) => settingsAction(() => bridge!.selectModel(id))} onDownload={downloadModel} onCancelDownload={cancelDownload} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
     {permissions[0] && <PermissionDialog key={permissions[0].requestId} request={permissions[0]} onRespond={respondPermission} />}
   </div>;

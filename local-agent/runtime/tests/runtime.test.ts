@@ -35,10 +35,13 @@ async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardw
 test('pinned engine starts without loading weights; private offline process strips inherited secrets and reuses a verified model',async t=>{
   const {runtime,directory,launches}=await fixture(t);const status=await runtime.start();assert.equal(status.state,'ready');assert.equal(status.baseUrl,null);
   const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.toolCapable,true);assert.equal(prepared.model,'local-agent-fixture-4b');assert.match(prepared.apiKey,/^[a-f0-9]{64}$/);assert.equal(prepared.measuredTokensPerSecond,42);assert.equal(prepared.outputTokens,2048);assert.equal(runtime.getStatus().profile?.outputTokens,2048);
-  const env=await runtime.requestJson<{secret?:string;tools?:string;rpc?:string;flags:string[];pid:number}>('/env');assert.equal(env.secret,undefined);assert.equal(env.tools,undefined);assert.equal(env.rpc,undefined);
+  const env=await runtime.requestJson<{secret?:string;tools?:string;rpc?:string;flags:string[];pid:number;calibrationThinking?:boolean}>('/env');assert.equal(env.secret,undefined);assert.equal(env.tools,undefined);assert.equal(env.rpc,undefined);
   for(const flag of ['--offline','--no-agent','--no-webui','--no-ui-mcp-proxy','--no-cache-prompt','--no-cache-idle-slots','--no-context-shift'])assert(env.flags.includes(flag));
   assert.equal(env.flags[env.flags.indexOf('--cache-ram')+1],'0');assert.equal(env.flags[env.flags.indexOf('--parallel')+1],'1');assert.equal(env.flags[env.flags.indexOf('--host')+1],'127.0.0.1');
   assert.equal(env.flags[env.flags.indexOf('--predict')+1],'2048');assert.equal(env.flags[env.flags.indexOf('--ctx-size')+1],'8192');
+  assert.equal(env.flags[env.flags.indexOf('--reasoning')+1],'auto');assert.equal(env.flags[env.flags.indexOf('--reasoning-format')+1],'deepseek');
+  assert.equal(env.flags[env.flags.indexOf('--reasoning-budget')+1],'1024');
+  assert.equal(env.calibrationThinking,false,'The bounded tool calibration must continue to request thinking off explicitly.');
   assert.equal((await fetch(`${prepared.baseUrl}/props`)).status,401);assert.deepEqual((await readdir(directory)).filter(f=>f.startsWith('.inference-key-')),[]);
   const again=await runtime.prepareModel(spec.id);assert.equal(again.baseUrl,prepared.baseUrl);assert.equal((await runtime.requestJson<{pid:number}>('/env')).pid,env.pid);assert.equal(launches.filter(a=>a.includes('--model')).length,1);
   await runtime.stop();assert.equal(runtime.getStatus().state,'stopped');await assert.rejects(fetch(`${prepared.baseUrl}/props`));
@@ -49,6 +52,7 @@ test('allocation failures reduce batches before the bounded 4K CPU profile, with
   const lower=await runtime.restartLowerProfile();assert.equal(lower.contextTokens,4096);assert.equal(runtime.getStatus().profile?.backend,'cpu');assert.equal(lower.outputTokens,1024);assert.equal(runtime.getStatus().profile?.outputTokens,1024);await assert.rejects(runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});
   assert.deepEqual(launches.filter(a=>a.includes('--model')).map(a=>a[a.indexOf('--batch-size')+1]),['512','256','128']);
   assert.deepEqual(launches.filter(a=>a.includes('--model')).map(a=>a[a.indexOf('--predict')+1]),['2048','2048','1024']);
+  assert.deepEqual(launches.filter(a=>a.includes('--model')).map(a=>a[a.indexOf('--reasoning-budget')+1]),['1024','1024','512']);
 });
 
 test('a native context cap reduces the generation allowance to one quarter of the confirmed context',async t=>{

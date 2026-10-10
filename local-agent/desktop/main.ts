@@ -6,12 +6,14 @@ import path from 'node:path';
 import { z } from 'zod';
 import { LocalInferenceRuntime, probeHardware } from '../runtime/index.ts';
 import { GooseBackend } from './backend.ts';
+import { appendThinking } from './thinking.ts';
 import { assertAgentCapabilities, taskInstructions } from './agent-policy.ts';
 import { loadTaskResearchSkill } from './skills/task-research.ts';
 import { LocalActions } from './actions.ts';
 import { createActionHost } from './action-host.ts';
 import { BudgetedInference, createInferenceGateway } from './inference-gateway.ts';
 import { StagedWork, type Checkpoint } from './staging.ts';
+import { createWorkspaceFolder, persistWorkspaceSelection, selectWorkspaceFolder } from './workspace.ts';
 import { emptyState, migrateState, utilitySchema, pluginSchema, effectiveUtilities, type SavedState, type SavedSession } from './state.ts';
 import type { AgentEvent, AgentStatus, Attachment, ChatMessage, Mode, PermissionRequest } from './renderer/types.ts';
 
@@ -181,7 +183,7 @@ async function buildPrompt(session: SavedSession, text: string, sourceContext: s
 }
 
 async function send(options: { sessionId: string; text: string; files?: Attachment[]; resume?: boolean }): Promise<void> {
-  if (updatingCapabilities) throw new Error('Wait for tool and plugin settings to finish saving.');
+  if (updatingCapabilities) throw new Error('Wait for tool, plugin, or folder settings to finish.');
   if (active) throw new Error('A local response is already running. Stop it or wait for completion.');
   const session = getSession(options.sessionId);
   if (!state.selectedModel) throw new Error('Download and select a local model first.');
@@ -195,6 +197,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
   const turnDirectory = path.join(dataDirectory(), 'turns', randomUUID());
   let host: Awaited<ReturnType<typeof createActionHost>> | undefined;
   let answer = '';
+  let thinking = '';
   let gateway: Awaited<ReturnType<typeof createInferenceGateway>> | undefined;
   let stages: StagedWork | undefined;
   let userAdded = false;
@@ -226,7 +229,12 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
     if (!prepared.toolCapable) {
       await stages.mark('agent');
       const completion = await inference.completeJson({ messages: [{ role: 'user', content: prompt }], stream: false }, controller.signal);
-      answer = completion.choices?.[0]?.message?.content ?? '';
+      const message = completion.choices?.[0]?.message;
+      const suppliedThinking = typeof message?.reasoning_content === 'string' ? message.reasoning_content
+        : typeof message?.reasoning === 'string' ? message.reasoning : '';
+      thinking = appendThinking('', suppliedThinking);
+      if (thinking) emit({ type: 'message', sessionId: session.id, role: 'assistant', thinking: true, text: thinking });
+      answer = typeof message?.content === 'string' ? message.content : '';
       if (!answer) throw new Error('The imported model returned no chat response.');
       emit({ type: 'message', sessionId: session.id, role: 'assistant', text: answer });
       await stages.mark('finished'); return;
@@ -248,7 +256,10 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
       model: prepared.model, baseUrl: gateway.baseUrl, apiKey: gateway.apiKey, contextTokens: effectiveProfile.contextTokens, outputTokens: effectiveProfile.outputTokens, utilities,
       grantedRoots: session.projectPath ? [session.projectPath] : [], grantedFiles: [...session.files.map(file => file.path), ...(requestFile ? [requestFile] : [])],
       actionUrl: host?.url, onEvent: event => {
-        if (event.type === 'message' && !event.thinking) answer += event.text;
+        if (event.type === 'message') {
+          if (event.thinking) thinking = appendThinking(thinking, event.text);
+          else answer += event.text;
+        }
         emit({ ...event, sessionId: session.id });
       } });
     turn.backend = backend;
@@ -265,7 +276,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
     host?.server.closeAllConnections(); host?.server.close();
     for (const item of pending.values()) if (item.sessionId === session.id) item.resolve(false);
     try {
-      if (answer) session.messages.push({ role: 'assistant', content: answer });
+      if (answer || thinking) session.messages.push({ role: 'assistant', content: answer, ...(thinking ? { thinking } : {}) });
       if (userAdded || options.resume) {
         if (session.title === 'New chat') session.title = options.text.trim().slice(0, 60);
         session.updatedAt = new Date().toISOString();
@@ -285,7 +296,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
 function handle(name: string, action: (...args: any[]) => unknown): void {
   ipcMain.handle(`local-agent:${name}`, async (event, ...args) => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted desktop request.');
-    if (updatingCapabilities && name !== 'status') throw new Error('Wait for tool and plugin settings to finish saving.');
+    if (updatingCapabilities && name !== 'status') throw new Error('Wait for tool, plugin, or folder settings to finish.');
     return action(...args);
   });
 }
@@ -354,11 +365,32 @@ function registerHandlers(): void {
   });
   handle('selectProject', async () => {
     if (active) throw new Error('Wait for the current response before changing projects.');
-    const result = await dialog.showOpenDialog(window!, { title: 'Choose or create an agent workspace', buttonLabel: 'Use workspace', properties: ['openDirectory', 'createDirectory'] });
-    if (result.canceled || !result.filePaths[0]) return null;
-    const selected = await realpath(result.filePaths[0]);
-    if (selected === path.parse(selected).root) throw new Error('Choose a specific project folder.');
-    pickedRoots.add(selected); state.projectPath = selected; await save(); return selected;
+    updatingCapabilities = true;
+    try {
+      return await selectWorkspaceFolder({
+        pickDirectory: async () => {
+          const result = await dialog.showOpenDialog(window!, { title: 'Add an agent workspace folder', buttonLabel: 'Use folder', properties: ['openDirectory'] });
+          return result.canceled ? null : result.filePaths[0] ?? null;
+        },
+        assertAvailable: () => { if (active) throw new Error('Wait for the current response before changing projects.'); },
+        persistSelection: selected => persistWorkspaceSelection(selected, state, pickedRoots, save),
+      });
+    } finally { updatingCapabilities = false; emit({ type: 'status' }); }
+  });
+  handle('createProject', async (raw: unknown) => {
+    if (active) throw new Error('Wait for the current response before creating a workspace folder.');
+    const options = z.object({ name: z.string() }).strict().parse(raw);
+    updatingCapabilities = true;
+    try {
+      return await createWorkspaceFolder(options.name, {
+        pickDirectory: async () => {
+          const result = await dialog.showOpenDialog(window!, { title: `Choose where to create ${options.name}`, buttonLabel: 'Create folder here', properties: ['openDirectory'] });
+          return result.canceled ? null : result.filePaths[0] ?? null;
+        },
+        assertAvailable: () => { if (active) throw new Error('Wait for the current response before creating a workspace folder.'); },
+        persistSelection: selected => persistWorkspaceSelection(selected, state, pickedRoots, save),
+      });
+    } finally { updatingCapabilities = false; emit({ type: 'status' }); }
   });
   handle('selectFiles', async () => {
     const result = await dialog.showOpenDialog(window!, { title: 'Attach local files', properties: ['openFile', 'multiSelections'] });

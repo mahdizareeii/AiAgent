@@ -6,6 +6,7 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclie
 import type { AgentEvent, Mode, PluginPreferences, UtilityPreferences } from './renderer/types.ts';
 import { loadTaskResearchSkill, taskResearchInstructions, type TaskResearchSkill } from './skills/task-research.ts';
 import { DEFAULT_PLUGINS, effectiveUtilities } from './state.ts';
+import { appendThinking } from './thinking.ts';
 
 export interface BackendOptions {
   executable: string;
@@ -102,6 +103,7 @@ export class GooseBackend {
   private reviewedActionIds = new Set<string>();
   private actionDenied = false;
   private researchSkill?: TaskResearchSkill;
+  private thinking = '';
   constructor(options: BackendOptions) { this.options = options; }
 
   async start(): Promise<void> {
@@ -131,6 +133,11 @@ export class GooseBackend {
       sessionUpdate: async ({ update }) => {
         if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
           o.onEvent({ type: 'message', text: update.content.text, role: 'assistant' });
+        } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
+          const next = appendThinking(this.thinking, update.content.text);
+          const text = next.slice(this.thinking.length);
+          this.thinking = next;
+          if (text) o.onEvent({ type: 'message', text, role: 'assistant', thinking: true });
         } else if (update.sessionUpdate === 'tool_call') {
           if (/^reviewed[ _]actions:/i.test(update.title)) this.reviewedActionIds.add(update.toolCallId);
           o.onEvent({ type: 'tool', id: update.toolCallId, title: update.title,
@@ -151,7 +158,7 @@ export class GooseBackend {
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
     }), ndJsonStream(Writable.toWeb(this.child.stdin), Readable.toWeb(this.child.stdout) as unknown as ReadableStream<Uint8Array>));
     await this.withTimeout(this.connection.initialize({ protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'free-local-agent-desktop', version: '0.4.0-alpha.1' },
+      clientInfo: { name: 'free-local-agent-desktop', version: '0.4.0-alpha.2' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
     const extensions: object[] = [{ type: 'mcp', timeout: 180,
@@ -177,6 +184,7 @@ export class GooseBackend {
     if (!this.connection || !this.gooseSessionId || this.stopped) throw new Error('Agent is not running.');
     if (this.prompting) throw new Error('An agent task is already running.');
     this.prompting = true;
+    this.thinking = '';
     try {
       await this.connection.prompt({ sessionId: this.gooseSessionId, prompt: [{ type: 'text', text: agentPrompt(this.options, text, this.researchSkill) }] });
       if (this.actionDenied) throw new Error(denialNotice);

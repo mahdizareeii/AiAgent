@@ -1,6 +1,6 @@
 # Free Local Agent setup and developer guide
 
-Free Local Agent **0.4.0-alpha.1** runs local models through a bundled llama.cpp engine. The
+Free Local Agent **0.4.0-alpha.2** runs local models through a bundled llama.cpp engine. The
 packaged app includes the native inference engine, offline Goose backend, and
 research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
@@ -8,7 +8,7 @@ platform support.
 
 ## First launch
 
-On macOS Apple Silicon, unzip `Free Local Agent-0.4.0-alpha.1-arm64-mac.zip`, move `Free Local Agent.app` into
+On macOS Apple Silicon, unzip `Free Local Agent-0.4.0-alpha.2-arm64-mac.zip`, move `Free Local Agent.app` into
 Applications, and open it; the runtime is included and model weights are downloaded
 or imported separately.
 
@@ -21,8 +21,10 @@ or imported separately.
 3. Optionally **Check tools & speed**. This checks native tool calling and measures
    generation speed, not complete agent-task quality. Enable **Allow slow mode** only if you
    accept slower CPU/offload operation for a model classified as slow.
-4. Start **New task**. New tasks default to **Agent** mode; use **Choose folder**
-   to choose or create a workspace folder and enable the tools your task needs. File reading works
+4. Start **New task**. New tasks default to **Agent** mode. Before starting,
+   use **Add folder** in the sidebar to choose an existing workspace, or
+   **Create folder** to name a new folder and choose its parent in the native
+   picker. Enable the tools your task needs. File reading works
    in every mode; project search, file creation/editing, and terminal commands
    work in Agent independently of Research. Web tools work in Agent and Read-only
    research after you enable both Research and web access in **Plugins**. Use
@@ -39,6 +41,45 @@ sidebar. Use the moon/sun toggle at the bottom of the sidebar to switch light/da
 themes; the preference is saved locally. **Read-only research** appears in the mode
 selector when its plugin is enabled. Saved research tasks can still be opened
 with the plugin disabled, without reactivating it.
+
+## Workspace folders
+
+**Add folder** opens the operating system's folder picker for an existing
+workspace. **Create folder** opens a naming dialog, then a native parent-folder
+picker. The app creates one new folder under the selected parent and grants
+access to that child folder. It does not grant access to the parent. Folder
+names cannot contain path separators, control characters, reserved Windows
+names, or trailing dots/spaces.
+
+Creation cannot overwrite an existing file or folder. Canceling the native
+picker creates nothing and preserves the selected workspace. If saving the
+new selection fails after creation, the app keeps your previous workspace and
+grants no new access; its error identifies the created folder, which it leaves
+untouched. Use **Add folder** later to select that folder if needed.
+
+A saved task keeps its original workspace. **Add folder** and **Create folder**
+are unavailable for that task; start **New task** before choosing a different
+workspace. Folder selection and creation are also unavailable during a running
+task, and the host prevents a task from starting while the picker is open.
+
+## Working details
+
+Click **Working** while a response is running to expand the local model's
+thinking, current processing stage, and tool activity. The control is also
+keyboard accessible: Tab to it and press Enter or Space. Tool entries can be
+expanded to inspect their inputs and outputs. Approval prompts retain their
+separate **Approve once** and **Deny** controls.
+
+Thinking appears only when the model emits it. The panel says when thinking
+text has not been provided; the app does not construct a reasoning transcript.
+Thinking is separate from the answer, bounded to 64 KiB per reply, and stored
+locally with the conversation. It can be expanded after completion and restored
+when the task is reopened, including partial thinking captured before a stop or
+error. Tool activity and stage details are current-run information and are not
+restored from saved conversation history. See the
+[0.4.0-alpha.2 Working and folder validation record](working-folders-validation.md).
+This update and its package are kept local and have not been pushed or published
+as a GitHub release.
 
 ## Optional Research plugin
 
@@ -84,7 +125,7 @@ explicit enable. Changes are unavailable while a task is running. Legacy version
 1/2 settings with explicit web research consent migrate with Research enabled;
 version 3 settings missing a plugin toggle default off. Chats, attachments,
 selected models, workspaces, and undo records are preserved. See the
-[0.4 workspace and plugin validation record](workspace-plugin-validation.md).
+[previous 0.4.0-alpha.1 workspace and plugin validation record](workspace-plugin-validation.md).
 
 ## Creating a WordPress project
 
@@ -98,9 +139,9 @@ creation as successful installation.
 
 1. Select a model that has passed **Check tools & speed**. A chat-only model
    cannot create project files or run commands.
-2. Choose **Agent**, then **Choose folder** in the composer.
-   The native picker can create a new folder. Select an empty folder for a new
-   project; start a new task if you want to change an existing task's workspace.
+2. Choose **Agent**, then use sidebar **Add folder** for an existing empty
+   workspace, or **Create folder** to name a new workspace and choose its parent
+   folder. Start **New task** if you want to change an existing task's workspace.
 3. In **Tools**, enable **Create & edit files** and **Terminal**. File
    reading and project search let the model inspect its workspace and results.
 4. Ask for the result you want, for example:

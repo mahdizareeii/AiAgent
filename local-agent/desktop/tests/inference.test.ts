@@ -6,19 +6,29 @@ import { BudgetedInference, compactionPartition, createInferenceGateway, type Ch
 import { DEFAULT_UTILITIES, effectiveUtilities, migrateState } from '../state.ts';
 
 function fixture() {
-  const counted: ChatBody[] = []; let calls = 0; let restarts = 0; let failure: string | undefined;
+  const counted: ChatBody[] = []; const completed: ChatBody[] = []; let calls = 0; let restarts = 0; let failure: string | undefined;
   const runtime: InferenceRuntime = {
     requestJson: async <T>(url: string, raw?: object) => {
       const body = raw as ChatBody;
       if (url.endsWith('input_tokens')) { counted.push(body); return { input_tokens: JSON.stringify(body.messages).length + JSON.stringify(body.tools ?? []).length } as T; }
-      calls++; if (failure) { const value = failure; failure = undefined; throw new Error(value); }
+      calls++; completed.push(body); if (failure) { const value = failure; failure = undefined; throw new Error(value); }
       return { choices: [{ message: { content: 'Saved earlier facts.' } }] } as T;
     },
     requestStream: async () => new Response('data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } }),
     restartLowerProfile: async () => { restarts++; return { contextTokens: 1500, outputTokens: 100 }; },
   };
-  return { runtime, counted, calls: () => calls, restarts: () => restarts, fail: (value: string) => { failure = value; } };
+  return { runtime, counted, completed, calls: () => calls, restarts: () => restarts, fail: (value: string) => { failure = value; } };
 }
+test('bounded local summaries explicitly disable thinking so their allowance remains available for source facts', async () => {
+  const f = fixture();
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
+  assert.equal(await inference.summarize('Verified facts at notes.txt:12.', undefined, 'Create the project'), 'Saved earlier facts.');
+  assert.equal(f.completed.length, 1);
+  assert.equal(f.completed[0].max_tokens, 100);
+  assert.deepEqual(f.completed[0].chat_template_kwargs, { enable_thinking: false });
+  assert.ok(f.counted.every(body => JSON.stringify(body.chat_template_kwargs) === '{"enable_thinking":false}'));
+  assert.equal(f.completed[0].messages[1].content, 'Verified facts at notes.txt:12.');
+});
 test('native token budget includes tools and output reserve; pending exchanges survive compaction', async () => {
   const f = fixture(); const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
   const call = { role: 'assistant', tool_calls: [{ id: 'pending' }], content: null };
@@ -64,14 +74,17 @@ test('an oversized active action history is rejected without summarizing or repl
     { role: 'assistant', tool_calls: [{ id: 'verify' }] }, { role: 'tool', tool_call_id: 'verify', content: 'Passed' }] }), /current request/);
   assert.equal(f.calls(), 0);
 });
-test('gateway rejects browser origins and missing tokens and streams authenticated local completions', async () => {
+test('gateway rejects browser origins and missing tokens and preserves authenticated local reasoning and answer fields', async () => {
   const f = fixture(), controller = new AbortController();
+  const stream = `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'Local model thought — سلام 🌍' } }] })}\n\n` +
+    `data: ${JSON.stringify({ choices: [{ delta: { content: 'Verified answer' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
+  f.runtime.requestStream = async () => new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
   const gateway = await createInferenceGateway(new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 }), controller.signal);
   try {
     assert.equal((await fetch(`${gateway.baseUrl}/v1/models`)).status, 403);
     assert.equal((await fetch(`${gateway.baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${gateway.apiKey}`, Origin: 'https://example.org' } })).status, 403);
     const response = await fetch(`${gateway.baseUrl}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${gateway.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'Hello' }] }) });
-    assert.equal(response.status, 200); assert.match(await response.text(), /\[DONE\]/);
+    assert.equal(response.status, 200); assert.equal(await response.text(), stream);
   } finally { controller.abort(); await gateway.close(); }
 });
 test('disconnected active and queued gateway requests cannot continue or start generation', { timeout: 5000 }, async () => {

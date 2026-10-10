@@ -1,6 +1,16 @@
 # Free Local Agent verification status
 
-## Current 0.4.0-alpha.1 workspace/plugin update — 2026-10-10
+## Current 0.4.0-alpha.2 Working/folder update — 2026-10-10
+
+Expandable model thinking and explicit workspace creation passed **141/141**
+app/runtime tests with public networking denied, **12/12** separate renderer
+scenario groups, a real Qwen3.5 4B thought/answer separation check, and the final
+macOS packaged smoke. A fresh native workspace screenshot is now available;
+visible thinking-keyboard activation and the complete native folder workflow
+remain pending. See the [Working/folder record](working-folders-validation.md)
+for exact limits, measurements, and artifact checksum. Delivery remains local.
+
+## Earlier 0.4.0-alpha.1 workspace/plugin update — 2026-10-10
 
 The focused task workspace and optional Research plugin passed **123/123**
 app/runtime tests with public networking denied, **10/10** additional isolated

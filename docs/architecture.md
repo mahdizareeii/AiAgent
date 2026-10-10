@@ -1,6 +1,6 @@
 # Architecture and trust boundaries
 
-Free Local Agent 0.4.0-alpha.1 uses a custom Electron/React desktop, the Goose v1.53.0 agent
+Free Local Agent 0.4.0-alpha.2 uses a custom Electron/React desktop, the Goose v1.53.0 agent
 engine, a bundled llama.cpp server, and a native research/file sidecar. Goose is
 built from the vendored source with default features disabled and only
 `rustls-tls,disable-update`; online model metadata and telemetry features are not
@@ -77,6 +77,29 @@ leaves chat available with agent tools disabled. Calibration results are current
 held in memory for the runtime session and do not survive its restart.
 Inference is local and offline. First catalogue downloads require the internet;
 copying an imported local GGUF does not. Explicitly enabled web tools are separate.
+
+## Model thinking and working activity
+
+The native engine extracts supported model thoughts into `reasoning_content`
+separately from the final response. Goose forwards those as ACP thought chunks;
+the desktop displays them in an expandable **Working** disclosure together with
+current tool and stage activity. Up to 64 KiB of supplied thoughts per reply are
+saved as a separate chat field, including partial interrupted replies. Only
+answer content enters subsequent conversation prompts and compaction. Models
+that provide no thought text show an explicit unavailable state; the app does
+not manufacture thinking text. Tool/stage activity is current-run UI state and
+is not restored when a chat is reopened.
+
+## Workspace selection
+
+**Add folder** uses a native existing-directory picker. **Create folder** accepts
+a validated single folder name and opens a native parent-directory picker. The
+host creates one new child with nonrecursive `mkdir`, checks canonical paths and
+directory identities, saves the selection, and then grants access to that child.
+An existing file or directory is never overwritten. Cancelling leaves selection
+and grants unchanged; saving failure restores the previous workspace and leaves
+the new folder untouched. Picker and save operations block concurrent requests.
+Saved tasks retain their own folder; changing it requires a new task.
 
 ## Context, stages, and resume
 
@@ -195,7 +218,8 @@ not actual model competence, GPU allocation, or complete-agent speed. Native
 resource smoke tests validate pinned offline manifests, engine version, packaged
 MCP controls, and denied writes without loading an LLM or contacting a public site.
 See [current verification status](build-verification.md), the
-[0.4 workspace and plugin validation record](workspace-plugin-validation.md), and the
+[Working/folder record](working-folders-validation.md), the previous
+[workspace and plugin record](workspace-plugin-validation.md), and the
 [real-model rubric](alpha-validation.md).
 
 macOS arm64 ZIP, Windows x64 portable ZIP, and Ubuntu x64 DEB jobs are configured.

@@ -12,7 +12,7 @@ model server is required. Model weights are a separate download or local GGUF
 import. Once a compatible model is installed, chat and local file work can run
 offline.
 
-**Current version: 0.4.0-alpha.1.** macOS Apple Silicon is the tested platform.
+**Current version: 0.4.0-alpha.2.** macOS Apple Silicon is the tested platform.
 Windows and Linux packaging/CI is configured; native validation is still pending.
 
 ## What Free Local Agent does
@@ -27,6 +27,15 @@ Windows and Linux packaging/CI is configured; native validation is still pending
   approved terminal commands, and restore file snapshots with per-chat undo.
   New files can be proposed as one reviewed batch of 1–20 files, with up to
   512 KiB of total text and grouped undo. PHP and PHTML files can be read and searched.
+- **Choose a workspace folder.** **Add folder** in the sidebar opens an existing
+  folder. **Create folder** asks for a name, then opens a native picker for its
+  parent folder. Creation never overwrites an existing file or folder; canceling
+  the picker creates nothing. Start **New task** to change a saved task's workspace.
+- **Expand the work in progress.** Click **Working**, or focus it and press Enter
+  or Space, to see the current stage, tool activity, and thinking text supplied
+  by the local model. Thinking stays separate from the answer and is saved
+  locally with the reply, including partial text from a stopped or failed turn.
+  A model that does not emit thinking text is identified as such.
 - **Read larger documents gradually.** Text, code, Markdown, and text-based PDFs
   are read in bounded stages and summarized with source references. Progress,
   cancellation, and local read checkpoints help manage longer tasks.
@@ -51,6 +60,14 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 | Agent | Creating or changing a project, then running approved checks in a selected workspace. Research is an optional plugin; Agent requires a validated tool-capable model. |
 | Read-only research | Reading sources and comparing findings. The mode choice appears when Research is enabled; existing saved research tasks remain readable with the plugin off. Web tools require both plugin activation and web permission. |
 | Chat | Conversation, writing, and attached-file reading. Project changes and commands require an Agent task. |
+
+## Workspace
+
+![Free Local Agent 0.4 workspace with Add folder, Create folder, task sidebar, and bottom composer](docs/screenshots/free-local-agent-workspace.png)
+
+*Actual 0.4.0-alpha.2 packaged macOS workspace, captured from a separate initial
+profile before selecting a model. Research starts off. This is a native screenshot,
+not a mocked conversation.*
 
 ## Models and hardware
 
@@ -112,20 +129,27 @@ source hashes and never automatically repeats an agent edit or command.
 
 ## Get started
 
-For a packaged macOS build, unzip `Free Local Agent-0.4.0-alpha.1-arm64-mac.zip`, move
+For a packaged macOS build, unzip `Free Local Agent-0.4.0-alpha.2-arm64-mac.zip`, move
 `Free Local Agent.app` to Applications, and open it. Apple Silicon and macOS 13.3 or newer are
 required. This alpha is unsigned and not notarized.
 
 1. Open **Models & hardware** and review your detected hardware.
 2. Download a model that fits, or **Import GGUF** from a local file.
 3. Select the model; optionally run **Check tools & speed**.
-4. Start **New task**, keep **Agent** selected, choose or create a workspace with
-   **Choose folder**, and describe what to build. Use **Chat** for conversation
+4. Start **New task**, keep **Agent** selected, and choose a workspace before
+   starting: use sidebar **Add folder**, or **Create folder** followed by its
+   parent-folder picker. Describe what to build. Use **Chat** for conversation
    and attachments; enable Research in **Plugins** for its read-only mode.
 5. Review each proposed edit or command before approving it.
 
 See the [setup and developer guide](docs/setup-guide.md) for detailed setup,
 source builds, packaging, storage locations, and permission boundaries.
+
+Expand **Working** during a task to inspect its progress. Afterward, model
+thinking can be expanded again and restored when you reopen the conversation.
+Only model-supplied text is shown; the app does not invent reasoning. Thinking
+storage is bounded to 64 KiB per reply. Current tool/stage activity is not saved
+as conversation history and is not restored on reopening a task.
 
 For a task that depends on changing software:
 
@@ -170,7 +194,11 @@ is retained to preserve existing installations. The app adds no disk encryption.
 
 ## Validation and current limits
 
-The [0.4 workspace and plugin validation record](docs/workspace-plugin-validation.md)
+The [0.4.0-alpha.2 Working and folder validation record](docs/working-folders-validation.md)
+tracks expandable model thinking and native workspace creation. The current
+package and update are local artifacts; this update has not been pushed or
+published as a GitHub release. The previous
+[0.4.0-alpha.1 workspace and plugin validation record](docs/workspace-plugin-validation.md)
 tracks the redesigned interface and independent research controls. The model
 setup image above is historical 0.3 evidence, not a capture of the new workspace.
 

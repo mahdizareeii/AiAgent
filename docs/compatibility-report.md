@@ -1,6 +1,17 @@
 # Free Local Agent compatibility report
 
-## Current 0.4.0-alpha.1 workspace/plugin update — 2026-10-10
+## Current 0.4.0-alpha.2 Working/folder update — 2026-10-10
+
+The macOS arm64 update passed **141 app/runtime tests**, **12 separate renderer
+scenario groups**, and the final offline packaged smoke. A native Qwen3.5 4B run
+verified separate model thoughts and final output with the bounded reasoning
+profile. A short calibration measured **36.80 tokens/sec** on M5/24 GiB using
+Slow Metal, 8K context, batch 256, and microbatch 64; this is not representative
+task latency or peak memory. Fresh native workspace capture succeeded. See the
+[Working/folder record](working-folders-validation.md) for measured scope and
+remaining native UI/Windows/Linux checks.
+
+## Earlier 0.4.0-alpha.1 workspace/plugin update — 2026-10-10
 
 The update retains the existing inference engine and hardware profiles. The
 macOS arm64 package, **123 app/runtime tests**, **10 separate renderer checks**,

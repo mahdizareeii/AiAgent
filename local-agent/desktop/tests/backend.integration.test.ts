@@ -25,6 +25,8 @@ const requireIntegration = process.env.LOCAL_AGENT_REQUIRE_INTEGRATION === '1';
 const model = 'local-agent-integration-fixture';
 const plainReply = 'LOCAL_AGENT_PLAIN_OK';
 const readPrompt = 'READ_LOCAL_FIXTURE';
+const thoughtPrompt = 'SHOW_LOCAL_THOUGHT_FIXTURE';
+const thoughtText = 'Inspect the selected folder first.\nسلام 🌍\nThen report the verified result.';
 const fixtureText = 'offline fixture text from the granted document — سلام 😀';
 const citation = '[offline fixture source](https://example.org/local-agent-fixture)';
 const apiKey = 'local-agent-owned-fixture-key';
@@ -80,6 +82,21 @@ function sendFragmentedToolStream(response: ServerResponse, name: string, argume
     for (let offset = 0; offset < bytes.length; offset += 11) response.write(bytes.subarray(offset, offset + 11));
   }
   response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } })}\n\n`);
+  response.end('data: [DONE]\n\n');
+}
+
+function sendThoughtStream(response: ServerResponse): void {
+  const base = { id: 'local-agent-thought-fixture', object: 'chat.completion.chunk', created: 1, model };
+  response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+  const characters = Array.from(thoughtText);
+  const frames: object[] = [];
+  for (let offset = 0; offset < characters.length; offset += 5) frames.push({ reasoning_content: characters.slice(offset, offset + 5).join('') });
+  frames.push({ content: plainReply });
+  for (const delta of frames) {
+    const bytes = Buffer.from(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { role: 'assistant', ...delta }, finish_reason: null }] })}\n\n`);
+    for (let offset = 0; offset < bytes.length; offset += 11) response.write(bytes.subarray(offset, offset + 11));
+  }
+  response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } })}\n\n`);
   response.end('data: [DONE]\n\n');
 }
 
@@ -174,6 +191,7 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
         chats.push(chat);
         const messages = chat.messages ?? [];
         const wantsRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(readPrompt));
+        const wantsThoughts = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(thoughtPrompt));
         const wantsScaffold = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(scaffoldPrompt));
         const readResult = messages.find(message => message.role === 'tool' && JSON.stringify(message.content).includes(fixtureText));
         // Goose may make auxiliary title-generation requests without agent tools.
@@ -189,6 +207,7 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
           else if (batch) sendFragmentedToolStream(response, writeTool.function.name, JSON.stringify({ files: scaffold }), 'batch-scaffold');
           else sendFragmentedToolStream(response, writeTool.function.name, JSON.stringify(next), `write-${scaffold.indexOf(next)}`);
         }
+        else if (wantsThoughts) sendThoughtStream(response);
         else if (!wantsRead) sendStream(response, { content: plainReply });
         else if (readResult) sendStream(response, { content: `LOCAL_AGENT_READ_OK ${citation}` });
         else {
@@ -235,6 +254,20 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
     throw error;
   }
 }
+
+test('real Goose streams local-model thoughts separately from its final answer through ACP',
+  { skip: skipReason('assistant'), timeout: 120_000 }, async () => {
+    const run = await fixture('assistant');
+    try {
+      await run.backend.prompt(thoughtPrompt);
+      const messages = run.events.filter(event => event.type === 'message');
+      assert.equal(messages.filter(event => event.thinking).map(event => event.text).join(''), thoughtText);
+      assert.equal(messages.filter(event => !event.thinking).map(event => event.text).join(''), plainReply);
+      assert.equal(run.events.some(event => event.type === 'tool'), false);
+      assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
 
 test('real Goose enabled research plugin without web permission uses local files and authenticates the loopback provider',
   { skip: skipReason('research'), timeout: 120_000 }, async () => {

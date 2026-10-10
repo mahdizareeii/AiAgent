@@ -108,7 +108,7 @@ try {
     const transport = new StdioClientTransport({ command, args, env, cwd: directory, stderr: 'pipe' });
     let stderr = '';
     transport.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
-    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.4.0-alpha.1' });
+    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.4.0-alpha.2' });
     connections.push({ client, transport });
     try { await bounded(client.connect(transport), `${label} initialization`); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}${stderr ? `\n${stderr}` : ''}`); }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULT_PLUGINS, DEFAULT_UTILITIES, effectiveUtilities, emptyState, migrateState, pluginSchema } from '../state.ts';
+import { MAX_THINKING_BYTES } from '../thinking.ts';
 
 test('web research requires both the plugin and web permission and stays unavailable in Chat', () => {
   for (const mode of ['coding', 'research', 'assistant'] as const) {
@@ -70,4 +71,35 @@ test('research capability does not enable project mutations in read-only modes',
     assert.equal(effective.terminal, false);
     assert.equal(effective.projectSearch, false);
   }
+});
+
+test('saved local-model thoughts stay separate from answers and older chats remain compatible', () => {
+  const session = { id: '596c9bc7-bacc-44bf-9f43-9eb5108acb5d', title: 'Task with work details', updatedAt: '2026-10-10T00:00:00Z',
+    mode: 'coding' as const, projectPath: '/project', files: [{ name: 'notes.txt', path: '/project/notes.txt' }],
+    messages: [
+      { role: 'user' as const, content: 'Build the project' },
+      { role: 'assistant' as const, content: 'Created the approved files.', thinking: 'Inspect the project before changing it. سلام 🌍' },
+      { role: 'assistant' as const, content: '', thinking: 'Partial thought retained after interruption.' },
+    ] };
+  for (const version of [1, 2, 3]) {
+    const migrated = migrateState({ ...emptyState(), version, sessions: [session] });
+    assert.deepEqual(migrated.sessions, [session]);
+    const legacyMessage = { role: 'assistant', content: 'An older reply without thoughts' };
+    const older = migrateState({ ...emptyState(), version, sessions: [{ ...session, messages: [legacyMessage] }] });
+    assert.deepEqual(older.sessions[0].messages, [legacyMessage]);
+  }
+});
+
+test('migration bounds oversized thoughts while preserving the answer, attachments and user text', () => {
+  const session = { id: '596c9bc7-bacc-44bf-9f43-9eb5108acb5d', title: 'Existing chat', updatedAt: '2026-10-10T00:00:00Z',
+    mode: 'coding', files: [{ name: 'notes.txt', path: '/project/notes.txt' }], messages: [
+      { role: 'user', content: 'Keep my request.', thinking: 'User messages are not model thoughts.' },
+      { role: 'assistant', content: 'Keep my complete answer.', thinking: '🌍'.repeat(MAX_THINKING_BYTES) },
+    ] };
+  const migrated = migrateState({ ...emptyState(), sessions: [session] }).sessions[0];
+  assert.deepEqual(migrated.messages[0], { role: 'user', content: 'Keep my request.' });
+  assert.equal(migrated.messages[1].content, 'Keep my complete answer.');
+  assert.equal(new TextEncoder().encode(migrated.messages[1].thinking).length, MAX_THINKING_BYTES);
+  assert.ok(!migrated.messages[1].thinking?.includes('\ufffd'));
+  assert.deepEqual(migrated.files, session.files);
 });
