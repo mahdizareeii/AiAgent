@@ -1,6 +1,6 @@
 # Architecture and trust boundaries
 
-Local Agent 0.2 uses a custom Electron/React desktop, the Goose v1.53.0 agent
+Free Local Agent 0.3 uses a custom Electron/React desktop, the Goose v1.53.0 agent
 engine, a bundled llama.cpp server, and a native research/file sidecar. Goose is
 built from the vendored source with default features disabled and only
 `rustls-tls,disable-update`; online model metadata and telemetry features are not
@@ -102,10 +102,21 @@ The user chooses file reading, project search, file editing, terminal, and web
 research. **Web research defaults to false.** Disabled tools are omitted from the
 MCP tool list, including network tools. Modes and model tool support further
 constrain the offered capabilities. File reading works in every mode, project
-search/editing/terminal only in Coding, and web tools only in Research. A chat-only
+search/editing/terminal only in Agent, and web tools in Agent and Research when
+enabled. Chat never registers network tools, including when a saved preference
+is true; the sidecar enforces that mode boundary too. A chat-only
 model still uses enabled read stages for attachments but bypasses Goose and agent
 tools for the final response. The research sidecar exposes `inspect_file`
 alongside enabled file reads; inspection returns a hash/size, not document text.
+
+Agent and Research turns load the app-owned `task-research/SKILL.md` from the
+packaged ASAR before starting Goose. The loader validates identity and size;
+external Goose skill discovery remains disabled. These instructions guide
+version-aware primary-source research, bounded findings, and implementation
+with the existing approval tools. The complete skill enters native token counting
+alongside the request and tool schemas. Web-disabled turns cannot register web
+tools, and the skill forbids network research workarounds. Chat-only imports
+receive local-context instructions and never advertise tools they cannot call.
 
 Edits and commands require a decision for each pending action in main. The UI shows
 arguments and a diff or command. Denial leaves the action unexecuted; approval
@@ -134,6 +145,14 @@ and bounds response sizes/time. It does not execute JavaScript or carry browser
 cookies. Documents and pages are untrusted data; their instructions cannot grant
 tool permissions. External links, model downloads, and approved commands can also
 use the network even though inference stays local.
+
+Web results record tool-generated UTC observation timestamps separately from
+publisher/server date claims. Fetches retain the requested and final URLs, a
+SHA-256 of normalized source text, and bounded unverified metadata. A declared
+canonical URL never replaces the fetched citation URL or initiates a request.
+Metadata and excerpts share the serialized tool-result budget; pagination offsets
+reflect the excerpt actually returned. A hash change between pages signals a
+changed source. Search snippets provide discovery rather than verified releases.
 
 Chats, model files, imported-model records, checkpoint excerpts/summaries, and edit
 snapshots persist in the app's userData directory. The app adds no disk encryption.

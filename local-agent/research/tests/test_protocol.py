@@ -71,6 +71,29 @@ def test_utility_controls_exclude_disabled_tools_and_explicitly_enable_web():
     asyncio.run(run())
 
 
+def test_coding_web_requires_opt_in_and_describes_evidence_uncertainty():
+    async def run():
+        async with stdio_client(parameters("coding", utilities={"webResearch": True})) as (read, write):
+            async with ClientSession(read, write) as client:
+                initialized = await client.initialize()
+                tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+                assert {"web_search", "web_fetch"} <= set(tools)
+                assert "searched_at" in tools["web_search"].description
+                assert "not verified" in tools["web_search"].description
+                assert "text_sha256" in tools["web_fetch"].description and "unverified" in tools["web_fetch"].description
+                assert "not publication dates" in initialized.instructions
+    asyncio.run(run())
+
+
+def test_assistant_cannot_enable_web_even_with_explicit_configuration():
+    async def run():
+        async with stdio_client(parameters("assistant", utilities={"webResearch": True})) as (read, write):
+            async with ClientSession(read, write) as client:
+                await client.initialize()
+                assert not {"web_search", "web_fetch"} & {tool.name for tool in (await client.list_tools()).tools}
+    asyncio.run(run())
+
+
 def test_protocol_long_line_cursor_and_hash(tmp_path):
     text = "a😀b" * 1000
     (tmp_path / "long.txt").write_text(text, encoding="utf-8")

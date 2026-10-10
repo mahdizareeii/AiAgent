@@ -1,0 +1,109 @@
+{
+  "timestamp": "2026-10-10T14:49:01.652Z",
+  "completedAt": "2026-10-10T14:50:36.681Z",
+  "project": "/private/tmp/free-local-agent-task-research-YFgJiq/project",
+  "model": "qwen3.5:4b",
+  "modelSHA256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+  "hardware": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5",
+    "cpuCores": 10,
+    "totalMemoryBytes": 25769803776,
+    "availableMemoryBytes": 4034117632,
+    "freeDiskBytes": 513867403264,
+    "gpus": [
+      {
+        "name": "Apple M5",
+        "backend": "metal",
+        "totalMemoryBytes": 19069403136,
+        "freeMemoryBytes": 19068354560,
+        "unifiedMemory": true
+      }
+    ]
+  },
+  "profile": {
+    "contextTokens": 8192,
+    "outputTokens": 2048,
+    "batchTokens": 256,
+    "microBatchTokens": 64,
+    "backend": "metal",
+    "index": 1
+  },
+  "nativeCalibrationTokensPerSecond": 22.759462246428953,
+  "inputTokens": [
+    3435,
+    4139,
+    4453,
+    5007
+  ],
+  "oneAgentTurn": true,
+  "noManualRepairsOrModelReruns": true,
+  "setupBlockersBeforeAgentTurn": [
+    "Normal profile required explicit Slow mode under current memory pressure.",
+    "Restricted sandbox blocked localhost port creation; authorized isolated test escalation allowed loopback inference and the opted-in official public page read."
+  ],
+  "explicitTestSlowMode": true,
+  "sidecar": "source .venv",
+  "webExplicitlyEnabled": true,
+  "terminalDisabled": true,
+  "inferenceLoopbackOnly": true,
+  "source": {
+    "requestedUrl": "https://wordpress.org/about/requirements/",
+    "fetchedUrl": "https://wordpress.org/about/requirements/",
+    "fetchedAt": "2026-10-10T14:49:40Z",
+    "normalizedTextSHA256": "cf4085fb7506365a7f91a2fef34ccc8c86429f122c256fa353da617816323f2a",
+    "textLength": 1544,
+    "truncated": false,
+    "metadataUnverified": true,
+    "sourcePublicationDateKnown": false
+  },
+  "approvalCount": 1,
+  "toolSequence": [
+    {
+      "name": "local files and research: web fetch \u00b7 https://wordpress.org/about/requirements/",
+      "status": "completed"
+    },
+    {
+      "name": "reviewed actions: write file \u00b7 wordpress-research.md",
+      "status": "completed"
+    },
+    {
+      "name": "local files and research: read file \u00b7 wordpress-research.md",
+      "status": "completed"
+    }
+  ],
+  "files": [
+    {
+      "path": "wordpress-research.md",
+      "bytes": 802,
+      "sha256": "9e67ebc283313fde06c1f35152efe7e26a1fc0500269f394310ec66e719c0398",
+      "lines": 29
+    }
+  ],
+  "checks": {
+    "officialFetchSucceeded": true,
+    "fetchSucceededBeforeFileWrite": true,
+    "exactlyOneApprovedFile": true,
+    "actualFileReadbackHashAndSizeMatch": true,
+    "fetchedUrlAndTimestampInFile": true,
+    "recommendedPHPAndDatabaseVersionsGrounded": true,
+    "legacyCompatibilityGrounded": true,
+    "httpsSupportedBySource": true,
+    "noCommandToolsCalled": true,
+    "atMost20Lines": false
+  },
+  "researchToApprovedFileAndReadbackPassed": true,
+  "strictTaskOutputPassed": false,
+  "wordpressInstalled": false,
+  "siteRunning": false,
+  "ownedProcessesStopped": true,
+  "limitations": [
+    "Single bounded Qwen3.5 4B task; this does not establish broad autonomous implementation quality.",
+    "Source-sidecar integration used actual source .venv tools; root validates packaged frozen sidecar separately.",
+    "The note is29lines despite requested maximum20.",
+    "The note strengthens a suggested host-letter configuration into a must-have mod_rewrite rule for Nginx/Apache; the fetched page separately allows any server supporting PHP and MySQL.",
+    "Official-page read has a retrieval timestamp, but the page supplies no publication/modified date and its metadata remains unverified.",
+    "No WordPress/PHP/container installation, project command, or site execution occurred."
+  ]
+}

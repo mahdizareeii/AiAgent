@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+import hashlib
 import ipaddress
+import re
 import socket
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -16,6 +20,8 @@ MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
 MAX_PAGE_CHARS = 60_000
 MAX_CHUNK_CHARS = 8_000
 MAX_REDIRECTS = 5
+MAX_DATE_CLAIMS = 3
+MAX_CANONICAL_CHARS = 1024
 HEADERS = {"User-Agent": "LocalAgentResearch/0.1 (+read-only public research)", "Accept": "text/html,text/plain;q=0.9", "Accept-Encoding": "identity"}
 
 
@@ -111,10 +117,93 @@ def extract_text(body: bytes, content_type: str) -> tuple[str, str]:
     return title, "\n".join(lines)
 
 
+def utc_now() -> str:
+    """Observation time from this computer, never a source publication date."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _explicit_date(value: str) -> str | None:
+    # Only dates, never free-form metadata/instructions. Preserve missing timezone
+    # and date-only precision rather than inventing either.
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    value = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError:
+            return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:[Zz]|[+-]\d{2}:\d{2})?", value):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("z", "+00:00").replace("Z", "+00:00").replace("t", "T")).isoformat()
+    except ValueError:
+        return None
+
+
+def extract_metadata(body: bytes, content_type: str, headers: dict, url: str) -> dict:
+    """Bounded publisher/server claims; these do not establish latest versions."""
+    metadata = {"published_dates": [], "modified_dates": [], "http_last_modified": None,
+                "declared_canonical_url": None, "unverified": True}
+    modified = headers.get("last-modified", "")
+    if isinstance(modified, str) and len(modified) <= 128:
+        try:
+            parsed = parsedate_to_datetime(modified)
+            if parsed.tzinfo is not None:
+                metadata["http_last_modified"] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except (ValueError, TypeError, OverflowError):
+            pass
+    if "html" not in content_type:
+        return metadata
+    soup = BeautifulSoup(body, "html.parser")
+    # Open Graph article dates and Schema.org microdata are explicit semantic
+    # metadata. Unlabelled <time>, copyright years, and response Date are ignored.
+    fields = {"article:published_time": "published_dates", "article:modified_time": "modified_dates",
+              "datepublished": "published_dates", "datemodified": "modified_dates"}
+    for element in soup.find_all("meta"):
+        candidates = []
+        for attribute in ("property", "itemprop"):
+            raw = element.get(attribute, "")
+            if isinstance(raw, str):
+                candidates.extend(raw.lower().split()[:4])
+        for key in candidates:
+            if key not in fields:
+                continue
+            value = _explicit_date(element.get("content", ""))
+            claim = {"value": value, "source": key}
+            target = metadata[fields[key]]
+            if value is not None and claim not in target and len(target) < MAX_DATE_CLAIMS:
+                target.append(claim)
+    # A declared canonical is only a publisher claim. Cite the final fetched url;
+    # never navigate to this value or let it bypass redirect/DNS validation.
+    for element in soup.find_all("link", rel=True):
+        if "canonical" not in [str(value).lower() for value in element.get("rel", [])]:
+            continue
+        href = element.get("href", "")
+        if not isinstance(href, str) or len(href) > MAX_CANONICAL_CHARS:
+            continue
+        try:
+            normalized, host, _ = parse_public_url(urljoin(url, href))
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                if not globally_routable(host):
+                    continue
+            if len(normalized) <= MAX_CANONICAL_CHARS:
+                metadata["declared_canonical_url"] = normalized
+                break
+        except ToolError:
+            continue
+    return metadata
+
+
 async def web_fetch(url: str, offset: int = 0, max_chars: int = MAX_CHUNK_CHARS, *, resolver=resolve_public, getter=_get_one) -> dict:
     if not 0 <= offset <= MAX_PAGE_CHARS or not 500 <= max_chars <= MAX_CHUNK_CHARS:
         raise ToolError("invalid_range", "Use offset between 0 and 60000 and max_chars between 500 and 8000.")
     current, _, _ = parse_public_url(url)
+    requested_url = current
     for hop in range(MAX_REDIRECTS + 1):
         current, host, port = parse_public_url(current)
         addresses = await resolver(host, port)
@@ -129,10 +218,14 @@ async def web_fetch(url: str, offset: int = 0, max_chars: int = MAX_CHUNK_CHARS,
             current = urljoin(current, location)
             continue
         title, text = extract_text(body, headers.get("content-type", "text/plain"))
+        metadata = extract_metadata(body, headers.get("content-type", "text/plain"), headers, current)
         capped = text[:MAX_PAGE_CHARS]
         excerpt = capped[offset:offset + max_chars]
         next_offset = offset + len(excerpt)
-        return {"ok": True, "url": current, "title": title, "text": excerpt, "offset": offset, "next_offset": next_offset if next_offset < len(capped) else None, "text_length": len(capped), "truncated": len(text) > MAX_PAGE_CHARS or next_offset < len(capped), "untrusted_content": True}
+        return {"ok": True, "url": current, "requested_url": requested_url, "fetched_at": utc_now(), "metadata": metadata,
+                "title": title, "text": excerpt, "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "offset": offset, "next_offset": next_offset if next_offset < len(capped) else None,
+                "text_length": len(capped), "truncated": len(text) > MAX_PAGE_CHARS or next_offset < len(capped), "untrusted_content": True}
     raise ToolError("too_many_redirects", "The page exceeded five redirects.")
 
 
@@ -166,5 +259,6 @@ def web_search(query: str, max_results: int = 5) -> dict:
             normalized, _, _ = parse_public_url(str(item.get("href", "")))
         except ToolError:
             continue
-        items.append({"title": str(item.get("title", ""))[:300], "url": normalized, "snippet": str(item.get("body", ""))[:1_000]})
-    return {"ok": True, "query": query, "backend": "duckduckgo", "results": items, "untrusted_content": True}
+        items.append({"title": str(item.get("title", ""))[:300], "url": normalized, "snippet": str(item.get("body", ""))[:1_000],
+                      "metadata": {"source_type": "search_snippet", "published_at": None, "modified_at": None, "unverified": True}})
+    return {"ok": True, "query": query, "backend": "duckduckgo", "searched_at": utc_now(), "results": items, "untrusted_content": True}

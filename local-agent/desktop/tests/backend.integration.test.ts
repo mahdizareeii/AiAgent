@@ -7,6 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { GooseBackend, type BackendOptions } from '../backend.ts';
+import { loadTaskResearchSkill } from '../skills/task-research.ts';
 import { LocalActions, type ActionPermission } from '../actions.ts';
 import { createActionHost } from '../action-host.ts';
 import type { AgentEvent, Mode, UtilityPreferences } from '../renderer/types.ts';
@@ -208,6 +209,7 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
       nodeExecutable: process.execPath, dataDirectory: data, cwd: project, mode, model, baseUrl,
       apiKey, outputTokens, utilities, contextTokens: 8192,
       grantedRoots: mode === 'coding' ? [project] : [], grantedFiles: [selectedFile],
+      skillsDirectory: path.join(repository, 'local-agent', 'desktop', 'skills'), currentDate: '2026-10-10',
       actionUrl: host?.url ?? (mode === 'coding' ? `${baseUrl}/${actionToken}` : undefined),
       onEvent: event => events.push(event) };
     backend = new GooseBackend(options);
@@ -240,6 +242,11 @@ test('real Goose research mode defaults to local files and authenticates the loo
       const agentRequests = run.chats.filter(request => request.tools?.length);
       assert.ok(agentRequests.length >= 1, 'The real Goose agent must reach the bundled-engine loopback endpoint.');
       for (const request of agentRequests) assertToolSet(request, run.utilities);
+      const skill = await loadTaskResearchSkill(path.join(repository, 'local-agent', 'desktop', 'skills'));
+      const userPrompt = agentRequests[0].messages?.filter(message => message.role === 'user').map(message => JSON.stringify(message.content)).join('\n') ?? '';
+      assert.ok(userPrompt.includes(JSON.stringify(skill.instructions).slice(1, -1)), 'The actual Goose provider request must contain the shipped skill.');
+      assert.ok(userPrompt.includes('Web research is OFF'));
+      assert.ok(userPrompt.includes('2026-10-10'));
       assert.ok(run.requests.every(request => /^\/v1\//.test(request.url)), 'Ollama endpoints must never be requested.');
       assert.ok(run.requests.every(request => request.authorization === `Bearer ${apiKey}`));
       assert.equal(run.events.filter(event => event.type === 'message').map(event => event.text).join(''), plainReply);
@@ -346,6 +353,22 @@ test('real Goose research mode exposes web tools only with explicit opt-in',
       const agentRequests = run.chats.filter(request => request.tools?.length);
       assert.ok(agentRequests.length >= 1);
       for (const request of agentRequests) assertToolSet(request, run.utilities);
+      assert.equal(run.events.some(event => event.type === 'tool'), false);
+      assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose Agent research opt-in registers only web tools when local utilities are disabled',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { fileReading: false, projectSearch: false, fileEditing: false, terminal: false, webResearch: true });
+    try {
+      await run.backend.prompt('Say hello without searching the web.');
+      const agentRequests = run.chats.filter(request => request.tools?.length);
+      assert.ok(agentRequests.length >= 1);
+      for (const request of agentRequests) assertToolSet(request, run.utilities);
+      const userPrompt = agentRequests[0].messages?.filter(message => message.role === 'user').map(message => JSON.stringify(message.content)).join('\n') ?? '';
+      assert.ok(userPrompt.includes('Web research is enabled'));
       assert.equal(run.events.some(event => event.type === 'tool'), false);
       assert.equal(run.actions(), 0);
       assert.deepEqual(run.errors, []);

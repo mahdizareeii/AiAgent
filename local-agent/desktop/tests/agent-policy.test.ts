@@ -27,4 +27,17 @@ test('capability instructions advertise only actually registered utilities', () 
   assert.doesNotThrow(() => assertAgentCapabilities('coding', readOnly, true));
   const noTools = { fileReading: false, projectSearch: false, fileEditing: false, terminal: false, webResearch: false };
   assert.throws(() => assertAgentCapabilities('coding', noTools, true), /utilities are disabled/);
+  assert.doesNotThrow(() => assertAgentCapabilities('coding', { ...noTools, webResearch: true }, true));
+  const webOnly = taskInstructions('coding', { ...noTools, webResearch: true }).split('Available tools for this turn')[1];
+  assert.match(webOnly, /web_search and web_fetch/);
+  assert.doesNotMatch(webOnly, /write_file|run_command|read_file/);
+});
+
+test('chat-only Research uses staged context without advertising disabled callable tools or verified current sources', () => {
+  const instructions = taskInstructions('research', { ...DEFAULT_UTILITIES, webResearch: true }, false);
+  assert.match(instructions, /no callable tools/);
+  assert.match(instructions, /staged local context/);
+  assert.match(instructions, /label claims unverified/);
+  assert.match(instructions, /validated tool-capable model and enabled Web research/);
+  assert.doesNotMatch(instructions, /web_search|web_fetch|read_file|run_command|Available tools for this turn/);
 });

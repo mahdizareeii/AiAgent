@@ -1,6 +1,6 @@
 # Free Local Agent setup and developer guide
 
-Free Local Agent **0.3.0-alpha.1** runs local models through a bundled llama.cpp engine. The
+Free Local Agent **0.3.0-alpha.2** runs local models through a bundled llama.cpp engine. The
 packaged app includes the native inference engine, offline Goose backend, and
 research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
@@ -8,7 +8,7 @@ platform support.
 
 ## First launch
 
-On macOS Apple Silicon, unzip `Free Local Agent-0.3.0-alpha.1-arm64-mac.zip`, move `Free Local Agent.app` into
+On macOS Apple Silicon, unzip `Free Local Agent-0.3.0-alpha.2-arm64-mac.zip`, move `Free Local Agent.app` into
 Applications, and open it; the runtime is included and model weights are downloaded
 or imported separately.
 
@@ -24,7 +24,7 @@ or imported separately.
 4. Start **New agent task**. New tasks default to **Agent** mode; choose or create
    a workspace folder and enable the tools your task needs. File reading works
    in every mode; project search, file creation/editing, and terminal commands
-   work in Agent; web tools work in Research after you enable web research. Use
+   work in Agent; web tools work in Agent and Research after you enable web research. Use
    **Chat** for conversation and attached-file reading. A chat-only model can
    process attached files through local read stages, but cannot run Agent tasks.
 5. Review proposed edits/commands and **Approve once** or **Deny**. **Stop** cancels
@@ -34,6 +34,37 @@ or imported separately.
 The interface starts with a light porcelain theme and cobalt/violet accents.
 Use the moon/sun toggle in the header to switch themes. The preference is saved
 locally and restored next time the app opens.
+
+## Research before doing a task
+
+The app bundles a [task-research skill](../local-agent/desktop/skills/task-research/SKILL.md)
+for Agent and Research turns. You do not need to install a skill or connect a
+hosted model account. It guides the local model to inspect project versions,
+resolve changing setup/API requirements, and use the findings while completing
+the task. Simple edits do not need broad research.
+
+1. Use a validated tool-capable model. In Agent, choose a workspace.
+2. Open **Tools** and enable **Web research**. It is off by default; the same
+   saved preference applies to Agent and Research. Chat never registers web tools.
+3. Ask for research and implementation together, for example:
+
+   > Check the official documentation and release notes for this project's
+   > framework version. Implement this feature using compatible APIs, cite the
+   > changes that matter, and run the available checks.
+
+The agent uses public search to discover sources and reads official pages for
+evidence. It should cite the fetched URL, relevant version, retrieval date, and
+why a finding affects the change. Tool results preserve requested/final URLs,
+retrieval timestamps, a content hash, and explicit source date claims when
+available. Retrieval time is not a publication date or proof that a page is
+current. Missing or conflicting dates should remain uncertain.
+
+With web disabled or unavailable, the skill uses local evidence and identifies
+changing facts it could not verify. It does not use terminal commands to bypass
+disabled research tools. Approved setup/install commands retain their normal
+network access and approval requirements. Research does not authorize unrelated
+upgrades, automatically update the model, or install app updates. Model quality
+still affects how well it follows the skill; verify its findings and actual checks.
 
 ## Creating a WordPress project
 

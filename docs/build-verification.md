@@ -1,6 +1,13 @@
 # Free Local Agent verification status
 
-## Current 0.3.0-alpha.1 update — 2026-10-10
+## Current 0.3.0-alpha.2 research update — 2026-10-10
+
+The bundled task-research skill, opt-in Agent web tools, provenance metadata,
+offline behavior, and current validation are recorded in the
+[research validation report](task-research-validation.md). The prior theme,
+project-file, and upgrade evidence remains below with its original version.
+
+## Earlier 0.3.0-alpha.1 update — 2026-10-10
 
 The 0.3 update adds the Agent/Research/Chat workflow, workspace creation,
 reviewed new-file batches with grouped undo, PHP/PHTML reading/search, and the
@@ -10,7 +17,7 @@ WordPress scaffold failed validation. A separate two-file theme creation/readbac
 task passed static checks. One initial model-setup screenshot is retained as
 partial evidence; full visible GUI validation remains pending after capture-tool failure.
 
-| Check | Current result |
+| Check | Recorded result |
 | --- | --- |
 | Strict TypeScript and full JavaScript/TypeScript suite (`npm run check`) | 106/106 passed; no skips; public network denied and localhost allowed |
 | Research tests | 61/61 passed |

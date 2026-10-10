@@ -12,7 +12,7 @@ model server is required. Model weights are a separate download or local GGUF
 import. Once a compatible model is installed, chat and local file work can run
 offline.
 
-**Current version: 0.3.0-alpha.1.** macOS Apple Silicon is the tested platform.
+**Current version: 0.3.0-alpha.2.** macOS Apple Silicon is the tested platform.
 Windows and Linux packaging/CI is configured; native validation is still pending.
 
 ## What Free Local Agent does
@@ -36,12 +36,17 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 - **Control the utilities.** File reading, project search, editing, terminal
   commands, and web research have individual controls. Web research is off by
   default.
+- **Research before implementation.** A bundled task-research skill checks
+  project versions and changing requirements. Enable **Tools → Web research**
+  in Agent or Research to consult current official documentation, release notes,
+  and migration guidance. The agent cites what it fetched, then continues the
+  requested implementation and checks. Offline work labels current facts unverified.
 - **Choose light or dark.** The light theme uses porcelain surfaces with cobalt
   and violet accents. The theme toggle remembers your choice.
 
 | Mode | Use it for |
 | --- | --- |
-| Agent | Creating or changing a project and running approved commands in a selected workspace. Requires a validated tool-capable model. |
+| Agent | Researching and creating or changing a project, then running approved checks in a selected workspace. Web research requires opt-in; Agent requires a validated tool-capable model. |
 | Research | Reading sources and comparing findings. Optional web research stays off until enabled. |
 | Chat | Conversation, writing, and attached-file reading. Project changes and commands require an Agent task. |
 
@@ -87,7 +92,7 @@ still process attached files through the app's local reading stages.
 | Project search | Searches the selected workspace in Agent mode. Read-only searches need no per-action approval. |
 | File editing | Proposes workspace changes in Agent mode. Each edit, write, or new-file batch needs approval; saved file snapshots support undo. Creation batches cannot replace existing files. |
 | Terminal commands | Shows the proposed command in Agent mode and asks for approval each time. Commands run as your operating-system account. |
-| Web research | Available in Research mode only when enabled. Searches and public-page fetching use the internet. |
+| Web research | Available in Agent and Research only when enabled. Searches and public-page fetching use the internet. Queries go to DuckDuckGo; fetched URLs go to the source sites. |
 
 Disabled web tools are excluded from tool registration. Approved shell commands
 can still access the network and files beyond the project; they have your account's
@@ -97,7 +102,7 @@ source hashes and never automatically repeats an agent edit or command.
 
 ## Get started
 
-For a packaged macOS build, unzip `Free Local Agent-0.3.0-alpha.1-arm64-mac.zip`, move
+For a packaged macOS build, unzip `Free Local Agent-0.3.0-alpha.2-arm64-mac.zip`, move
 `Free Local Agent.app` to Applications, and open it. Apple Silicon and macOS 13.3 or newer are
 required. This alpha is unsigned and not notarized.
 
@@ -110,6 +115,19 @@ required. This alpha is unsigned and not notarized.
 
 See the [setup and developer guide](docs/setup-guide.md) for detailed setup,
 source builds, packaging, storage locations, and permission boundaries.
+
+For a task that depends on changing software:
+
+> Check this project's versions and the current official setup requirements.
+> Explain relevant changes with source links, implement a compatible solution,
+> and run available checks. Do not upgrade unrelated dependencies.
+
+Enable **Web research** first to verify online facts. Research is bounded and
+uses primary sources rather than treating search snippets as documentation.
+Fetch timestamps record when the app retrieved a page; page-supplied publication,
+modification, and canonical metadata remain unverified claims. The skill does
+not update model weights or install application updates. See the
+[bundled task-research skill](local-agent/desktop/skills/task-research/SKILL.md).
 
 For example, in an empty Agent workspace:
 
@@ -145,7 +163,14 @@ Separate short native and earlier Local Agent packaged-app calibrations measured
 **30.8–37.5 tokens/sec**. These measurements are not a broad model-quality or peak-memory
 benchmark. See the [measured compatibility report](docs/compatibility-report.md).
 
-The 0.3 automated and packaged checks passed. A real Qwen4B Agent task created
+The 0.3-alpha.2 research update passed **115 app/runtime tests**, **75 research
+tests**, and the macOS packaged smoke. One real Qwen4B task fetched official
+WordPress requirements, created an approved research note, and read it back with
+matching evidence. Strict note quality failed its length constraint and
+overstated one server recommendation. See the
+[research validation record](docs/task-research-validation.md).
+
+The earlier 0.3-alpha.1 automated and packaged checks passed. A real Qwen4B Agent task created
 five approved files, but its full WordPress scaffold failed validation. A separate
 two-file theme task passed one approved batch, real file readbacks, and static
 checks. No PHP or WordPress runtime was executed and no site was started.

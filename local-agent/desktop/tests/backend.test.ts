@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentPrompt, backendEnvironment, deniedActionResult, type BackendOptions } from '../backend.ts';
+import { agentPrompt, backendEnvironment, deniedActionResult, GooseBackend, type BackendOptions } from '../backend.ts';
+import { loadTaskResearchSkill } from '../skills/task-research.ts';
+import { fileURLToPath } from 'node:url';
 
 const options: BackendOptions = {
   executable: '/app/goose', researchExecutable: '/app/research', bridgeExecutable: '/app/bridge.cjs', nodeExecutable: '/app/node',
@@ -20,6 +22,28 @@ test('coding prompts explain real enabled capabilities while preserving the comp
   const chat = { ...options, mode: 'assistant' as const };
   assert.match(agentPrompt(chat, task), /no file-writing or command tools/);
   assert.equal(backendEnvironment(chat).LOCAL_AGENT_ACTION_URL, '');
+});
+
+test('Agent and Research carry the shipped skill with actual access/date without changing the user task', async () => {
+  const skill = await loadTaskResearchSkill(fileURLToPath(new URL('../skills/', import.meta.url)));
+  const task = 'Use the current release compatible with this project.\nKeep سلام 🌍 unchanged.';
+  for (const mode of ['coding', 'research'] as const) {
+    const prompt = agentPrompt({ ...options, mode, currentDate: '2026-10-10' }, task, skill);
+    assert.ok(prompt.endsWith(`USER TASK AND LOCAL CONTEXT:\n${task}`));
+    assert.equal(prompt.split(skill.instructions).length, 2, 'Load the entire bundled instruction body exactly once.');
+    assert.match(prompt, /Web research is OFF/);
+    assert.match(prompt, /Current UTC date.*2026-10-10/);
+    const online = agentPrompt({ ...options, mode, utilities: { ...options.utilities, webResearch: true } }, task, skill);
+    assert.match(online, /Web research is enabled/);
+  }
+  assert.ok(!agentPrompt({ ...options, mode: 'assistant' }, task, skill).includes(skill.instructions));
+});
+
+test('missing packaged skill prevents backend startup before launching an executable', async () => {
+  const backend = new GooseBackend({ ...options, executable: '/missing-executable-must-not-start',
+    skillsDirectory: fileURLToPath(new URL('./nonexistent-skills/', import.meta.url)) });
+  await assert.rejects(backend.start(), /bundled Task research skill could not be loaded/);
+  await backend.stop();
 });
 
 test('enabled project actions require an owned loopback approval endpoint', () => {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentEvent, Mode, UtilityPreferences } from './renderer/types.ts';
+import { loadTaskResearchSkill, taskResearchInstructions, type TaskResearchSkill } from './skills/task-research.ts';
 
 export interface BackendOptions {
   executable: string;
@@ -22,6 +23,8 @@ export interface BackendOptions {
   grantedRoots: string[];
   grantedFiles: string[];
   actionUrl?: string;
+  skillsDirectory?: string;
+  currentDate?: string;
   onEvent: (event: AgentEvent) => void;
 }
 
@@ -43,7 +46,7 @@ export function deniedActionResult(value: unknown, depth = 0): boolean {
 }
 
 /** Tell small local models what this particular turn can actually do. */
-export function agentPrompt(options: BackendOptions, request: string): string {
+export function agentPrompt(options: BackendOptions, request: string, researchSkill?: TaskResearchSkill): string {
   const capabilities = ['You are running inside Free Local Agent. Use the tools advertised for this turn to complete the user task.'];
   if (actionsEnabled(options)) {
     capabilities.push(`The selected project directory is ${JSON.stringify(options.cwd)}. File-tool paths are relative to this directory; do not repeat its folder name.`);
@@ -52,7 +55,8 @@ export function agentPrompt(options: BackendOptions, request: string): string {
     if (options.utilities.terminal) capabilities.push('Use run_command for necessary setup or verification, then inspect its actual result.');
     capabilities.push('Every file change and command needs approval in the app. Wait for the tool result. Respect a denial and do not retry the denied action. Report only changes and checks that succeeded.');
   } else capabilities.push('This turn has no file-writing or command tools. Describe this limit accurately if the task needs them.');
-  return `${capabilities.join(' ')}\n\nUSER TASK AND LOCAL CONTEXT:\n${request}`;
+  const research = researchSkill ? taskResearchInstructions(researchSkill, options.mode, options.utilities, options.currentDate) : '';
+  return `${capabilities.join(' ')}${research ? `\n\n${research}` : ''}\n\nUSER TASK AND LOCAL CONTEXT:\n${request}`;
 }
 
 /** No API keys, external Goose settings, proxies, or arbitrary model endpoints are inherited. */
@@ -91,10 +95,14 @@ export class GooseBackend {
   private prompting = false;
   private reviewedActionIds = new Set<string>();
   private actionDenied = false;
+  private researchSkill?: TaskResearchSkill;
   constructor(options: BackendOptions) { this.options = options; }
 
   async start(): Promise<void> {
     const o = this.options;
+    if (o.skillsDirectory && (o.mode === 'coding' || o.mode === 'research')) {
+      this.researchSkill = await loadTaskResearchSkill(o.skillsDirectory);
+    }
     await mkdir(path.join(o.dataDirectory, 'config'), { recursive: true });
     if (this.stopped) throw new Error('Agent startup cancelled.');
     // Each turn has its own isolated configuration, and only our exact MCP servers.
@@ -136,7 +144,7 @@ export class GooseBackend {
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
     }), ndJsonStream(Writable.toWeb(this.child.stdin), Readable.toWeb(this.child.stdout) as unknown as ReadableStream<Uint8Array>));
     await this.withTimeout(this.connection.initialize({ protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'free-local-agent-desktop', version: '0.3.0-alpha.1' },
+      clientInfo: { name: 'free-local-agent-desktop', version: '0.3.0-alpha.2' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
     const extensions: object[] = [{ type: 'mcp', timeout: 180,
@@ -163,7 +171,7 @@ export class GooseBackend {
     if (this.prompting) throw new Error('An agent task is already running.');
     this.prompting = true;
     try {
-      await this.connection.prompt({ sessionId: this.gooseSessionId, prompt: [{ type: 'text', text: agentPrompt(this.options, text) }] });
+      await this.connection.prompt({ sessionId: this.gooseSessionId, prompt: [{ type: 'text', text: agentPrompt(this.options, text, this.researchSkill) }] });
       if (this.actionDenied) throw new Error(denialNotice);
     } catch (error) {
       if (this.actionDenied) throw new Error(denialNotice);

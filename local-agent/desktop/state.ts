@@ -18,5 +18,5 @@ export function migrateState(value: unknown): SavedState {
 export function effectiveUtilities(mode: Mode, preferences: UtilityPreferences): UtilityPreferences {
   return { fileReading: preferences.fileReading, projectSearch: mode === 'coding' && preferences.projectSearch,
     fileEditing: mode === 'coding' && preferences.fileEditing, terminal: mode === 'coding' && preferences.terminal,
-    webResearch: mode === 'research' && preferences.webResearch };
+    webResearch: (mode === 'coding' || mode === 'research') && preferences.webResearch };
 }

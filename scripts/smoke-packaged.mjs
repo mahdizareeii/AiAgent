@@ -2,6 +2,7 @@
 // Native packaged-resource smoke test. No model, approved command, or public
 // network request is used. Run after `npm run package` with Node 24.10+.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -56,6 +57,21 @@ function environment(extra) {
   return { ...safe, ...extra };
 }
 
+// Electron's filesystem support must read the skill inside the actual ASAR.
+const packagedSkill = await new Promise((resolve, reject) => {
+  const child = spawn(electronExecutable, ['-e', 'process.stdout.write(require("node:fs").readFileSync(process.argv[1], "utf8"))',
+    path.join(archive, 'dist', 'skills', 'task-research', 'SKILL.md')], {
+    env: environment({ ELECTRON_RUN_AS_NODE: '1' }), shell: false, windowsHide: true,
+  });
+  let output = '', errors = '';
+  const timer = setTimeout(() => { child.kill(); reject(new Error('Packaged skill read timed out.')); }, 10_000);
+  child.stdout.on('data', chunk => { output += String(chunk); });
+  child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-2000); });
+  child.once('error', error => { clearTimeout(timer); reject(error); });
+  child.once('close', code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error(`Packaged skill read failed: ${errors}`)); });
+});
+assert.equal(packagedSkill, await readFile(path.join(root, 'local-agent', 'desktop', 'skills', 'task-research', 'SKILL.md'), 'utf8'));
+
 async function bounded(promise, label, timeoutMs = 30_000) {
   let timer;
   try {
@@ -92,7 +108,7 @@ try {
     const transport = new StdioClientTransport({ command, args, env, cwd: directory, stderr: 'pipe' });
     let stderr = '';
     transport.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
-    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.3.0-alpha.1' });
+    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.3.0-alpha.2' });
     connections.push({ client, transport });
     try { await bounded(client.connect(transport), `${label} initialization`); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}${stderr ? `\n${stderr}` : ''}`); }
@@ -131,11 +147,13 @@ try {
   assert.match(inspection.structuredContent.sha256, /^[a-f0-9]{64}$/);
   const reading = await bounded(research.callTool({ name: 'read_file', arguments: { path: 'smoke.txt', expected_sha256: inspection.structuredContent.sha256 } }), 'Frozen verified file read');
   assert.equal(reading.structuredContent.text, '1: unchanged');
-  const optedIn = await connect(researchExecutable, [], environment({
-    LOCAL_AGENT_MODE: 'research', LOCAL_AGENT_GRANTED_ROOTS: '[]', LOCAL_AGENT_GRANTED_FILES: '[]',
-    LOCAL_AGENT_UTILITIES: JSON.stringify({ fileReading: false, projectSearch: false, webResearch: true }),
-  }), 'Explicitly enabled web tools');
-  assert.deepEqual((await bounded(optedIn.listTools(), 'Opted-in web tool listing')).tools.map(tool => tool.name).sort(), ['web_fetch', 'web_search']);
+  for (const mode of ['coding', 'research', 'assistant']) {
+    const optedIn = await connect(researchExecutable, [], environment({
+      LOCAL_AGENT_MODE: mode, LOCAL_AGENT_GRANTED_ROOTS: '[]', LOCAL_AGENT_GRANTED_FILES: '[]',
+      LOCAL_AGENT_UTILITIES: JSON.stringify({ fileReading: false, projectSearch: false, webResearch: true }),
+    }), `Explicit web preference in ${mode}`);
+    assert.deepEqual((await bounded(optedIn.listTools(), 'Opted-in web tool listing')).tools.map(tool => tool.name).sort(), mode === 'assistant' ? [] : ['web_fetch', 'web_search']);
+  }
 } finally {
   controller.abort();
   await host?.drain();
@@ -154,4 +172,5 @@ console.log('Packaged Electron + app.asar bridge: write denied; project file unc
 console.log('Offline Goose build manifest and bundled inference pins, hashes, and native version verified.');
 console.log(`Frozen packaged research MCP tools: ${researchTools.join(', ')}.`);
 console.log('Web tools absent by default and listed only after explicit enablement.');
+console.log('Bundled research skill read from packaged ASAR; enabled web tools work in Agent/Research and stay absent in Chat.');
 console.log('No model loaded or downloaded; no public network tool called.');

@@ -1,6 +1,17 @@
 # Free Local Agent compatibility report
 
-## Current 0.3.0-alpha.1 update — 2026-10-10
+## Current 0.3.0-alpha.2 research update — 2026-10-10
+
+The research update uses the existing bundled inference and hardware profiles.
+One native Qwen4B research-to-file task ran on the Apple M5 with an 8K context,
+2048 output reserve, and explicit Slow mode under current memory pressure.
+Its short calibration measured **22.76 tokens/sec**; this is not packaged GUI
+latency, peak memory, or broad task-quality evidence. See the
+[research validation report](task-research-validation.md) for test results,
+artifact details, and model-output limitations. Windows/Linux native execution
+and further interactive GUI validation remain pending.
+
+## Earlier 0.3.0-alpha.1 update — 2026-10-10
 
 The macOS arm64 0.3 package is built. Its final automated suite passed
 **106/106 JavaScript/TypeScript tests with no skips**, with public networking
@@ -16,7 +27,7 @@ renderer regressions passed. The renderer cases are not part of the 106 count.
 | Current 0.3 speed | Separate native calibrations measured 24.97 and 38.61 tokens/sec on M5, 24 GiB RAM, Metal 8K context / 2048 reserved output / 512 batch / 128 microbatch | Representative latency, peak memory, and broader model/context benchmarks |
 | Windows x64 / Ubuntu x64 | Native packaging/CI remains configured | Execute native packages and model checks on their target platforms |
 
-Current macOS artifact: `Free Local Agent-0.3.0-alpha.1-arm64-mac.zip`,
+Earlier macOS artifact: `Free Local Agent-0.3.0-alpha.1-arm64-mac.zip`,
 **217,016,826 bytes**, SHA-256
 `1c7bcd949570fb05b451201daa37f504b2a97b4ab3dfd2122eff60ac3dc2d3e7`.
 Both native task results are recorded. The initial model-setup screenshot is
