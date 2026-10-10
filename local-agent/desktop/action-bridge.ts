@@ -20,6 +20,9 @@ if (utilities.fileEditing) server.registerTool('edit_file', { description: 'Prop
 if (utilities.fileEditing) server.registerTool('write_file', { description: 'Propose writing a text file inside the selected project. The desktop shows before/after content and asks for approval.',
   inputSchema: { path: z.string(), content: z.string() },
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false } }, args => invoke('write_file', args));
+if (utilities.fileEditing) server.registerTool('create_files', { description: 'Create a new project scaffold with 1–20 text files in one reviewed batch. Supply files [{path,content}]. Parent folders are created automatically; existing files are never replaced. Maximum total content 512 KiB. The user reviews every file before approval; grouped undo is available.',
+  inputSchema: { files: z.array(z.object({ path: z.string().max(1024), content: z.string() }).strict()).min(1).max(20) },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false } }, args => invoke('create_files', args));
 if (utilities.terminal) server.registerTool('run_command', { description: 'Propose a shell command in the project directory. Approval is required for every command. Commands run as the user and are not OS sandboxed.',
   inputSchema: { command: z.string(), cwd: z.string().optional(), timeout_ms: z.number().int().optional() },
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } }, args => invoke('run_command', args));

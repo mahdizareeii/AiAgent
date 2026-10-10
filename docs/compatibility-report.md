@@ -1,4 +1,83 @@
-# Free Local Agent alpha 0.2 compatibility report
+# Free Local Agent compatibility report
+
+## Current 0.3.0-alpha.1 update — 2026-10-10
+
+The macOS arm64 0.3 package is built. Its final automated suite passed
+**106/106 JavaScript/TypeScript tests with no skips**, with public networking
+denied and localhost allowed. Research tests passed **61/61**, the rebuilt
+frozen sidecar passed **5/5** protocol checks, and **8/8** separate temporary
+renderer regressions passed. The renderer cases are not part of the 106 count.
+
+| Target or measurement | Current 0.3 evidence | Pending validation |
+| --- | --- | --- |
+| macOS arm64, minimum macOS 13.3 | Native package built; automated suite/package smoke passed; archive verified; initial setup screenshot and normal-config data preservation checked | Full interactive GUI and further screenshots; capture tool failed |
+| Qwen3.5 4B complex WordPress task | Action routing passed with five approved file creations; complete scaffold failed independent validation; no approved agent commands or site launched | Broader task quality and complete-project validation |
+| Qwen3.5 4B two-file theme task | One approved batch created both files; real readback hashes and static structure checks passed in one attempt | PHP/WordPress execution, rendering, and production theme quality |
+| Current 0.3 speed | Separate native calibrations measured 24.97 and 38.61 tokens/sec on M5, 24 GiB RAM, Metal 8K context / 2048 reserved output / 512 batch / 128 microbatch | Representative latency, peak memory, and broader model/context benchmarks |
+| Windows x64 / Ubuntu x64 | Native packaging/CI remains configured | Execute native packages and model checks on their target platforms |
+
+Current macOS artifact: `Free Local Agent-0.3.0-alpha.1-arm64-mac.zip`,
+**217,016,826 bytes**, SHA-256
+`1c7bcd949570fb05b451201daa37f504b2a97b4ab3dfd2122eff60ac3dc2d3e7`.
+Both native task results are recorded. The initial model-setup screenshot is
+partial evidence; full visible GUI checks and further screenshots remain pending.
+Earlier 0.2 generation-speed results below are
+historical rather than measurements of the 0.3 package. A WordPress
+scaffold does not establish an installed or running site, and tool access does
+not establish Codex-equivalent task performance.
+
+The [actual initial 0.3 setup screen](screenshots/free-local-agent-models.png)
+shows Apple M5, 24 GB system memory, and 3.8 GB available during a separate native
+model run. It was captured from an isolated validation profile with no user chat
+data. Available memory is a momentary snapshot. It does not establish a
+complete GUI workflow. The Mac was confirmed unlocked, but later captures
+returned stale pixels and `ScreenCaptureKit SCStreamErrorDomain -3811`
+(audio/video capture failure). Diagnostic GPU/background launch flags did not
+restore capture and were not added to production configuration. The capture
+error alone does not establish a graphics root cause.
+
+The updated app opened with normal configuration and the existing legacy store.
+A content-free check confirmed three saved chat identities/message counts,
+selected model, and utility preferences remained intact. The cached
+2,740,937,888-byte GGUF had unchanged size/modification time and was not downloaded
+again. Private chats and paths are omitted. This check is limited to data
+preservation, not complete interactive GUI or packaged inference validation.
+GitHub publication of these changes is pending authentication; no push completed.
+
+The Qwen4B run began with **7.10 GiB available memory** and used the pinned
+artifact SHA-256 `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
+Its five approved file creations had no truncated arguments, but independent
+WordPress validation failed: a PHP bind source named a directory, and generated
+PHP configuration lacked the bootstrap and duplicated definitions. Protected
+`.env` attempts were rejected. The gateway stopped when 6321 input tokens plus
+2048 reserved output exceeded its 8128-token usable budget, without compacting
+active action history or replaying completed actions. No container or site was
+started. The **24.97 tokens/sec** figure is one short native calibration, not
+packaged GUI latency, peak memory, or evidence that the full task passed.
+See the [complex-task record](wordpress-agent-smoke.json).
+
+The separate minimal-theme task passed in **one attempt**. One `create_files`
+approval produced `style.css` (**509 bytes**) and `index.php` (**644 bytes**),
+and two real readbacks matched their SHA-256 values and sizes. Static Theme Name,
+WordPress-loop, and hook checks passed. Its native calibration measured
+**38.61 tokens/sec**, with **7.34 GiB available RAM** at the hardware snapshot.
+The initial harness expected absolute read inputs; accepting the legal
+workspace-relative paths verified the existing results without rerunning the
+model or modifying its files. See the [theme-task record](wordpress-theme-agent-smoke.json).
+
+No PHP syntax, WordPress execution, or rendered-site check ran. The two-file
+output relies on core header/footer compatibility fallback and has no
+comprehensive escaping audit. Static success is limited to this small task and
+does not turn the failed complex scaffold into a passing full project.
+
+See [current build verification](build-verification.md) and the
+[0.3 update validation record](agent-update-validation.md).
+
+## Historical 0.2.0-alpha.1 evidence — 2026-10-07
+
+The earlier hardware snapshots, archive metadata, and model runs are preserved
+below. Pending checks in this section reflect the earlier report, not a result
+for the 0.3 package.
 
 This report separates observed setup and native checks from model estimates and
 uncompleted task benchmarks. It covers **0.2.0-alpha.1**, including the current
@@ -6,7 +85,7 @@ Free Local Agent package and explicitly identified earlier Local Agent GUI runs.
 See [build verification](build-verification.md) for current automated checks and
 [the real-model rubric](alpha-validation.md) for the fifteen-task quality run.
 
-## Development hardware observed
+### Development hardware observed
 
 The earlier Local Agent packaged macOS first-launch screen was inspected on this
 development machine. Available memory and free storage are snapshots and change
@@ -52,7 +131,7 @@ The final macOS ZIP is `Free Local Agent-0.2.0-alpha.1-arm64-mac.zip`, **217,004
 bytes**, SHA-256
 `1d3885a5d8115ce193b9c5ecab9cae4ca86125e5849ef5f6bf26eb074ca91e4d`.
 
-## Estimated model fit versus measured results
+### Estimated model fit versus measured results
 
 The catalogue's working-memory numbers include estimated context/scratch space.
 Fit also reserves memory for the operating system. Neither the estimate nor a
@@ -110,7 +189,7 @@ A successful tool-call probe does not establish task quality or an accuracy gain
 Imported GGUF files start in chat-only mode; supported native templates and a
 passing local tool calibration are required before enabling agent tools.
 
-## Native platform status
+### Native platform status
 
 | Target | Current evidence | Required follow-up |
 | --- | --- | --- |
@@ -129,7 +208,7 @@ been executed locally, and their packages are unsigned. There is no automatic
 update or completed signed-release claim. Use the checksums from the exact final
 artifact, and keep platform launch behavior separate from model results.
 
-## Evidence to append after a run
+### Evidence to append after a run
 
 ```text
 Date / app revision / final artifact checksum:

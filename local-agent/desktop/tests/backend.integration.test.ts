@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { GooseBackend, type BackendOptions } from '../backend.ts';
+import { LocalActions, type ActionPermission } from '../actions.ts';
+import { createActionHost } from '../action-host.ts';
 import type { AgentEvent, Mode, UtilityPreferences } from '../renderer/types.ts';
 
 // These tests use the actual downloaded Goose binary and frozen research sidecar.
@@ -25,6 +27,11 @@ const fixtureText = 'offline fixture text from the granted document — سلام
 const citation = '[offline fixture source](https://example.org/local-agent-fixture)';
 const apiKey = 'local-agent-owned-fixture-key';
 const outputTokens = 1024;
+const scaffoldPrompt = 'CREATE_WORDPRESS_FIXTURE';
+const scaffold = [
+  { path: 'docker-compose.yml', content: 'services:\n  wordpress:\n    image: wordpress:6\n    ports: ["8080:80"]\n    volumes: ["./wp-content:/var/www/html/wp-content"]\n' },
+  { path: 'wp-content/themes/local-demo/style.css', content: '/*\nTheme Name: Local Demo\nDescription: سلام — local theme fixture\n*/\n' },
+];
 
 interface ChatRequest {
   model: string;
@@ -57,10 +64,10 @@ function sendStream(response: ServerResponse, delta: object, finishReason = 'sto
   response.end('data: [DONE]\n\n');
 }
 
-function sendFragmentedToolStream(response: ServerResponse, name: string, argumentsText: string): void {
+function sendFragmentedToolStream(response: ServerResponse, name: string, argumentsText: string, callId = 'fixture-read-call'): void {
   const base = { id: 'local-agent-fixture-completion', object: 'chat.completion.chunk', created: 1, model };
   response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-  const frames: object[] = [{ role: 'assistant', tool_calls: [{ index: 0, id: 'fixture-read-call', type: 'function', function: { name, arguments: '' } }] }];
+  const frames: object[] = [{ role: 'assistant', tool_calls: [{ index: 0, id: callId, type: 'function', function: { name, arguments: '' } }] }];
   const characters = Array.from(argumentsText);
   for (let offset = 0; offset < characters.length; offset += 7) {
     frames.push({ tool_calls: [{ index: 0, function: { arguments: characters.slice(offset, offset + 7).join('') } }] });
@@ -101,7 +108,7 @@ function assertToolSet(request: ChatRequest, utilities: UtilityPreferences): voi
   const expected = [
     ...(utilities.fileReading ? ['inspect_file', 'read_file', 'read_pdf'] : []),
     ...(utilities.projectSearch ? ['list_files', 'search_files'] : []),
-    ...(utilities.fileEditing ? ['edit_file', 'write_file'] : []),
+    ...(utilities.fileEditing ? ['edit_file', 'write_file', 'create_files'] : []),
     ...(utilities.terminal ? ['run_command', 'read_command_output'] : []),
     ...(utilities.webResearch ? ['web_search', 'web_fetch'] : []),
   ];
@@ -117,7 +124,7 @@ function assertToolSet(request: ChatRequest, utilities: UtilityPreferences): voi
   assert.equal(request.max_tokens, outputTokens, 'Every agent request must include the explicit local output allowance.');
 }
 
-async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}) {
+async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, approveScaffold?: boolean) {
   assert.deepEqual(missingResources(mode), [], 'Native integration resources must be prepared when LOCAL_AGENT_REQUIRE_INTEGRATION=1.');
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-backend-integration-')));
   const project = path.join(directory, 'project');
@@ -132,6 +139,11 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}) 
   let actionRequests = 0;
   const actionToken = 'a'.repeat(64);
   const utilities = { ...defaults(mode), ...overrides };
+  const controller = new AbortController();
+  const permissions: ActionPermission[] = [];
+  const actions = new LocalActions({ projectPath: project, historyDirectory: path.join(directory, 'history'), utilities,
+    onPermission: async permission => { permissions.push(permission); return approveScaffold === true; } });
+  const host = approveScaffold === undefined ? undefined : await createActionHost(actions, controller.signal);
   const server = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -157,9 +169,21 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}) 
         chats.push(chat);
         const messages = chat.messages ?? [];
         const wantsRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(readPrompt));
+        const wantsScaffold = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(scaffoldPrompt));
         const readResult = messages.find(message => message.role === 'tool' && JSON.stringify(message.content).includes(fixtureText));
         // Goose may make auxiliary title-generation requests without agent tools.
         if (!chat.tools?.length) sendStream(response, { content: 'Read selected document' });
+        else if (wantsScaffold) {
+          const results = messages.filter(message => message.role === 'tool').map(message => JSON.stringify(message.content));
+          const batch = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(`BATCH_${scaffoldPrompt}`));
+          const writeTool = chat.tools.find(tool => (batch ? /(?:^|__)create_files$/ : /(?:^|__)write_file$/).test(tool.function.name));
+          const next = scaffold.find(file => !results.some(result => result.includes(`Created ${file.path}.`)));
+          if (results.some(result => /denied/i.test(result))) sendStream(response, { content: 'SCAFFOLD_DENIED_NO_CHANGES' });
+          else if (!next || batch && results.some(result => result.includes(`Created ${scaffold.length} project files.`))) sendStream(response, { content: 'SCAFFOLD_CREATED_FROM_TOOL_RESULTS' });
+          else if (!writeTool) sendStream(response, { content: 'WRITE_TOOL_MISSING' });
+          else if (batch) sendFragmentedToolStream(response, writeTool.function.name, JSON.stringify({ files: scaffold }), 'batch-scaffold');
+          else sendFragmentedToolStream(response, writeTool.function.name, JSON.stringify(next), `write-${scaffold.indexOf(next)}`);
+        }
         else if (!wantsRead) sendStream(response, { content: plainReply });
         else if (readResult) sendStream(response, { content: `LOCAL_AGENT_READ_OK ${citation}` });
         else {
@@ -184,18 +208,22 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}) 
       nodeExecutable: process.execPath, dataDirectory: data, cwd: project, mode, model, baseUrl,
       apiKey, outputTokens, utilities, contextTokens: 8192,
       grantedRoots: mode === 'coding' ? [project] : [], grantedFiles: [selectedFile],
-      actionUrl: mode === 'coding' ? `${baseUrl}/${actionToken}` : undefined,
+      actionUrl: host?.url ?? (mode === 'coding' ? `${baseUrl}/${actionToken}` : undefined),
       onEvent: event => events.push(event) };
     backend = new GooseBackend(options);
     await backend.start();
-    return { backend, chats, events, requests, errors, selectedFile, utilities, actions: () => actionRequests,
+    return { backend, chats, events, requests, errors, selectedFile, utilities, project, permissions, localActions: actions, actions: () => actionRequests,
       cleanup: async () => {
         await backend!.stop();
+        controller.abort();
+        if (host) { await host.drain(); await close(host.server); }
         await close(server);
         await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
       } };
   } catch (error) {
     await backend?.stop();
+    controller.abort();
+    if (host) { await host.drain(); await close(host.server); }
     await close(server);
     await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     throw error;
@@ -206,7 +234,9 @@ test('real Goose research mode defaults to local files and authenticates the loo
   { skip: skipReason('research'), timeout: 120_000 }, async () => {
     const run = await fixture('research');
     try {
-      await run.backend.prompt('Say hello using the local fixture.');
+      const running = run.backend.prompt('Say hello using the local fixture.');
+      await assert.rejects(run.backend.prompt('Start overlapping work.'), /task is already running/);
+      await running;
       const agentRequests = run.chats.filter(request => request.tools?.length);
       assert.ok(agentRequests.length >= 1, 'The real Goose agent must reach the bundled-engine loopback endpoint.');
       for (const request of agentRequests) assertToolSet(request, run.utilities);
@@ -215,6 +245,59 @@ test('real Goose research mode defaults to local files and authenticates the loo
       assert.equal(run.events.filter(event => event.type === 'message').map(event => event.text).join(''), plainReply);
       assert.equal(run.events.some(event => event.type === 'tool'), false);
       assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose scaffolds project files through MCP and per-file approval, with durable undo',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { terminal: false }, true);
+    try {
+      await run.backend.prompt(`${scaffoldPrompt}: create the WordPress fixture files in the selected project.`);
+      assert.equal(run.permissions.length, scaffold.length, 'Every file must pass the actual approval host.');
+      for (const [index, file] of scaffold.entries()) {
+        assert.equal(await readFile(path.join(run.project, file.path), 'utf8'), file.content);
+        assert.equal(run.permissions[index].arguments.path, file.path);
+        assert.equal(run.permissions[index].arguments.content, file.content);
+        assert.match(run.permissions[index].preview!, /--- \/dev\/null/);
+      }
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 3, 'Two actual tool results must return to Goose before completion.');
+      assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'completed' && JSON.stringify(event.output).includes('Created docker-compose.yml.')));
+      assert.match(run.events.filter(event => event.type === 'message').map(event => event.text).join(''), /SCAFFOLD_CREATED_FROM_TOOL_RESULTS/);
+      for (const _file of scaffold) assert.equal(await run.localActions.undo(), 1);
+      for (const file of scaffold) await assert.rejects(readFile(path.join(run.project, file.path)), { code: 'ENOENT' });
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose receives denied scaffold results without writing or replaying the action',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { terminal: false }, false);
+    try {
+      await assert.rejects(run.backend.prompt(`${scaffoldPrompt}: create the WordPress fixture files in the selected project.`), /Action denied.*task stopped/);
+      assert.equal(run.permissions.length, 1, 'A denied action must not be retried.');
+      assert.deepEqual(await readdir(run.project), [path.basename(run.selectedFile)]);
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 1, 'The backend must stop before the model can propose a retry.');
+      assert.ok(run.events.some(event => event.type === 'tool' && JSON.stringify(event.output ?? null).includes('denied')));
+      assert.equal(await run.localActions.undo(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose creates a reviewed multi-file scaffold batch with grouped undo',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { terminal: false }, true);
+    try {
+      await run.backend.prompt(`BATCH_${scaffoldPrompt}: create the WordPress fixture as one reviewed file group.`);
+      assert.equal(run.permissions.length, 1);
+      assert.deepEqual(run.permissions[0].arguments.files, scaffold);
+      for (const file of scaffold) {
+        assert.equal(await readFile(path.join(run.project, file.path), 'utf8'), file.content);
+        assert.ok(run.permissions[0].preview!.includes(`+++ ${file.path}`));
+      }
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 2);
+      assert.equal(await run.localActions.undo(), scaffold.length);
+      for (const file of scaffold) await assert.rejects(readFile(path.join(run.project, file.path)), { code: 'ENOENT' });
       assert.deepEqual(run.errors, []);
     } finally { await run.cleanup(); }
   });

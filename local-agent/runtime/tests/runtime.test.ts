@@ -23,10 +23,10 @@ const bytes=ggufFixture();
 const spec:CuratedModel={id:'fixture:4b',title:'Fixture',description:'Test model',estimatedDownloadBytes:bytes.length,minimumMemoryGB:8,workingMemoryGB:4,license:'Apache-2.0',sourceUrl:'https://huggingface.co/example/model',quantization:'Q4',repository:'example/model',revision:'a'.repeat(40),filename:'fixture.gguf',sha256:createHash('sha256').update(bytes).digest('hex'),architecture:'llama',toolCapable:true};
 const hardware:HardwareInfo={platform:'darwin',architecture:'arm64',cpuModel:'Fixture',cpuCores:8,totalMemoryBytes:24*GIB,availableMemoryBytes:20*GIB,freeDiskBytes:100*GIB,gpus:[{name:'Metal fixture',backend:'metal',totalMemoryBytes:20*GIB,freeMemoryBytes:20*GIB,unifiedMemory:true}]};
 const fake=fileURLToPath(new URL('./fake-engine.cjs',import.meta.url));
-async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware){
+async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch){
   const directory=await mkdtemp(path.join(tmpdir(),'local-agent-runtime-'));t.after(()=>rm(directory,{recursive:true,force:true}));await mkdir(path.join(directory,'models'));await writeFile(path.join(directory,'models',spec.filename),bytes);
   const launches:string[][]=[];
-  const runtime=new LocalInferenceRuntime({dataDirectory:directory,executablePath:process.execPath,catalog:[spec],hardware:detectedHardware,startupTimeoutMs:3000,stopTimeoutMs:500,
+  const runtime=new LocalInferenceRuntime({dataDirectory:directory,executablePath:process.execPath,catalog:[spec],hardware:detectedHardware,startupTimeoutMs:3000,stopTimeoutMs:500,fetch:fetchImplementation,
     env:{...process.env,OPENAI_API_KEY:'secret',LLAMA_ARG_TOOLS:'all',LLAMA_ARG_RPC:'remote:5000'},
     spawn:(command,args,options)=>{launches.push(args);return spawn(process.execPath,[fake,...args],{...options,env:{...options.env,...extraEnv}});}});
   t.after(()=>runtime.stop());return {runtime,directory,launches};
@@ -34,19 +34,34 @@ async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardw
 
 test('pinned engine starts without loading weights; private offline process strips inherited secrets and reuses a verified model',async t=>{
   const {runtime,directory,launches}=await fixture(t);const status=await runtime.start();assert.equal(status.state,'ready');assert.equal(status.baseUrl,null);
-  const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.toolCapable,true);assert.equal(prepared.model,'local-agent-fixture-4b');assert.match(prepared.apiKey,/^[a-f0-9]{64}$/);assert.equal(prepared.measuredTokensPerSecond,42);
+  const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.toolCapable,true);assert.equal(prepared.model,'local-agent-fixture-4b');assert.match(prepared.apiKey,/^[a-f0-9]{64}$/);assert.equal(prepared.measuredTokensPerSecond,42);assert.equal(prepared.outputTokens,2048);assert.equal(runtime.getStatus().profile?.outputTokens,2048);
   const env=await runtime.requestJson<{secret?:string;tools?:string;rpc?:string;flags:string[];pid:number}>('/env');assert.equal(env.secret,undefined);assert.equal(env.tools,undefined);assert.equal(env.rpc,undefined);
   for(const flag of ['--offline','--no-agent','--no-webui','--no-ui-mcp-proxy','--no-cache-prompt','--no-cache-idle-slots','--no-context-shift'])assert(env.flags.includes(flag));
   assert.equal(env.flags[env.flags.indexOf('--cache-ram')+1],'0');assert.equal(env.flags[env.flags.indexOf('--parallel')+1],'1');assert.equal(env.flags[env.flags.indexOf('--host')+1],'127.0.0.1');
+  assert.equal(env.flags[env.flags.indexOf('--predict')+1],'2048');assert.equal(env.flags[env.flags.indexOf('--ctx-size')+1],'8192');
   assert.equal((await fetch(`${prepared.baseUrl}/props`)).status,401);assert.deepEqual((await readdir(directory)).filter(f=>f.startsWith('.inference-key-')),[]);
   const again=await runtime.prepareModel(spec.id);assert.equal(again.baseUrl,prepared.baseUrl);assert.equal((await runtime.requestJson<{pid:number}>('/env')).pid,env.pid);assert.equal(launches.filter(a=>a.includes('--model')).length,1);
   await runtime.stop();assert.equal(runtime.getStatus().state,'stopped');await assert.rejects(fetch(`${prepared.baseUrl}/props`));
 });
 
 test('allocation failures reduce batches before the bounded 4K CPU profile, with finite exhaustion',async t=>{
-  const {runtime,launches}=await fixture(t,{FAKE_ALLOCATE:'large'});await runtime.start();const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.contextTokens,8192);assert.equal(runtime.getStatus().profile?.index,1);
-  const lower=await runtime.restartLowerProfile();assert.equal(lower.contextTokens,4096);assert.equal(runtime.getStatus().profile?.backend,'cpu');assert.equal(lower.outputTokens,512);await assert.rejects(runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});
+  const {runtime,launches}=await fixture(t,{FAKE_ALLOCATE:'large'});await runtime.start();const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.contextTokens,8192);assert.equal(prepared.outputTokens,2048);assert.equal(runtime.getStatus().profile?.index,1);
+  const lower=await runtime.restartLowerProfile();assert.equal(lower.contextTokens,4096);assert.equal(runtime.getStatus().profile?.backend,'cpu');assert.equal(lower.outputTokens,1024);assert.equal(runtime.getStatus().profile?.outputTokens,1024);await assert.rejects(runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});
   assert.deepEqual(launches.filter(a=>a.includes('--model')).map(a=>a[a.indexOf('--batch-size')+1]),['512','256','128']);
+  assert.deepEqual(launches.filter(a=>a.includes('--model')).map(a=>a[a.indexOf('--predict')+1]),['2048','2048','1024']);
+});
+
+test('a native context cap reduces the generation allowance to one quarter of the confirmed context',async t=>{
+  const nativeFetch=fetch;
+  // The real loader can cap a tiny model below the requested 8K context.
+  const fetchImplementation:typeof fetch=async (...args)=>{
+    const response=await nativeFetch(...args);
+    if(String(args[0]).endsWith('/props')&&response.ok){const properties=await response.json();properties.default_generation_settings.n_ctx=2048;return Response.json(properties);}
+    return response;
+  };
+  const {runtime,launches}=await fixture(t,{},hardware,fetchImplementation);
+  await runtime.start();const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.contextTokens,2048);assert.equal(prepared.outputTokens,512);assert.equal(runtime.getStatus().profile?.outputTokens,512);
+  const load=launches.find(args=>args.includes('--model'))!;assert.equal(load[load.indexOf('--ctx-size')+1],'8192');assert.equal(load[load.indexOf('--predict')+1],'2048');
 });
 
 test('model format errors never trigger allocation fallback',async t=>{

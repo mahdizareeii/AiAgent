@@ -1,6 +1,6 @@
 # Free Local Agent setup and developer guide
 
-Free Local Agent **0.2.0-alpha.1** runs local models through a bundled llama.cpp engine. The
+Free Local Agent **0.3.0-alpha.1** runs local models through a bundled llama.cpp engine. The
 packaged app includes the native inference engine, offline Goose backend, and
 research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
@@ -8,7 +8,7 @@ platform support.
 
 ## First launch
 
-On macOS Apple Silicon, unzip the macOS arm64 archive, move `Free Local Agent.app` into
+On macOS Apple Silicon, unzip `Free Local Agent-0.3.0-alpha.1-arm64-mac.zip`, move `Free Local Agent.app` into
 Applications, and open it; the runtime is included and model weights are downloaded
 or imported separately.
 
@@ -21,14 +21,71 @@ or imported separately.
 3. Optionally **Check tools & speed**. This checks native tool calling and measures
    generation speed, not complete agent-task quality. Enable **Allow slow mode** only if you
    accept slower CPU/offload operation for a model classified as slow.
-4. Choose tools, select a project for Coding, and attach the exact local files you
-   want processed. File reading works in every mode; project search, edits, and
-   terminal commands work in Coding; web tools work in Research after you enable
-   web research. A chat-only model can process attached files through local read
-   stages, but cannot call agent tools.
+4. Start **New agent task**. New tasks default to **Agent** mode; choose or create
+   a workspace folder and enable the tools your task needs. File reading works
+   in every mode; project search, file creation/editing, and terminal commands
+   work in Agent; web tools work in Research after you enable web research. Use
+   **Chat** for conversation and attached-file reading. A chat-only model can
+   process attached files through local read stages, but cannot run Agent tasks.
 5. Review proposed edits/commands and **Approve once** or **Deny**. **Stop** cancels
    the task. **Resume task** appears for a paused read-only checkpoint. An
    interrupted agent turn needs a new request; Resume does not replay its actions.
+
+The interface starts with a light porcelain theme and cobalt/violet accents.
+Use the moon/sun toggle in the header to switch themes. The preference is saved
+locally and restored next time the app opens.
+
+## Creating a WordPress project
+
+Use Agent mode for work that creates files or executes commands. An older saved
+Chat conversation remains read-only; start **New agent task** to build a project.
+The current Qwen4B test created approved files, but its complete WordPress setup
+failed validation and did not start a site. A separate two-file theme task passed
+file creation, readback, and static checks, but no PHP or WordPress runtime ran.
+Review generated configuration and reported checks rather than treating file
+creation as successful installation.
+
+1. Select a model that has passed **Check tools & speed**. A chat-only model
+   cannot create project files or run commands.
+2. Choose **Agent**, then **Choose workspace** or the workspace folder control.
+   The native picker can create a new folder. Select an empty folder for a new
+   project; start a new task if you want to change an existing task's workspace.
+3. In **Tools**, enable **Create & edit files** and **Terminal**. File
+   reading and project search let the model inspect its workspace and results.
+4. Ask for the result you want, for example:
+
+   > Create a local WordPress project in this empty workspace, including setup
+   > files and a small custom theme. Inspect installed tools, create the project,
+   > and run available validation. Report the exact steps still needed to start it.
+
+5. Review the proposed files before **Approve once**. The agent can propose
+   1–20 **new** text files in a single `create_files` batch, with a maximum of
+   512 KiB of combined UTF-8 content. Parent folders are created automatically.
+   The batch cannot overwrite an existing file; replacements and edits require
+   a separate reviewed action. Larger scaffolds need multiple approved batches.
+6. Review each setup, installation, or validation command before approving it.
+   A project may need PHP, a database, Docker, WP-CLI, or other tools depending
+   on the chosen setup. The agent can inspect what is installed; dependencies
+   must already be present or be installed through approved commands. Downloads
+   and package installation can require the internet.
+7. Inspect the created files and the recorded check results. PHP and PHTML files
+   are supported by local file reading and project search. A scaffold is a set
+   of project files; a running WordPress site also needs its services started
+   and a successful runtime check. File creation alone does not prove that the
+   site is installed, healthy, or ready to publish.
+
+**Undo change** treats a new-file batch as a group, removing the unchanged files
+it created and any newly created directories that remain empty. Files changed
+outside the app are preserved. Undo cannot reverse package installations,
+database changes, or other terminal-command side effects.
+
+Agent mode is instructed to inspect, implement, and validate rather than stop
+after a plan. It respects action denials, and an interrupted task never
+automatically repeats an approved command or edit. If tools, an approval, a
+dependency, or networking block completion, the result should identify that
+observed blocker and the work already performed. The
+[update validation record](agent-update-validation.md) separates tested behavior
+from checks that are still pending.
 
 The inference process is app-owned and bound to loopback. It runs in offline mode,
 without the engine's web UI or agent tools. The app does not use an existing

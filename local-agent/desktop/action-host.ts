@@ -11,7 +11,7 @@ export interface ActionHost {
 }
 
 const requestSchema = z.object({
-  tool: z.enum(['edit_file', 'write_file', 'run_command', 'read_command_output']),
+  tool: z.enum(['edit_file', 'write_file', 'create_files', 'run_command', 'read_command_output']),
   args: z.record(z.string(), z.unknown()),
 });
 const failure = (error: unknown): ActionResult => ({
@@ -24,6 +24,7 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
   if (signal.aborted) throw new Error('The action host was cancelled before startup.');
   const secret = randomBytes(32).toString('hex');
   let queue: Promise<void> = Promise.resolve();
+  let denied = false;
   const inFlight = new Set<Promise<void>>();
   const server = createServer((request, response) => {
     if (request.method !== 'POST' || request.url !== `/${secret}` || request.headers.origin !== undefined || signal.aborted) {
@@ -53,7 +54,18 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
         const value = requestSchema.parse(JSON.parse(body));
         // The host queue covers commands as well as edits. Only one action can
         // wait for permission at a time, even if Goose proposes parallel tools.
-        const queued = queue.catch(() => undefined).then(() => actions.execute(value.tool, value.args, { signal }));
+        const queued = queue.catch(() => undefined).then(async () => {
+          // A denial ends write/command work for this turn. Check inside the
+          // queue so calls already submitted in parallel cannot ask again.
+          if (denied && value.tool !== 'read_command_output') return {
+            isError: true,
+            errorCode: 'TURN_DENIED',
+            content: [{ type: 'text' as const, text: 'This turn stopped after a denied action. Send a new request to continue. No action was taken.' }],
+          };
+          const result = await actions.execute(value.tool, value.args, { signal });
+          if (result.errorCode === 'PERMISSION_DENIED') denied = true;
+          return result;
+        });
         queue = queued.then(() => undefined, () => undefined);
         const result = await queued;
         if (!response.destroyed) response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(result));

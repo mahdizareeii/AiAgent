@@ -14,8 +14,10 @@ export const allocationFailure = (error: unknown) => /(?:out of memory|failed to
 /** Only older complete exchanges may be compacted; active instructions/calls stay intact. */
 export function compactionPartition(messages: Message[]): { retained: Message[]; older: Message[] } {
   const lastUser = messages.findLastIndex(message => message.role === 'user');
-  const lastCall = messages.findLastIndex(message => message.role === 'assistant' && Boolean(message.tool_calls?.length));
-  const preserveFrom = lastCall > lastUser ? lastCall : Math.max(0, lastUser);
+  // Earlier calls in this same user turn can already have written files or run
+  // commands. Keep their exact results as well as the most recent call: losing
+  // them can make the model repeat an action or invent its outcome.
+  const preserveFrom = Math.max(0, lastUser);
   const retained: Message[] = [], older: Message[] = [];
   messages.forEach((message, index) => {
     if (['system', 'developer'].includes(message.role) || index === lastUser || index >= preserveFrom) retained.push(message);
@@ -47,7 +49,7 @@ export class BudgetedInference {
     return summary;
   }
   async prepare(body: ChatBody, signal?: AbortSignal): Promise<ChatBody> {
-    let prepared: ChatBody = { ...body, model: this.profile.model, parallel_tool_calls: false,
+    let prepared: ChatBody = { ...body, model: this.profile.model, parallel_tool_calls: false, cache_prompt: false,
       max_tokens: Math.min(typeof body.max_tokens === 'number' && body.max_tokens > 0 ? body.max_tokens : this.profile.outputTokens, this.profile.outputTokens) };
     if (!Array.isArray(prepared.messages)) throw new Error('Chat messages are required.');
     if (await this.count(prepared, signal) + Number(prepared.max_tokens) <= this.profile.contextTokens - 64) return prepared;
@@ -108,14 +110,25 @@ export class BudgetedInference {
 }
 
 export async function createInferenceGateway(inference: BudgetedInference, signal: AbortSignal) {
+  if (signal.aborted) throw new Error('The inference gateway was cancelled before startup.');
   const apiKey = randomBytes(32).toString('hex');
   let queue: Promise<unknown> = Promise.resolve();
+  const controllers = new Set<AbortController>();
   const server = createServer((request, response) => {
     if (signal.aborted || request.headers.origin !== undefined || request.headers.authorization !== `Bearer ${apiKey}`) {
       response.writeHead(403).end(); return;
     }
+    const controller = new AbortController();
+    controllers.add(controller);
+    const abort = () => controller.abort();
+    const requestSignal = AbortSignal.any([signal, controller.signal]);
+    // A disconnected Goose request must not leave its generation occupying the
+    // single slot, and a cancelled queued request must never reach the model.
+    request.once('aborted', abort);
+    response.once('close', abort);
     const work = async () => {
       try {
+        requestSignal.throwIfAborted();
         if (request.method === 'GET' && request.url === '/v1/models') {
           response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ object: 'list', data: [{ id: inference.currentProfile.model, object: 'model' }] })); return;
         }
@@ -124,19 +137,26 @@ export async function createInferenceGateway(inference: BudgetedInference, signa
         for await (const chunk of request) { size += chunk.length; if (size > 8 * 1024 * 1024) throw new Error('Inference request is too large.'); buffers.push(Buffer.from(chunk)); }
         const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(buffers))) as ChatBody;
         if (body.stream) {
-          const upstream = await inference.completeStream(body, signal);
+          const upstream = await inference.completeStream(body, requestSignal);
           if (!upstream.ok || !upstream.body) throw new Error(`Local inference failed (${upstream.status}).`);
           response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
           const reader = upstream.body.getReader();
-          try { while (!response.destroyed && !signal.aborted) {
+          try { while (!response.destroyed && !requestSignal.aborted) {
             const { done, value } = await reader.read(); if (done) break;
-            if (!response.write(Buffer.from(value))) await new Promise<void>(resolve => { response.once('drain', resolve); response.once('close', resolve); });
+            if (!response.write(Buffer.from(value))) await new Promise<void>(resolve => {
+              const done = () => { response.off('drain', done); response.off('close', done); resolve(); };
+              response.once('drain', done); response.once('close', done);
+            });
           } } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
           response.end();
-        } else response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(await inference.completeJson(body, signal)));
+        } else response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(await inference.completeJson(body, requestSignal)));
       } catch (error) {
-        if (!response.headersSent) response.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: String(error), type: 'local_inference_error' } }));
-        else response.end();
+        if (!response.destroyed) {
+          if (!response.headersSent) response.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: String(error), type: 'local_inference_error' } }));
+          else response.end();
+        }
+      } finally {
+        request.off('aborted', abort); response.off('close', abort); controllers.delete(controller);
       }
     };
     const task = queue.catch(() => {}).then(work); queue = task;
@@ -144,5 +164,8 @@ export async function createInferenceGateway(inference: BudgetedInference, signa
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Could not start local inference gateway.');
   return { baseUrl: `http://127.0.0.1:${address.port}`, apiKey,
-    close: async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await queue; } };
+    close: async () => {
+      for (const controller of controllers) controller.abort();
+      server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await queue;
+    } };
 }

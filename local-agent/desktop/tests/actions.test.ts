@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -356,6 +357,7 @@ test('disabled host utilities refuse edits, commands, and logs before approval',
   try {
     for (const [name, args] of [
       ['write_file', { path: 'new.txt', content: 'disabled' }],
+      ['create_files', { files: [{ path: 'new.txt', content: 'disabled' }] }],
       ['edit_file', { path: 'new.txt', old_text: 'old', new_text: 'new' }],
       ['run_command', { command: 'echo disabled' }],
       ['read_command_output', { id: '00000000-0000-0000-0000-000000000000' }],
@@ -367,6 +369,168 @@ test('disabled host utilities refuse edits, commands, and logs before approval',
     assert.equal(approvals, 0);
     assert.deepEqual(await readdir(run.projectPath), []);
     await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+  } finally { await run.cleanup(); }
+});
+
+test('an empty project can create a reviewed WordPress theme and verify it with an approved command', async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => { permissions.push(permission); return true; });
+  const theme = 'wp-content/themes/local-agent';
+  const files = [
+    { path: `${theme}/style.css`, content: '/*\nTheme Name: Local Agent\nVersion: 1.0.0\n*/\n' },
+    { path: `${theme}/index.php`, content: '<?php get_header(); ?>\n<main><?php if (have_posts()) : while (have_posts()) : the_post(); the_title(); the_content(); endwhile; endif; ?></main>\n<?php get_footer(); ?>\n' },
+    { path: `${theme}/functions.php`, content: "<?php\nadd_action('after_setup_theme', function () { add_theme_support('title-tag'); });\n" },
+  ];
+  try {
+    assert.deepEqual(await readdir(run.projectPath), []);
+    const created = await run.actions.execute('create_files', { files });
+    assert.equal(created.isError, undefined);
+    assert.equal(permissions.length, 1);
+    assert.equal(permissions[0].title, 'Create 3 project files');
+    for (const file of files) {
+      assert.ok(permissions[0].preview!.includes(`+++ ${file.path}`));
+      assert.equal(await readFile(path.join(run.projectPath, file.path), 'utf8'), file.content);
+    }
+    const command = process.platform === 'win32' ? 'if exist functions.php (echo SCAFFOLD_OK) else (exit /b 1)' : 'test -f functions.php && test -f index.php && test -f style.css && printf SCAFFOLD_OK';
+    const verified = await run.actions.execute('run_command', { command, cwd: theme });
+    assert.equal(verified.isError, undefined);
+    assert.match(verified.content[0].text, /SCAFFOLD_OK/);
+    assert.equal(permissions.length, 2);
+    assert.equal(permissions[1].cwd, path.join(run.projectPath, theme));
+    assert.equal(await run.actions.undo(), 3, 'One undo reverses the complete reviewed creation batch.');
+    assert.deepEqual(await readdir(run.projectPath), []);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('a denied creation batch makes no files, parent folders, or undo snapshots', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return false; });
+  try {
+    const response = await run.actions.execute('create_files', { files: [{ path: 'theme/index.php', content: '<?php echo 1;' }, { path: 'theme/style.css', content: 'body {}' }] });
+    assert.equal(response.isError, true);
+    assert.match(response.content[0].text, /denied/);
+    assert.equal(approvals, 1);
+    assert.deepEqual(await readdir(run.projectPath), []);
+    await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+  } finally { await run.cleanup(); }
+});
+
+test('invalid, protected, existing and conflicting batch paths reject before approval', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    await writeFile(path.join(run.projectPath, 'existing.txt'), 'keep');
+    for (const files of [
+      [],
+      [{ path: '../outside.php', content: 'denied' }],
+      [{ path: '.env', content: 'denied' }],
+      [{ path: 'existing.txt', content: 'replacement' }],
+      [{ path: 'theme', content: 'file' }, { path: 'theme/index.php', content: 'file' }],
+      [{ path: 'same.txt', content: 'first' }, { path: './same.txt', content: 'second' }],
+      [{ path: 'private.txt', content: '-----BEGIN PRIVATE KEY-----\nsecret' }],
+      [{ path: 'large.txt', content: 'x'.repeat(512 * 1024 + 1) }],
+      Array.from({ length: 21 }, (_, index) => ({ path: `${index}.txt`, content: 'text' })),
+    ]) assert.equal((await run.actions.execute('create_files', { files })).isError, true);
+    assert.equal(approvals, 0);
+    assert.deepEqual(await readdir(run.projectPath), ['existing.txt']);
+    assert.equal(await readFile(path.join(run.projectPath, 'existing.txt'), 'utf8'), 'keep');
+  } finally { await run.cleanup(); }
+});
+
+test('a stale batch approval preserves an externally created file and writes no other batch files', async () => {
+  let run: Awaited<ReturnType<typeof setup>>;
+  run = await setup(async () => { await writeFile(path.join(run.projectPath, 'second.txt'), 'user version'); return true; });
+  try {
+    const response = await run.actions.execute('create_files', { files: [{ path: 'nested/first.txt', content: 'agent first' }, { path: 'second.txt', content: 'agent second' }] });
+    assert.equal(response.isError, true);
+    assert.match(response.content[0].text, /appeared while approval/);
+    assert.deepEqual(await readdir(run.projectPath), ['second.txt']);
+    assert.equal(await readFile(path.join(run.projectPath, 'second.txt'), 'utf8'), 'user version');
+  } finally { await run.cleanup(); }
+});
+
+test('cancelling an approved creation batch rolls back completed files and empty new folders', async () => {
+  const controller = new AbortController();
+  let creating = 0;
+  const run = await setup(async () => true, { onTool: event => {
+    if (event.status === 'running' && event.title.startsWith('Create ')) {
+      creating++;
+      if (creating === 2) controller.abort();
+    }
+  } });
+  try {
+    const response = await run.actions.execute('create_files', { files: [{ path: 'theme/first.php', content: '<?php echo 1;' }, { path: 'theme/second.php', content: '<?php echo 2;' }] }, { signal: controller.signal });
+    assert.equal(creating, 2);
+    assert.equal(response.isError, true);
+    assert.match(response.content[0].text, /cancelled/);
+    assert.deepEqual(await readdir(run.projectPath), []);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('batch undo works after service restart and preserves externally edited files', async () => {
+  const run = await setup();
+  try {
+    await run.actions.execute('create_files', { files: [{ path: 'theme/first.php', content: '<?php echo 1;' }, { path: 'theme/second.php', content: '<?php echo 2;' }] });
+    await writeFile(path.join(run.projectPath, 'theme/first.php'), 'user edit');
+    const restarted = new LocalActions({ projectPath: run.projectPath, historyDirectory: run.historyDirectory, onPermission: async () => false });
+    assert.equal(await restarted.undo(), 1);
+    assert.equal(await readFile(path.join(run.projectPath, 'theme/first.php'), 'utf8'), 'user edit');
+    assert.deepEqual(await readdir(path.join(run.projectPath, 'theme')), ['first.php']);
+    assert.equal(await restarted.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('exclusive batch publication cannot overwrite a file created after its last preflight', async () => {
+  let run: Awaited<ReturnType<typeof setup>>;
+  run = await setup(async () => true, { onTool: event => {
+    if (event.status === 'running' && event.title === 'Create theme/index.php') writeFileSync(path.join(run.projectPath, 'theme/index.php'), 'user raced creation');
+  } });
+  try {
+    const response = await run.actions.execute('create_files', { files: [{ path: 'theme/index.php', content: '<?php echo 1;' }] });
+    assert.equal(response.isError, true);
+    assert.match(response.content[0].text, /No existing file was overwritten/);
+    assert.equal(await readFile(path.join(run.projectPath, 'theme/index.php'), 'utf8'), 'user raced creation');
+    assert.deepEqual(await readdir(path.join(run.projectPath, 'theme')), ['index.php']);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('cancelled batch rollback preserves an external edit to an already created file', async () => {
+  const controller = new AbortController();
+  let run: Awaited<ReturnType<typeof setup>>;
+  run = await setup(async () => true, { onTool: event => {
+    if (event.status === 'running' && event.title === 'Create theme/second.php') {
+      writeFileSync(path.join(run.projectPath, 'theme/first.php'), 'external edit during creation');
+      controller.abort();
+    }
+  } });
+  try {
+    const response = await run.actions.execute('create_files', { files: [{ path: 'theme/first.php', content: '<?php echo 1;' }, { path: 'theme/second.php', content: '<?php echo 2;' }] }, { signal: controller.signal });
+    assert.equal(response.isError, true);
+    assert.equal(await readFile(path.join(run.projectPath, 'theme/first.php'), 'utf8'), 'external edit during creation');
+    assert.deepEqual(await readdir(path.join(run.projectPath, 'theme')), ['first.php']);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('batch creation rejects swapped symlink parents and a replaced project root', async () => {
+  let run: Awaited<ReturnType<typeof setup>>;
+  run = await setup(async () => {
+    await mkdir(path.join(run.directory, 'outside'));
+    await symlink(path.join(run.directory, 'outside'), path.join(run.projectPath, 'theme'), process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  });
+  try {
+    assert.equal((await run.actions.execute('create_files', { files: [{ path: 'theme/index.php', content: '<?php echo 1;' }] })).isError, true);
+    assert.deepEqual(await readdir(path.join(run.directory, 'outside')), []);
+    await rm(run.projectPath, { recursive: true });
+    await symlink(path.join(run.directory, 'outside'), run.projectPath, process.platform === 'win32' ? 'junction' : 'dir');
+    const response = await run.actions.execute('create_files', { files: [{ path: 'new.php', content: '<?php echo 1;' }] });
+    assert.equal(response.isError, true);
+    assert.match(response.content[0].text, /selected project folder changed/i);
+    assert.deepEqual(await readdir(path.join(run.directory, 'outside')), []);
   } finally { await run.cleanup(); }
 });
 

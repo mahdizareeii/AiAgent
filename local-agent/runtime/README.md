@@ -90,8 +90,8 @@ Events are `status`, `pull-progress` and `log`. Cancellation raises
 ## Memory and privacy
 
 The default profiles are 8K context with 512/128 batch/microbatch tokens, then
-8K with 256/64, then CPU 4K with 128/32. Output reserves are 1024/1024/512,
-reduced for a smaller effective native context. Only allocation failures
+8K with 256/64, then CPU 4K with 128/32. Output reserves are 2048/2048/1024,
+also capped at one quarter of the confirmed effective native context. Only allocation failures
 trigger bounded automatic retries. Every profile loads at most one model with
 one inference slot. Prompt cache RAM, idle-slot caches, context checkpoints,
 context shifting, Web UI, MCP proxy and built-in engine agent tools are

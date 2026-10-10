@@ -29,6 +29,18 @@ def test_file_read_range_is_bounded_and_numbered(project):
     assert result["truncated"]
 
 
+@pytest.mark.parametrize("extension", ["php", "phtml"])
+def test_wordpress_php_sources_can_be_read_listed_and_searched(project, extension):
+    root, grants = project
+    source = root / f"functions.{extension}"
+    source.write_text("<?php\nfunction local_agent_theme_setup() {}\n")
+    assert "local_agent_theme_setup" in grants.read_file(source.name)["text"]
+    assert str(source) in grants.list_files(str(root))["files"]
+    matches = grants.search_files(str(root), "local_agent_theme_setup")["matches"]
+    assert len(matches) == 1
+    assert matches[0]["line"] == 2
+
+
 @pytest.mark.parametrize("requested", ["../outside.txt", "/etc/passwd", "hello.py/../../outside.txt"])
 def test_no_path_escape(project, requested):
     _, grants = project

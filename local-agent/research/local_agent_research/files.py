@@ -27,7 +27,7 @@ MAX_VISITED = 10_000
 SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
 SECRET_NAMES = {".env", ".aws", ".ssh", ".gnupg", ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.json", "secrets.json", "id_rsa", "id_ed25519"}
 SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".kdbx"}
-TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".swift", ".kt", ".html", ".css", ".scss", ".json", ".toml", ".yaml", ".yml", ".xml", ".sql", ".sh", ".zsh", ".bash", ".csv", ".tsv", ".ini", ".cfg", ".conf", ".log", ".tex", ".vue", ".svelte"}
+TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".swift", ".kt", ".php", ".phtml", ".html", ".css", ".scss", ".json", ".toml", ".yaml", ".yml", ".xml", ".sql", ".sh", ".zsh", ".bash", ".csv", ".tsv", ".ini", ".cfg", ".conf", ".log", ".tex", ".vue", ".svelte"}
 TEXT_NAMES = {"Dockerfile", "Makefile", "LICENSE", "NOTICE", ".gitignore", ".editorconfig"}
 
 

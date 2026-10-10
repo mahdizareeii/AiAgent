@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_CREATE_FILES = 20;
+const MAX_CREATE_BYTES = 512 * 1024;
 const PRIVATE_KEY = /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/;
 
 export interface ActionPermission {
@@ -27,6 +29,8 @@ export interface ActionToolEvent {
 export interface ActionResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
+  /** Host-owned error identity; never inferred from model or command text. */
+  errorCode?: string;
 }
 
 export interface LocalActionsOptions {
@@ -52,6 +56,8 @@ interface Snapshot {
   mode: number;
   applied: boolean;
   undone: boolean;
+  groupId?: string;
+  createdDirectories?: string[];
 }
 
 class ActionError extends Error {
@@ -95,6 +101,7 @@ function diffPreview(relative: string, before: string | null, after: string): st
 export const ACTION_TOOL_SCHEMAS = [
   { name: 'edit_file', description: 'Propose one exact text replacement in a project file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
   { name: 'write_file', description: 'Propose creating or replacing a project text file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
+  { name: 'create_files', description: 'Propose 1–20 new project text files in one reviewed batch. Parent folders are created automatically; existing files cannot be replaced. Total content <=512 KiB. One approval shows every file and grouped undo is available.', inputSchema: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } } }, required: ['files'], additionalProperties: false } },
   { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command and working directory. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', minimum: 100, maximum: 120000 } }, required: ['command'], additionalProperties: false } },
 ] as const;
 
@@ -114,7 +121,7 @@ export class LocalActions {
 
   async execute(tool: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<ActionResult> {
     const id = randomUUID();
-    const title = tool === 'run_command' ? 'Run command' : tool === 'read_command_output' ? 'Read command output' : tool === 'edit_file' ? 'Edit file' : 'Write file';
+    const title = tool === 'run_command' ? 'Run command' : tool === 'read_command_output' ? 'Read command output' : tool === 'create_files' ? 'Create project files' : tool === 'edit_file' ? 'Edit file' : 'Write file';
     this.options.onTool?.({ id, title, status: 'pending', input: args });
     try {
       if (options.signal?.aborted) throw cancelled();
@@ -123,6 +130,10 @@ export class LocalActions {
       else if (tool === 'run_command') {
         if (this.options.utilities?.terminal === false) throw new ActionError('DISABLED_TOOL', 'Terminal commands are disabled.');
         output = await this.runCommand(id, args, options.signal);
+      }
+      else if (tool === 'create_files') {
+        if (this.options.utilities?.fileEditing === false) throw new ActionError('DISABLED_TOOL', 'File editing is disabled.');
+        output = await this.serial(() => this.createFiles(id, args, options.signal));
       }
       else if (tool === 'edit_file' || tool === 'write_file') {
         if (this.options.utilities?.fileEditing === false) throw new ActionError('DISABLED_TOOL', 'File editing is disabled.');
@@ -135,6 +146,7 @@ export class LocalActions {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The action failed.';
       const output = result(message, true);
+      if (error instanceof ActionError) output.errorCode = error.code;
       this.options.onTool?.({ id, title, status: 'failed', input: args, output });
       return output;
     }
@@ -148,6 +160,7 @@ export class LocalActions {
 
   private async target(file: string, directory = false): Promise<Target> {
     const root = await realpath(this.options.projectPath);
+    if (root !== path.resolve(this.options.projectPath)) throw new ActionError('INVALID_PROJECT', 'The selected project folder changed. Choose its actual folder again.');
     if (!(await lstat(root)).isDirectory()) throw new ActionError('INVALID_PROJECT', 'The selected project is not a directory.');
     const absolute = path.resolve(root, file);
     if (!contained(root, absolute) || (!directory && absolute === root)) throw new ActionError('OUTSIDE_PROJECT', 'This action must stay inside the selected project folder.');
@@ -205,6 +218,114 @@ export class LocalActions {
       if (signal?.aborted) throw cancelled();
       await rename(temporary, absolute);
     } finally { await unlink(temporary).catch(() => undefined); }
+  }
+
+  /** Publish a complete new file without overwriting a target created in a race. */
+  private async atomicCreate(absolute: string, content: string, signal?: AbortSignal): Promise<void> {
+    const temporary = path.join(path.dirname(absolute), `.local-agent-${randomUUID()}.tmp`);
+    try {
+      if (signal?.aborted) throw cancelled();
+      await writeFile(temporary, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      if (signal?.aborted) throw cancelled();
+      try { await link(temporary, absolute); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ActionError('STALE_PREVIEW', 'A file appeared before the approved creation. No existing file was overwritten.');
+        throw error;
+      }
+    } finally { await unlink(temporary).catch(() => undefined); }
+  }
+
+  private async createParents(target: Target, created: string[], signal?: AbortSignal): Promise<void> {
+    let current = target.root;
+    for (const component of path.relative(target.root, path.dirname(target.absolute)).split(path.sep).filter(Boolean)) {
+      if (signal?.aborted) throw cancelled();
+      current = path.join(current, component);
+      await this.target(target.relative);
+      try {
+        const info = await lstat(current);
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new ActionError('INVALID_DIRECTORY', 'A project file parent is not a regular directory.');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        try { await mkdir(current, { mode: 0o755 }); created.push(path.relative(target.root, current)); }
+        catch (mkdirError) { if ((mkdirError as NodeJS.ErrnoException).code !== 'EEXIST') throw mkdirError; }
+      }
+      await this.target(target.relative);
+    }
+  }
+
+  private async removeEmptyDirectories(directories: string[]): Promise<void> {
+    for (const directory of [...new Set(directories)].sort((a, b) => b.split(path.sep).length - a.split(path.sep).length)) {
+      if (!directory || directory === '.' || path.isAbsolute(directory)) continue;
+      try {
+        const target = await this.target(directory, true);
+        if (target.relative) await rmdir(target.absolute);
+      } catch { /* Preserve non-empty, changed, protected, or externally removed directories. */ }
+    }
+  }
+
+  private async createFiles(id: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ActionResult> {
+    if (!Array.isArray(args.files) || args.files.length < 1 || args.files.length > MAX_CREATE_FILES) throw new ActionError('INVALID_ARGUMENT', 'files must contain between 1 and 20 {path, content} entries.');
+    const planned: { target: Target; content: string; snapshot: Snapshot }[] = [];
+    let totalBytes = 0;
+    for (const row of args.files) {
+      if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).some(key => !['path', 'content'].includes(key))) throw new ActionError('INVALID_ARGUMENT', 'Each file must contain only path and content.');
+      const file = textArgument(row, 'path');
+      if (file.length > 1024) throw new ActionError('INVALID_ARGUMENT', 'Project file paths must be at most 1024 characters.');
+      const content = textArgument(row, 'content', true);
+      totalBytes += Buffer.byteLength(content, 'utf8');
+      if (totalBytes > MAX_CREATE_BYTES) throw new ActionError('FILES_TOO_LARGE', 'A creation batch supports at most 512 KiB of text. Split larger scaffolds into reviewed batches.');
+      if (PRIVATE_KEY.test(content)) throw new ActionError('PROTECTED_CONTENT', 'The agent cannot write private keys.');
+      const target = await this.target(file);
+      const normalized = (name: string) => ['win32', 'darwin'].includes(process.platform) ? name.toLowerCase() : name;
+      const key = normalized(target.absolute);
+      if (planned.some(item => contained(normalized(item.target.absolute), key) || contained(key, normalized(item.target.absolute)))) throw new ActionError('CONFLICTING_PATHS', 'File paths must be distinct and cannot also be another file’s parent directory.');
+      if ((await this.fileVersion(target.absolute)).content !== null) throw new ActionError('FILE_EXISTS', `${target.relative} already exists. Use write_file or edit_file to review a replacement.`);
+      planned.push({ target, content, snapshot: { version: 1, id: randomUUID(), groupId: id, createdAt: new Date().toISOString(), projectPath: target.root,
+        relativePath: target.relative, before: null, beforeHash: null, afterHash: hash(content), mode: 0o600, applied: false, undone: false } });
+    }
+    await this.permission({ requestId: id, title: `Create ${planned.length} project ${planned.length === 1 ? 'file' : 'files'}`,
+      arguments: args, preview: planned.map(item => diffPreview(item.target.relative, null, item.content)).join('\n\n') }, signal);
+    for (const item of planned) {
+      const checked = await this.target(item.target.relative);
+      if (checked.root !== item.target.root || (await this.fileVersion(checked.absolute)).content !== null) throw new ActionError('STALE_PREVIEW', 'A project file appeared while approval was pending. Review a fresh creation batch.');
+    }
+    const createdDirectories: string[] = [];
+    const applied: typeof planned = [];
+    try {
+      if (signal?.aborted) throw cancelled();
+      await mkdir(this.options.historyDirectory, { recursive: true, mode: 0o700 });
+      for (const item of planned) {
+        if (signal?.aborted) throw cancelled();
+        const snapshotFile = path.join(this.options.historyDirectory, `${item.snapshot.id}.json`);
+        await this.atomicWrite(snapshotFile, JSON.stringify(item.snapshot), 0o600);
+        await this.createParents(item.target, createdDirectories, signal);
+        await this.target(item.target.relative);
+        this.options.onTool?.({ id, title: `Create ${item.target.relative}`, status: 'running', input: { path: item.target.relative } });
+        await this.atomicCreate(item.target.absolute, item.content, signal);
+        item.snapshot.applied = true; applied.push(item);
+        await this.atomicWrite(snapshotFile, JSON.stringify(item.snapshot), 0o600);
+      }
+      if (signal?.aborted) throw cancelled();
+      for (const item of applied) {
+        item.snapshot.createdDirectories = [...createdDirectories];
+        await this.atomicWrite(path.join(this.options.historyDirectory, `${item.snapshot.id}.json`), JSON.stringify(item.snapshot), 0o600);
+      }
+      if (signal?.aborted) throw cancelled();
+      const names = planned.map(item => item.target.relative).join('\n');
+      const allowance = Math.max(256, this.options.resultChars ?? 2000);
+      return result(`Created ${planned.length} project files. One undo restores this creation batch.\n${names.slice(0, allowance)}${names.length > allowance ? '\n[File list shortened; every path was included in approval.]' : ''}`);
+    } catch (error) {
+      for (const item of [...applied].reverse()) {
+        try {
+          const checked = await this.target(item.target.relative);
+          if ((await this.fileVersion(checked.absolute)).hash !== item.snapshot.afterHash) continue;
+          await unlink(checked.absolute); item.snapshot.undone = true;
+          await this.atomicWrite(path.join(this.options.historyDirectory, `${item.snapshot.id}.json`), JSON.stringify(item.snapshot), 0o600);
+        } catch { /* An externally changed file remains available for reviewed undo. */ }
+      }
+      await this.removeEmptyDirectories(createdDirectories);
+      throw error;
+    }
   }
 
   private async writeFile(tool: string, id: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ActionResult> {
@@ -374,20 +495,34 @@ export class LocalActions {
           const raw = await readFile(path.join(this.options.historyDirectory, name), 'utf8');
           if (raw.length > MAX_FILE_BYTES * 2 + 4096) continue;
           const value = JSON.parse(raw) as Snapshot;
-          if (value.version === 1 && value.id === name.slice(0, -5) && value.projectPath === root && value.applied === true && value.undone === false && typeof value.relativePath === 'string' && /^[a-f0-9]{64}$/.test(value.afterHash) && (typeof value.before === 'string' || value.before === null)) snapshots.push(value);
+          if (value.version === 1 && value.id === name.slice(0, -5) && value.projectPath === root && value.applied === true && value.undone === false && typeof value.createdAt === 'string' && typeof value.relativePath === 'string' && /^[a-f0-9]{64}$/.test(value.afterHash) && (typeof value.before === 'string' || value.before === null) && (value.groupId === undefined || /^[a-f0-9-]{36}$/i.test(value.groupId))) snapshots.push(value);
         } catch { /* A malformed snapshot must not trigger a project mutation. */ }
       }
       snapshots.sort((first, second) => second.createdAt.localeCompare(first.createdAt));
       for (const snapshot of snapshots) {
-        const target = await this.target(snapshot.relativePath);
-        const current = await this.fileVersion(target.absolute);
+        let current: FileVersion;
+        try { current = await this.fileVersion((await this.target(snapshot.relativePath)).absolute); }
+        catch { continue; } // A replaced link or protected user content is never restored.
         if (current.hash !== snapshot.afterHash) continue;
         if (snapshot.before !== null && hash(snapshot.before) !== snapshot.beforeHash) continue;
-        if (snapshot.before === null) await unlink(target.absolute);
-        else await this.atomicWrite(target.absolute, snapshot.before, snapshot.mode);
-        snapshot.undone = true;
-        await this.atomicWrite(path.join(this.options.historyDirectory, `${snapshot.id}.json`), JSON.stringify(snapshot), 0o600);
-        return 1;
+        const group = snapshot.groupId ? snapshots.filter(item => item.groupId === snapshot.groupId) : [snapshot];
+        let restored = 0;
+        const directories: string[] = [];
+        for (const item of group) {
+          let checked: Target, observed: FileVersion;
+          try { checked = await this.target(item.relativePath); observed = await this.fileVersion(checked.absolute); }
+          catch { continue; }
+          if (observed.hash !== item.afterHash) continue;
+          if (item.before !== null && hash(item.before) !== item.beforeHash) continue;
+          if (item.before === null) await unlink(checked.absolute);
+          else await this.atomicWrite(checked.absolute, item.before, item.mode);
+          item.undone = true;
+          await this.atomicWrite(path.join(this.options.historyDirectory, `${item.id}.json`), JSON.stringify(item), 0o600);
+          if (Array.isArray(item.createdDirectories)) directories.push(...item.createdDirectories.filter(directory => typeof directory === 'string'));
+          restored++;
+        }
+        await this.removeEmptyDirectories(directories);
+        return restored;
       }
       return 0;
     });

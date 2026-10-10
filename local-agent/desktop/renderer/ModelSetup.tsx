@@ -30,6 +30,7 @@ function MemoryEstimate({ estimate }: { estimate: LocalModel['memoryEstimate'] }
 interface Props {
   status: AgentStatus | null;
   mode: Mode;
+  projectSelected: boolean;
   ready: boolean;
   busy: boolean;
   setupBusy: boolean;
@@ -79,8 +80,8 @@ export default function ModelSetup(props: Props) {
       <div className="model-guide"><p><strong>What does 4-bit mean?</strong> Q4_K_M and QAT Q4_0 store model weights at lower precision. They use less memory and storage than full-precision weights, with some quality tradeoff.</p><details><summary>Memory fit, calibration, and licenses</summary><p>All model weights must fit in the available memory budget, including expert models with fewer active parameters. Staged reading reduces the context size; it does not shrink the model. Fit and speed remain estimates until the model is loaded and calibrated on this computer.</p><p>Apache 2.0 models are free to use under an open license, subject to its license and notice conditions. Open <strong>Model source</strong> for the publisher’s model and license details. Imported files may use different licenses.</p></details></div>
     </section>
     {status && <label className="slow-mode-control"><div><strong>Allow slow mode</strong><p>Permit models that may need CPU offloading or smaller context. Responses can take longer.</p></div><input type="checkbox" checked={status.slowMode} disabled={locked || !hasBridge} onChange={(event) => void props.onSlowMode(event.target.checked)} /><span className="toggle-track" aria-hidden="true" /></label>}
-    {status && <section className="setup-utilities"><div className="model-section-heading"><div><h3>Choose what your agent can do</h3><p>Preferences stay enabled across chats. Each card shows which modes use it.</p></div></div><Utilities preferences={status.utilities} mode={props.mode} toolCapable={selectedModel?.toolCapable} disabled={locked || !hasBridge} onChange={props.onUtilities} /></section>}
+    {status && <section className="setup-utilities"><div className="model-section-heading"><div><h3>Choose what your agent can do</h3><p>Preferences stay enabled across chats. Each card shows which modes use it.</p></div></div><Utilities preferences={status.utilities} mode={props.mode} toolCapable={selectedModel?.toolCapable} projectSelected={props.projectSelected} calibrated={selectedModel?.toolCapable === true && selectedModel.measuredTokensPerSecond !== undefined} disabled={locked || !hasBridge} onChange={props.onUtilities} /></section>}
     {error && <div className="setup-error" role="alert">{error}{!status?.runtime.ready && <button className="text-button" disabled={locked || !hasBridge} onClick={() => void props.onSetup()}>Retry runtime</button>}</div>}
-    <div className="setup-footer"><span><Icon name="shield" size={15} />Bundled runtime · Local inference</span><button className="primary-button" disabled={!ready || locked} onClick={props.onClose}>Start a conversation<Icon name="chevron" size={15} /></button></div>
+    <div className="setup-footer"><span><Icon name="shield" size={15} />Bundled runtime · Local inference</span><button className="primary-button" disabled={!ready || locked} onClick={props.onClose}>{props.mode === 'coding' ? 'Open agent workspace' : 'Start a conversation'}<Icon name="chevron" size={15} /></button></div>
   </div></div>;
 }

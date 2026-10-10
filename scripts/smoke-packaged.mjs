@@ -92,7 +92,7 @@ try {
     const transport = new StdioClientTransport({ command, args, env, cwd: directory, stderr: 'pipe' });
     let stderr = '';
     transport.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
-    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.2.0-alpha.1' });
+    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.3.0-alpha.1' });
     connections.push({ client, transport });
     try { await bounded(client.connect(transport), `${label} initialization`); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}${stderr ? `\n${stderr}` : ''}`); }
@@ -105,7 +105,7 @@ try {
     ELECTRON_RUN_AS_NODE: '1', LOCAL_AGENT_ACTION_URL: host.url,
   }), 'Packaged Electron/ASAR MCP bridge');
   const bridgeTools = await bounded(bridge.listTools(), 'Bridge tool listing');
-  assert.deepEqual(bridgeTools.tools.map(tool => tool.name).sort(), ['edit_file', 'read_command_output', 'run_command', 'write_file']);
+  assert.deepEqual(bridgeTools.tools.map(tool => tool.name).sort(), ['create_files', 'edit_file', 'read_command_output', 'run_command', 'write_file']);
   const denied = await bounded(bridge.callTool({ name: 'write_file', arguments: {
     path: 'smoke.txt', content: 'must not be written\n',
   } }), 'Denied packaged write');

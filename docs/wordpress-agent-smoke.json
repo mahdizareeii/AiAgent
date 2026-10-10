@@ -1,0 +1,88 @@
+{
+  "timestamp": "2026-10-10T14:07:01.415Z",
+  "model": "qwen3.5:4b",
+  "modelSHA256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+  "hardware": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5",
+    "cpuCores": 10,
+    "totalMemoryBytes": 25769803776,
+    "availableMemoryBytes": 7623213056,
+    "freeDiskBytes": 512107372544,
+    "gpus": [
+      {
+        "name": "Apple M5",
+        "backend": "metal",
+        "totalMemoryBytes": 19069403136,
+        "freeMemoryBytes": 19068354560,
+        "unifiedMemory": true
+      }
+    ]
+  },
+  "profile": {
+    "contextTokens": 8192,
+    "outputTokens": 2048,
+    "batchTokens": 512,
+    "microBatchTokens": 128,
+    "backend": "metal",
+    "index": 0
+  },
+  "prepared": {
+    "contextTokens": 8192,
+    "outputTokens": 2048,
+    "toolCapable": true,
+    "measuredTokensPerSecond": 24.968525253262477
+  },
+  "project": "/private/tmp/local-agent-inference-smoke/wordpress-9ae314ad-f6a9-4dc9-85ad-406fffd2a21f",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2479,
+      "sha256": "9ef43210700dbf69cb771b880ed9fd0d95ffbe7a401cf8d500b202ef5801d8da"
+    },
+    {
+      "path": "docker-compose.yml",
+      "bytes": 743,
+      "sha256": "a7958cde148afb31ce61fbe8ecb8ef94e94138766678b4613eac74889c22e778"
+    },
+    {
+      "path": "sample-wordpress.txt",
+      "bytes": 433,
+      "sha256": "ddf573680235437068fb80ea79c02a37aeaae56eafad662dacc54d184bcda857"
+    },
+    {
+      "path": "wordpress-config/wp-config-sample.php",
+      "bytes": 1868,
+      "sha256": "b60de3ef69f3a5a764458ce305884ed08bcc38e14562c9e37b217d5f5d4b3524"
+    },
+    {
+      "path": "wordpress-config/wp-config.php",
+      "bytes": 644,
+      "sha256": "8d3882c01df13f619ee014b9da50898d6f901bb96162b9f6247e92c09bd58e22"
+    }
+  ],
+  "externalNetworkDenied": true,
+  "actualApprovedFileCreations": 5,
+  "actualApprovedCommands": 0,
+  "actionRoutingPassed": true,
+  "completeWordPressTaskPassed": false,
+  "independentValidation": {
+    "passed": false,
+    "error": "PHP bind source must be an existing file: ./wordpress-config",
+    "validator": "/private/tmp/local-agent-inference-smoke/validate-wordpress-33e665c6-c2bc-4270-9fd1-d7553d1695a1.mjs"
+  },
+  "nativeBudgetStopped": {
+    "inputTokens": 6321,
+    "outputReserve": 2048,
+    "usableContext": 8128,
+    "activeActionHistoryWasNotCompacted": true
+  },
+  "protectedEnvironmentFilesCreated": false,
+  "ownedProcessesStopped": true,
+  "limitations": [
+    "No container or site was launched.",
+    "Generated PHP configurations also lack the WordPress bootstrap and contain duplicate defines.",
+    "This single task is not a broad model-quality benchmark."
+  ]
+}

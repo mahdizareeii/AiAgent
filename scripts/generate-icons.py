@@ -20,7 +20,7 @@ sample = 2
 image = Image.new("RGBA", (1024 * sample, 1024 * sample), (0, 0, 0, 0))
 draw = ImageDraw.Draw(image)
 draw.rounded_rectangle(tuple(v * sample for v in (42, 42, 982, 982)), radius=210 * sample,
-                       fill="#0b101b", outline="#253449", width=3 * sample)
+                       fill="#172754", outline="#3c5191", width=3 * sample)
 scale = 29 * sample
 origin = 164 * sample
 

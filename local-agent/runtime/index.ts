@@ -166,9 +166,9 @@ export class LocalInferenceRuntime extends EventEmitter {
     this.preparePromise=this.prepareInternal(model,signal,true).catch(error=>{if(!this.child){this.update({state:this.engine.length?'ready':'stopped',baseUrl:null,loadedModel:null,profile:null,error:signal.aborted?null:{code:error instanceof RuntimeError?error.code:'MODEL_LOAD_FAILED',message:error instanceof Error?error.message:'Model loading failed.'}});}throw error;}).finally(()=>{this.preparePromise=null;this.loadController=null;});return this.preparePromise;
   }
   private profiles():InferenceProfile[]{const available=this.status.hardware?.gpus.some(g=>g.backend===this.engine[0]?.id);const backend=available?this.engine[0].id:'cpu';return [
-    {contextTokens:8192,outputTokens:1024,batchTokens:512,microBatchTokens:128,backend,index:0},
-    {contextTokens:8192,outputTokens:1024,batchTokens:256,microBatchTokens:64,backend,index:1},
-    {contextTokens:4096,outputTokens:512,batchTokens:128,microBatchTokens:32,backend:'cpu',index:2}];}
+    {contextTokens:8192,outputTokens:2048,batchTokens:512,microBatchTokens:128,backend,index:0},
+    {contextTokens:8192,outputTokens:2048,batchTokens:256,microBatchTokens:64,backend,index:1},
+    {contextTokens:4096,outputTokens:1024,batchTokens:128,microBatchTokens:32,backend:'cpu',index:2}];}
   private async prepareInternal(model:string,signal:AbortSignal,verify:boolean):Promise<PreparedModel>{
     if(!this.engine.length)await this.start({signal});const spec=this.spec(model);
     const verified=await this.inspectModel(model,{signal});throwIfAborted(signal);
@@ -200,7 +200,7 @@ export class LocalInferenceRuntime extends EventEmitter {
       const props=await this.requestJson<{total_slots:number;default_generation_settings:{n_ctx:number};build_info:string;ui:boolean;cors_proxy_enabled:boolean;chat_template_caps:Record<string,unknown>}>('/props',undefined,signal);
       const actualContext=props.default_generation_settings?.n_ctx;
       if(props.total_slots!==1||!Number.isInteger(actualContext)||actualContext<512||actualContext>profile.contextTokens||props.ui!==false||props.cors_proxy_enabled!==false||!String(props.build_info).includes('d812350'))throw new RuntimeError('INVALID_ENGINE_PROPERTIES','The local service did not confirm the app-owned bounded engine configuration.');
-      const outputTokens=Math.min(profile.outputTokens,Math.max(64,Math.floor(actualContext/8)));
+      const outputTokens=Math.min(profile.outputTokens,Math.max(64,Math.floor(actualContext/4)));
       if(actualContext!==profile.contextTokens)this.update({profile:{...profile,contextTokens:actualContext,outputTokens}});
       let toolCapable=props.chat_template_caps?.supports_tool_calls===true&&(this.toolsPassed.get(spec.id)??spec.toolCapable);
       let measuredTokensPerSecond:number|undefined;

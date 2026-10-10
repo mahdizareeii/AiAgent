@@ -27,6 +27,33 @@ export interface BackendOptions {
 
 const platformExtensions = ['analyze', 'todo', 'apps', 'chatrecall', 'extensionmanager',
   'scheduler', 'summon', 'summarize', 'code_execution', 'developer', 'orchestrator', 'tom', 'skills'];
+const actionsEnabled = (options: BackendOptions) => options.mode === 'coding' &&
+  (options.utilities.fileEditing || options.utilities.terminal);
+const denialText = 'The user denied this action. No action was taken.';
+const denialNotice = 'Action denied. This task stopped to prevent automatic retries. Completed changes are preserved; start a new task when you are ready.';
+
+/** Recognize only the exact owned action error, never quoted model/file prose. */
+export function deniedActionResult(value: unknown, depth = 0): boolean {
+  if (depth > 5 || !value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(item => deniedActionResult(item, depth + 1));
+  const item = value as Record<string, unknown>;
+  if (item.errorCode === 'PERMISSION_DENIED' && item.isError === true) return true;
+  if (item.type === 'text' && item.text === denialText) return true;
+  return deniedActionResult(item.content, depth + 1);
+}
+
+/** Tell small local models what this particular turn can actually do. */
+export function agentPrompt(options: BackendOptions, request: string): string {
+  const capabilities = ['You are running inside Free Local Agent. Use the tools advertised for this turn to complete the user task.'];
+  if (actionsEnabled(options)) {
+    capabilities.push(`The selected project directory is ${JSON.stringify(options.cwd)}. File-tool paths are relative to this directory; do not repeat its folder name.`);
+    if (options.utilities.fileEditing) capabilities.push('For build/create requests, use create_files for new scaffold batches, write_file for individual files, and edit_file for precise changes. Work in small steps and inspect existing files first when needed.');
+    capabilities.push(`Each response has a ${options.outputTokens}-token output limit. Keep scaffold files and documentation concise; split large file batches into smaller calls so tool arguments remain complete.`);
+    if (options.utilities.terminal) capabilities.push('Use run_command for necessary setup or verification, then inspect its actual result.');
+    capabilities.push('Every file change and command needs approval in the app. Wait for the tool result. Respect a denial and do not retry the denied action. Report only changes and checks that succeeded.');
+  } else capabilities.push('This turn has no file-writing or command tools. Describe this limit accurately if the task needs them.');
+  return `${capabilities.join(' ')}\n\nUSER TASK AND LOCAL CONTEXT:\n${request}`;
+}
 
 /** No API keys, external Goose settings, proxies, or arbitrary model endpoints are inherited. */
 export function backendEnvironment(options: BackendOptions): NodeJS.ProcessEnv {
@@ -36,6 +63,9 @@ export function backendEnvironment(options: BackendOptions): NodeJS.ProcessEnv {
     if (process.env[key]) env[key] = process.env[key];
   }
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(options.baseUrl)) throw new Error('Inference must use the app-owned loopback endpoint.');
+  if (actionsEnabled(options) && (!options.actionUrl || !/^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{64}$/.test(options.actionUrl))) {
+    throw new Error('Project actions require the app-owned approval host.');
+  }
   return { ...env, GOOSE_PATH_ROOT: options.dataDirectory, GOOSE_PROVIDER: 'openai',
     GOOSE_MODEL: options.model, GOOSE_MODE: 'auto', GOOSE_TELEMETRY_OFF: '1', GOOSE_DISABLE_KEYRING: '1',
     GOOSE_CONTEXT_LIMIT: String(options.contextTokens), GOOSE_MAX_TURNS: '25',
@@ -45,7 +75,7 @@ export function backendEnvironment(options: BackendOptions): NodeJS.ProcessEnv {
     LOCAL_AGENT_UTILITIES: JSON.stringify(options.utilities),
     LOCAL_AGENT_TOOL_RESULT_CHARS: String(Math.min(4000, Math.floor(options.contextTokens / 2))),
     LOCAL_AGENT_GRANTED_FILES: JSON.stringify(options.grantedFiles),
-    LOCAL_AGENT_ACTION_URL: options.actionUrl ?? '', ELECTRON_RUN_AS_NODE: '1',
+    LOCAL_AGENT_ACTION_URL: actionsEnabled(options) ? options.actionUrl : '', ELECTRON_RUN_AS_NODE: '1',
   };
 }
 
@@ -58,6 +88,9 @@ export class GooseBackend {
   private options: BackendOptions;
   private stopPromise?: Promise<void>;
   private childClosed?: Promise<void>;
+  private prompting = false;
+  private reviewedActionIds = new Set<string>();
+  private actionDenied = false;
   constructor(options: BackendOptions) { this.options = options; }
 
   async start(): Promise<void> {
@@ -84,23 +117,31 @@ export class GooseBackend {
         if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
           o.onEvent({ type: 'message', text: update.content.text, role: 'assistant' });
         } else if (update.sessionUpdate === 'tool_call') {
+          if (/^reviewed[ _]actions:/i.test(update.title)) this.reviewedActionIds.add(update.toolCallId);
           o.onEvent({ type: 'tool', id: update.toolCallId, title: update.title,
             status: update.status ?? 'pending', input: update.rawInput });
         } else if (update.sessionUpdate === 'tool_call_update') {
           o.onEvent({ type: 'tool', id: update.toolCallId, title: update.title ?? 'Tool',
             status: update.status ?? 'in_progress', output: update.rawOutput ?? update.content });
+          if (update.status === 'failed' && this.reviewedActionIds.has(update.toolCallId) &&
+            deniedActionResult(update.rawOutput ?? update.content)) {
+            this.actionDenied = true;
+            // The host's denial latch blocks subsequent mutation requests. End
+            // the model turn too, so it cannot loop asking for the same action.
+            void this.stop().catch(() => {});
+          }
         }
       },
       // Goose has no direct write/terminal capability. Authoritative approvals happen in our MCP host.
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
     }), ndJsonStream(Writable.toWeb(this.child.stdin), Readable.toWeb(this.child.stdout) as unknown as ReadableStream<Uint8Array>));
     await this.withTimeout(this.connection.initialize({ protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'free-local-agent-desktop', version: '0.2.0-alpha.1' },
+      clientInfo: { name: 'free-local-agent-desktop', version: '0.3.0-alpha.1' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
     const extensions: object[] = [{ type: 'mcp', timeout: 180,
       server: { name: 'local_files_and_research', command: o.researchExecutable, args: [], env: [] } }];
-    if (o.mode === 'coding' && (o.utilities.fileEditing || o.utilities.terminal)) {
+    if (actionsEnabled(o)) {
       extensions.push({ type: 'mcp', timeout: 900, server: { name: 'reviewed_actions',
         command: o.nodeExecutable, args: [o.bridgeExecutable], env: [] } });
     }
@@ -108,8 +149,8 @@ export class GooseBackend {
       _meta: { enabledExtensions: extensions, sessionTitle: 'Free Local Agent', client: 'free-local-agent' } }), 60_000);
     this.gooseSessionId = session.sessionId;
     const results = session._meta?.extensionResults;
-    const expected = o.mode === 'coding' && (o.utilities.fileEditing || o.utilities.terminal) ? ['local_files_and_research', 'reviewed_actions'] : ['local_files_and_research'];
-    if (!Array.isArray(results) || results.length !== expected.length || results.some(result =>
+    const expected = actionsEnabled(o) ? ['local_files_and_research', 'reviewed_actions'] : ['local_files_and_research'];
+    if (!Array.isArray(results) || results.length !== expected.length || new Set(results.map(result => result && typeof result === 'object' ? result.name : undefined)).size !== expected.length || results.some(result =>
       !result || typeof result !== 'object' || result.success !== true || !expected.includes(String(result.name)))) {
       await this.stop();
       throw new Error(`Could not start the expected local tools: ${JSON.stringify(results)}`);
@@ -119,7 +160,16 @@ export class GooseBackend {
 
   async prompt(text: string): Promise<void> {
     if (!this.connection || !this.gooseSessionId || this.stopped) throw new Error('Agent is not running.');
-    await this.connection.prompt({ sessionId: this.gooseSessionId, prompt: [{ type: 'text', text }] });
+    if (this.prompting) throw new Error('An agent task is already running.');
+    this.prompting = true;
+    try {
+      await this.connection.prompt({ sessionId: this.gooseSessionId, prompt: [{ type: 'text', text: agentPrompt(this.options, text) }] });
+      if (this.actionDenied) throw new Error(denialNotice);
+    } catch (error) {
+      if (this.actionDenied) throw new Error(denialNotice);
+      throw error;
+    }
+    finally { this.prompting = false; }
   }
 
   async cancel(): Promise<void> {

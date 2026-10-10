@@ -4,7 +4,7 @@ export const DEFAULT_UTILITIES: UtilityPreferences = { fileReading: true, projec
 export const utilitySchema = z.object({ fileReading: z.boolean(), projectSearch: z.boolean(), fileEditing: z.boolean(), terminal: z.boolean(), webResearch: z.boolean() }).strict();
 export interface SavedSession { id: string; title: string; updatedAt: string; mode: Mode; projectPath?: string; messages: ChatMessage[]; files: Attachment[] }
 export interface SavedState { version: 2; selectedModel: string | null; projectPath?: string; mode: Mode; utilities: UtilityPreferences; slowMode: boolean; sessions: SavedSession[] }
-export const emptyState = (): SavedState => ({ version: 2, selectedModel: null, mode: 'assistant', utilities: { ...DEFAULT_UTILITIES }, slowMode: false, sessions: [] });
+export const emptyState = (): SavedState => ({ version: 2, selectedModel: null, mode: 'coding', utilities: { ...DEFAULT_UTILITIES }, slowMode: false, sessions: [] });
 export function migrateState(value: unknown): SavedState {
   const schema = z.object({ version: z.union([z.literal(1), z.literal(2)]).optional(), selectedModel: z.string().max(256).nullable(),
     projectPath: z.string().optional(), mode: z.enum(['coding', 'research', 'assistant']), utilities: utilitySchema.optional(), slowMode: z.boolean().optional(),

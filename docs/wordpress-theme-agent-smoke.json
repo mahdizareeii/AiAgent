@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-10-10T14:14:21.561Z",
+  "project": "/private/tmp/local-agent-inference-smoke/wordpress-theme-5a62f22a-4205-4435-8a62-d3ed17d4a498",
+  "model": "qwen3.5:4b",
+  "modelSHA256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+  "hardware": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5",
+    "cpuCores": 10,
+    "totalMemoryBytes": 25769803776,
+    "availableMemoryBytes": 7884734464,
+    "freeDiskBytes": 516089757696,
+    "gpus": [
+      {
+        "name": "Apple M5",
+        "backend": "metal",
+        "totalMemoryBytes": 19069403136,
+        "freeMemoryBytes": 19068354560,
+        "unifiedMemory": true
+      }
+    ]
+  },
+  "profile": {
+    "contextTokens": 8192,
+    "outputTokens": 2048,
+    "batchTokens": 512,
+    "microBatchTokens": 128,
+    "backend": "metal",
+    "index": 0
+  },
+  "prepared": {
+    "contextTokens": 8192,
+    "outputTokens": 2048,
+    "toolCapable": true,
+    "measuredTokensPerSecond": 38.61422458924118
+  },
+  "inputTokens": [
+    2571,
+    3026,
+    3522,
+    4042
+  ],
+  "externalNetworkDenied": true,
+  "files": [
+    {
+      "path": "style.css",
+      "bytes": 509,
+      "sha256": "f93c1d7594fae65ce969a0c78514af4089186f7ff1303792c15af9d1f8e494ee"
+    },
+    {
+      "path": "index.php",
+      "bytes": 644,
+      "sha256": "64b02f3cd712d708b6e5bc8f0b3849e52803b29804b236db2107b6548ca6ceb1"
+    }
+  ],
+  "oneApprovedBatch": true,
+  "actualReadbackSHA256Verified": true,
+  "structureChecksPassed": true,
+  "taskFunctionalityPassed": true,
+  "phpOrWordPressExecuted": false,
+  "siteRunning": false,
+  "ownedProcessesStopped": true,
+  "initialHarnessFalseNegative": "AssertionError [ERR_ASSERTION]: Agent must read back style.css",
+  "correction": "The initial harness required an absolute input path. Both real read_file calls correctly used workspace-relative paths; canonical owned result paths, SHA-256 and sizes match actual created files.",
+  "limitations": [
+    "Static structure checks only; no PHP syntax or WordPress rendering check.",
+    "Two-file theme uses WordPress core theme-compat header/footer fallback rather than supplying full templates.",
+    "the_title() outputs directly; this is not a comprehensive escaping or theme security audit.",
+    "Single tightly scoped task does not establish broad coding quality."
+  ],
+  "sources": [
+    "https://developer.wordpress.org/reference/functions/get_header/",
+    "https://developer.wordpress.org/reference/functions/locate_template/"
+  ]
+}

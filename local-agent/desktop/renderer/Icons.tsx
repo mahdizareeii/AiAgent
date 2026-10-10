@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 
-type IconName = 'brand' | 'plus' | 'arrow' | 'folder' | 'attach' | 'code' | 'search' | 'spark' | 'settings' | 'check' | 'close' | 'download' | 'stop' | 'external' | 'undo' | 'chevron' | 'chat' | 'shield' | 'monitor';
+type IconName = 'brand' | 'plus' | 'arrow' | 'folder' | 'attach' | 'code' | 'search' | 'spark' | 'settings' | 'check' | 'close' | 'download' | 'stop' | 'external' | 'undo' | 'chevron' | 'chat' | 'shield' | 'monitor' | 'sun' | 'moon';
 
 const paths: Record<IconName, string> = {
   brand: 'M8 18V6h9M8 12h7',
@@ -22,6 +22,8 @@ const paths: Record<IconName, string> = {
   chat: 'M21 11a9 9 0 0 1-9 9H3l2-5a9 9 0 1 1 16-4Z',
   shield: 'M12 3 3 7v5c0 5 9 9 9 9s9-4 9-9V7Zm-4 9 3 3 5-6',
   monitor: 'M3 4h18v13H3Zm5 17h8m-4-4v4',
+  sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5',
+  moon: 'M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z',
 };
 
 export default function Icon({ name, size = 18, style }: { name: IconName; size?: number; style?: CSSProperties }) {
