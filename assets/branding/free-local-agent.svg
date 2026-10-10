@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#50e3d3" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-labelledby="title">
+  <title id="title">Free Local Agent monogram</title>
+  <ellipse cx="12" cy="12" rx="10.6" ry="7.8" transform="rotate(-35 12 12)" stroke-width="0.75" opacity="0.48" />
+  <path d="M8 18V6h9M8 12h7" />
+  <circle cx="20.4" cy="6.5" r="1.1" fill="#50e3d3" stroke="none" />
+</svg>

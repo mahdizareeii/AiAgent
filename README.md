@@ -1,196 +1,155 @@
-# Local Agent
+# Free Local Agent
 
-An open-source desktop alpha for coding, research, and documents with models
-running on your computer. Version **0.2.0-alpha.1** bundles the llama.cpp inference
-engine and builds Goose with online model metadata disabled. End users do not
-install Ollama, Python, Rust, or a separate model server. Model weights are a
-separate download or a compatible GGUF import. Catalogue downloads require the
-internet; an imported local file does not. After setup, local chat and file work
-can run offline. No model API key is required.
+**Your AI. Your machine. Your freedom.**
 
-Real Qwen3.5 4B chat, native tool calling, and a Goose/MCP file-read smoke passed
-on Apple M5. Short native and packaged-app tool calibrations measured
-**30.8–37.5 tokens/sec**; see the [compatibility report](docs/compatibility-report.md)
-for the distinct runs. Broader task quality and peak-memory behavior still need
-the [validation run](docs/alpha-validation.md). Windows and Linux native CI is
-configured; it has not been executed locally. See
-[build verification](docs/build-verification.md) for the distinction between
-current checks and earlier alpha results.
+Free Local Agent is an open-source desktop AI agent for chat, coding, research,
+and documents. It runs a free model on your own computer, using a bundled
+inference engine. You choose the model, the project, and the tools it can use.
+File edits and terminal commands wait for your approval.
 
-## What the app provides
+No hosted model account, API key, subscription, Ollama, or separately installed
+model server is required. Model weights are a separate download or local GGUF
+import. Once a compatible model is installed, chat and local file work can run
+offline.
 
-- Hardware detection shows CPU, system memory, free storage, and supported GPU
-  backends. Model cards show fit, quantization, license, estimated working memory,
-  potential tool support, source, and optional measured tokens per second.
-  Expand a card's memory estimate to see weights, 8K context, scratch space,
-  operating-system reserve, and system/GPU budgets separately. The loaded runtime
-  profile shows its current context capacity, which may be lower after fallback.
-- Download a pinned GGUF model with progress, cancellation, retry, and SHA-256
-  verification; or import a compatible local GGUF. Calibration checks local tool
-  calling and measures generation speed. Fit estimates are provisional until a
-  model loads and runs.
-- Choose tools individually: file reading, project search, file editing, terminal,
-  and web research. **Web research is off by default.** Edits and terminal commands
-  require approval for every action. File changes have snapshots for undo per chat.
-- Large attached documents and long requests are read and summarized in bounded
-  stages, with visible progress and local checkpoints. Paused read-only stages
-  can resume after verifying the model and source hashes. Agent edits and commands
-  are never automatically replayed by Resume.
-- Coding, Research, and Assistant chats share local conversation storage. Text,
-  code, Markdown, and text-based PDFs are supported. Web research uses DuckDuckGo
-  and public pages and therefore uses the internet when explicitly enabled.
+**Current version: 0.2.0-alpha.1.** macOS Apple Silicon is the tested platform.
+Windows and Linux packaging/CI is configured; native validation is still pending.
 
-The catalogue includes Qwen3.5 4B/9B and Gemma 4 12B/26B A4B/31B:
+![Free Local Agent home screen with local model status and conversation controls](docs/screenshots/free-local-agent-home.png)
 
-| Model | Quantization | Download | Estimated working memory |
+*The home screen, captured from the running desktop app.*
+
+## What Free Local Agent does
+
+- **Chat locally.** Assistant, Coding, and Research modes use the same locally
+  stored conversations. Responses come from the model running on your machine;
+  tool-capable models stream replies, while chat-only imports return completed replies.
+- **Work with a project.** Search selected project files, propose edits, run
+  approved terminal commands, and restore file snapshots with per-chat undo.
+- **Read larger documents gradually.** Text, code, Markdown, and text-based PDFs
+  are read in bounded stages and summarized with source references. Progress,
+  cancellation, and local read checkpoints help manage longer tasks.
+- **Choose a model for this computer.** Hardware detection and model cards explain
+  memory fit, quantization, download size, licenses, and tool compatibility.
+  Optional calibration checks tool calling and measures generation speed.
+- **Control the utilities.** File reading, project search, editing, terminal
+  commands, and web research have individual controls. Web research is off by
+  default.
+
+![Free Local Agent conversation workspace showing a local chat and its model status](docs/screenshots/free-local-agent-chat.png)
+
+*A local conversation in the running app.*
+
+## Models and hardware
+
+![Free Local Agent model setup showing detected hardware, model choices, fit assessments, and download or import controls](docs/screenshots/free-local-agent-models.png)
+
+*Choose a pinned catalog model or import a compatible GGUF file.*
+
+| Model | Quantization | Approximate download | Estimated working memory |
 | --- | --- | --- | --- |
-| Qwen3.5 4B | Q4_K_M | 2.7 GB | 4.5 GB |
-| Qwen3.5 9B | Q4_K_M | 5.7 GB | 8 GB |
-| Gemma 4 12B | QAT Q4_0 | 7.0 GB | 10 GB |
-| Gemma 4 26B A4B | QAT Q4_0 | 14.4 GB | 19 GB |
-| Gemma 4 31B | QAT Q4_0 | 17.7 GB | 23 GB |
+| Qwen3.5 4B | Q4_K_M | 2.7 GB | 4.5 GiB |
+| Qwen3.5 9B | Q4_K_M | 5.7 GB | 8 GiB |
+| Gemma 4 12B | QAT Q4_0 | 7.0 GB | 10 GiB |
+| Gemma 4 26B A4B | QAT Q4_0 | 14.4 GB | 19 GiB |
+| Gemma 4 31B | QAT Q4_0 | 17.7 GB | 23 GiB |
 
-Sizes are approximate and working memory includes a context/scratch estimate.
-Hardware fit also reserves memory for the operating system and other programs.
-A four-bit model stores its weights at lower precision than full-precision weights,
-reducing memory and storage with a quality tradeoff. Catalogue sizes and fit are
-estimates, not measured peak memory or a completed performance benchmark.
-A model's smaller active parameter count does not reduce all its stored weights.
-Slow mode may use CPU/partial GPU offload and smaller context. It does not make
-an oversized model fit by reducing its weights; choose a smaller model when the
-app reports insufficient memory.
+Catalog artifacts have pinned revisions, checksums, and license metadata.
+Downloads support cancellation and resume, and the app verifies their SHA-256
+before use. Four-bit quantization reduces storage and memory with a precision
+tradeoff. These working-memory values are planning estimates, not measured peaks;
+the app also reserves room for the operating system and considers available
+memory and accelerator placement.
 
-## First launch
+Model cards classify fit as **Recommended**, **Slow mode**, or **Insufficient
+memory**. Slow mode can use CPU or partial GPU offload and a smaller context.
+Staged processing reduces the context needed for large documents and long chats;
+the model weights must still fit usable memory. A smaller active parameter count
+in an expert model does not eliminate its stored weights.
 
-On macOS Apple Silicon, unzip the macOS arm64 archive, move `Local Agent.app` into
-Applications, and open it; the runtime is included and model weights are downloaded
-or imported separately.
+Imported models start with chat capabilities. Agent tools require a supported
+architecture/template and passing native tool calibration. A chat-only model can
+still process attached files through the app's local reading stages.
 
-1. Open **Models & setup** and inspect the detected hardware and bundled runtime.
-2. Choose a model that fits, then **Download model** and **Use model**. Alternatively,
-   choose **Import GGUF**. Compatible GGUF architecture and chat-template metadata
-   are required; unsupported files or variants can fail validation. An imported
-   model starts in chat-only mode. Agent tools are enabled only after the runtime
-   confirms native tool support and a local calibration passes.
-3. Optionally **Check tools & speed**. This checks native tool calling and measures
-   generation speed, not complete agent-task quality. Enable **Allow slow mode** only if you
-   accept slower CPU/offload operation for a model classified as slow.
-4. Choose tools, select a project for Coding, and attach the exact local files you
-   want processed. File reading works in every mode; project search, edits, and
-   terminal commands work in Coding; web tools work in Research after you enable
-   web research. A chat-only model can process attached files through local read
-   stages, but cannot call agent tools.
-5. Review proposed edits/commands and **Approve once** or **Deny**. **Stop** cancels
-   the task. **Resume task** appears for a paused read-only checkpoint. An
-   interrupted agent turn needs a new request; Resume does not replay its actions.
+## Your tools, your approval
 
-The inference process is app-owned and bound to loopback. It runs in offline mode,
-without the engine's web UI or agent tools. The app does not use an existing
-Ollama cache/service or fall back to a cloud provider. Downloads, enabled research,
-external links, and approved network commands still use the internet.
+![Free Local Agent utility settings explaining file reading, project search, editing, terminal access, and optional web research](docs/screenshots/free-local-agent-tools.png)
 
-## Build and run from source
+*Utility controls explain what each tool accesses and when approval is required.*
 
-Use native macOS Apple Silicon, Windows x64, or Ubuntu 24.04 x64 with Node.js
-24.10+, Python 3.12, **Rust 1.96.1**, and CMake. macOS needs Apple command-line
-build tools; Windows needs Visual Studio C++ Build Tools and its redistributable
-files. Ubuntu needs standard C/C++ build tools and the runtime libraries
-`libgomp1`, `libc6 >= 2.34`, `libstdc++6 >= 12` (GLIBCXX 3.4.30), and `libvulkan1`
-for optional Vulkan acceleration. These native version floors were checked across
-the bundled Linux executable and libraries; Ubuntu 24.04 provides them.
-The inference binaries are pinned official builds; no Vulkan SDK or GPU driver
-is bundled. Supported GPU acceleration needs the appropriate system driver.
+| Utility | Access and behavior |
+| --- | --- |
+| File and PDF reading | Reads files you attach or grant; works in every mode. Text PDFs only. |
+| Project search | Searches the selected project in Coding mode. Read-only searches need no per-action approval. |
+| File editing | Proposes project changes in Coding mode. Each write needs approval; saved file snapshots support undo. |
+| Terminal commands | Shows the proposed command in Coding mode and asks for approval each time. Commands run as your operating-system account. |
+| Web research | Available in Research mode only when enabled. Searches and public-page fetching use the internet. |
 
-Run from this repository root. Dependency preparation uses the internet and the
-Goose Rust build can take substantial time and disk space.
+Disabled web tools are excluded from tool registration. Approved shell commands
+can still access the network and files beyond the project; they have your account's
+permissions and are not OS-sandboxed. Undo restores file snapshots and cannot
+reverse terminal-command side effects. Resume verifies read checkpoints against
+source hashes and never automatically repeats an agent edit or command.
 
-macOS / Linux:
+## Get started
 
-```sh
-npm ci
-rustup toolchain install 1.96.1 --profile minimal
-export RUSTUP_TOOLCHAIN=1.96.1
-python3.12 -m venv local-agent/research/.venv
-local-agent/research/.venv/bin/python -m pip install -r local-agent/research/requirements-lock.txt -r local-agent/research/requirements-dev.txt
-npm run prepare:backend
-npm run prepare:inference
-npm run prepare:research
-npm run build
-LOCAL_AGENT_REQUIRE_INTEGRATION=1 npm run check
-cd local-agent/research
-.venv/bin/python -m pytest -q
-cd ../..
-npm start
-```
+For a packaged macOS build, unzip `Free Local Agent-0.2.0-alpha.1-arm64-mac.zip`, move
+`Free Local Agent.app` to Applications, and open it. Apple Silicon and macOS 13.3 or newer are
+required. This alpha is unsigned and not notarized.
 
-Windows PowerShell:
+1. Open **Models & setup** and review your detected hardware.
+2. Download a model that fits, or **Import GGUF** from a local file.
+3. Select the model; optionally run **Check tools & speed**.
+4. Choose utilities, select a project or attach files, and start a conversation.
+5. Review each proposed edit or command before approving it.
 
-```powershell
-npm ci
-rustup toolchain install 1.96.1 --profile minimal
-$env:RUSTUP_TOOLCHAIN = '1.96.1'
-py -3.12 -m venv local-agent/research/.venv
-local-agent/research/.venv/Scripts/python.exe -m pip install -r local-agent/research/requirements-lock.txt -r local-agent/research/requirements-dev.txt
-npm run prepare:backend
-npm run prepare:inference
-npm run prepare:research
-npm run build
-$env:LOCAL_AGENT_REQUIRE_INTEGRATION = '1'
-npm run check
-Push-Location local-agent/research
-.venv/Scripts/python.exe -m pytest -q
-Pop-Location
-npm start
-```
+See the [setup and developer guide](docs/setup-guide.md) for detailed setup,
+source builds, packaging, storage locations, and permission boundaries.
 
-`prepare:backend` builds the vendored Goose v1.53.0 source with
-`--no-default-features --features rustls-tls,disable-update`; its manifest records
-`offline: true`, feature flags, and the binary hash. `online-model-meta` is excluded.
-`prepare:inference` verifies pinned llama.cpp v0.6.0/build 11429 archives, license
-texts, and every bundled file. `prepare:research` builds a native Python sidecar.
-Source builders need the toolchains; packaged users receive those native resources.
-The integration flag prevents tests from silently skipping missing native resources.
-Protocol tests use a deterministic local provider and do not establish real-model
-competence.
+## How local is it?
 
-## Data and boundaries
+Free Local Agent bundles **llama.cpp v0.6.0** and a source-built **Goose v1.53.0** backend
+with online model metadata, telemetry, and update features disabled. The app owns
+the inference process and connects through an authenticated loopback endpoint.
+Inference stays on the selected local model; there is no cloud-provider fallback.
+End users do not need Python or Rust installed.
 
-Application data uses Electron's `userData` location: normally
-`~/Library/Application Support/Local Agent`, `%APPDATA%/Local Agent`, or
-`~/.config/Local Agent` (subject to XDG configuration). It contains chats, model
-files, imported-model records, stage checkpoints, and edit snapshots. Speed and
-tool-calibration results currently stay in memory for the runtime session and
-are checked again after restarting it.
-No disk encryption is added by the app. Avoid granting sensitive material you do
-not intend the local model to read.
+Model downloads and source dependency preparation need the internet. A local
+GGUF import does not. Enabled web research, external links, and approved network
+commands can use the internet. Chats, imported models, checkpoints, command logs,
+and edit snapshots are stored locally. The legacy `Local Agent` data-folder name
+is retained to preserve existing installations. The app adds no disk encryption.
 
-Approved commands run as your operating-system account and can access files or
-networks beyond the project directory. There is **no OS command sandbox**. Read
-and write tools enforce their own grants; those grants do not constrain an
-approved shell command. Undo restores saved file snapshots and cannot reverse
-terminal-command side effects. See [architecture and boundaries](docs/architecture.md).
+## Validation and current limits
 
-Bounded summaries can omit details. The app stores complete displayed transcripts,
-while model requests use a bounded recent context. A local model can produce wrong
-answers or malformed tool calls; inspect critical answers and proposed actions.
-Scanned PDFs/OCR, encrypted PDFs, Office editing, browser/desktop automation, signed
-installers, and automatic updates remain outside this alpha.
+On a **24 GB Apple M5**, Qwen3.5 4B passed real local chat, native tool calling,
+token counting, and a Goose/MCP file-read smoke with public networking blocked.
+Separate short native and earlier Local Agent packaged-app calibrations measured
+**30.8–37.5 tokens/sec**. These measurements are not a broad model-quality or peak-memory
+benchmark. See the [measured compatibility report](docs/compatibility-report.md).
 
-## Native packages and licenses
+The implementation passed **81 JavaScript/TypeScript tests**, **59 research
+tests**, and **5 frozen-sidecar protocol tests**, plus the macOS packaged smoke.
+The [verification report](docs/build-verification.md) describes what was tested,
+including the distinction between network-denied native tests and normal GUI
+checks.
 
-After preparation, run `npm run package` and `npm run smoke:package` on the target
-OS. Outputs in `release/` are a macOS arm64 ZIP, Windows x64 portable ZIP, and Ubuntu
-x64 DEB. **The macOS alpha is unsigned and not notarized.** Windows/Linux packages
-are unsigned, and their native jobs remain configured rather than locally verified.
-Do not treat an added CI configuration as a completed release.
+This alpha supports text, code, and text-based PDFs. OCR/scanned PDFs, vision,
+audio, CUDA-specific acceleration, browser/desktop automation, signed installers,
+and automatic updates are deferred. Windows/Linux native runs, broader catalog
+benchmarks, long-context peak memory, and the
+[task-quality rubric](docs/alpha-validation.md) remain pending. Summaries can omit
+details, and model answers or tool proposals can be wrong.
 
-[Native CI](.github/workflows/alpha.yml) prepares resources, requires integration
-checks, packages the app, runs offline resource/MCP/approval smoke checks, and
-uploads packages with SHA-256 checksums. It has read-only repository permissions
-and does not publish a GitHub release. PyInstaller packaging runs natively on each OS.
+## Source and licenses
 
-Application code is [Apache-2.0](LICENSE). Goose retains its upstream license and
-notices. The bundled llama.cpp engine is MIT; its pinned license texts accompany
-inference resources. Python dependency licenses accompany the research sidecar.
-[NOTICE](NOTICE) identifies principal dependencies. Model weights are separate
-artifacts governed by their own published licenses.
+The source is available on [GitHub](https://github.com/mahdizareeii/AiAgent).
+Build instructions are in the [developer guide](docs/setup-guide.md). The desktop
+uses Electron/React, the agent backend uses Goose, and the research utilities run
+in a bundled native sidecar. See [architecture and boundaries](docs/architecture.md)
+for the runtime, tool, and storage design.
+
+Application code is [Apache-2.0](LICENSE). Bundled dependencies retain their own
+licenses, including llama.cpp's MIT license; see [NOTICE](NOTICE). Model weights
+are separate artifacts governed by their published licenses. The current catalog
+records Apache-2.0 for each pinned model artifact.

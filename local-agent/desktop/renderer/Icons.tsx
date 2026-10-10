@@ -1,8 +1,9 @@
 import type { CSSProperties } from 'react';
 
-type IconName = 'plus' | 'arrow' | 'folder' | 'attach' | 'code' | 'search' | 'spark' | 'settings' | 'check' | 'close' | 'download' | 'stop' | 'external' | 'undo' | 'chevron' | 'chat' | 'shield' | 'monitor';
+type IconName = 'brand' | 'plus' | 'arrow' | 'folder' | 'attach' | 'code' | 'search' | 'spark' | 'settings' | 'check' | 'close' | 'download' | 'stop' | 'external' | 'undo' | 'chevron' | 'chat' | 'shield' | 'monitor';
 
 const paths: Record<IconName, string> = {
+  brand: 'M8 18V6h9M8 12h7',
   plus: 'M12 5v14M5 12h14',
   arrow: 'M12 19V5m-6 6 6-6 6 6',
   folder: 'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z',
@@ -24,5 +25,5 @@ const paths: Record<IconName, string> = {
 };
 
 export default function Icon({ name, size = 18, style }: { name: IconName; size?: number; style?: CSSProperties }) {
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}><path d={paths[name]} /></svg>;
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>{name === 'brand' && <ellipse cx="12" cy="12" rx="10.6" ry="7.8" transform="rotate(-35 12 12)" strokeWidth=".75" opacity=".48" />}<path d={paths[name]} />{name === 'brand' && <circle cx="20.4" cy="6.5" r="1.1" fill="currentColor" stroke="none" />}</svg>;
 }

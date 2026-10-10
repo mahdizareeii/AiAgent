@@ -1,8 +1,8 @@
 {
-  "name": "local-agent-desktop",
+  "name": "free-local-agent-desktop",
   "version": "0.2.0-alpha.1",
   "private": true,
-  "description": "A local AI desktop agent powered by Goose and bundled llama.cpp inference",
+  "description": "Free Local Agent — your local AI agent, with bundled inference and hardware-aware models",
   "author": "Local Agent contributors",
   "license": "Apache-2.0",
   "type": "module",
@@ -46,7 +46,7 @@
   },
   "build": {
     "appId": "org.localagent.desktop",
-    "productName": "Local Agent",
+    "productName": "Free Local Agent",
     "asar": true,
     "files": [
       "dist/**/*",
@@ -55,6 +55,10 @@
       "NOTICE"
     ],
     "extraResources": [
+      {
+        "from": "assets/branding/free-local-agent.png",
+        "to": "free-local-agent.png"
+      },
       {
         "from": "resources/goose",
         "to": "goose"
@@ -72,6 +76,7 @@
       "output": "release"
     },
     "mac": {
+      "icon": "assets/branding/free-local-agent.icns",
       "target": [
         {
           "target": "zip",
@@ -85,6 +90,7 @@
       "minimumSystemVersion": "13.3"
     },
     "win": {
+      "icon": "assets/branding/free-local-agent.ico",
       "target": [
         {
           "target": "zip",
@@ -95,6 +101,7 @@
       ]
     },
     "linux": {
+      "icon": "assets/branding/free-local-agent.png",
       "target": [
         {
           "target": "deb",

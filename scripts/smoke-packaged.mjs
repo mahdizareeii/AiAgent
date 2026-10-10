@@ -21,12 +21,12 @@ const artifactRoot = path.resolve(process.argv[2] ?? path.join(root, defaults[pl
 let electronExecutable;
 let resourceDirectory;
 if (platform === 'darwin') {
-  const bundle = artifactRoot.endsWith('.app') ? artifactRoot : path.join(artifactRoot, 'Local Agent.app');
-  electronExecutable = path.join(bundle, 'Contents', 'MacOS', 'Local Agent');
+  const bundle = artifactRoot.endsWith('.app') ? artifactRoot : path.join(artifactRoot, 'Free Local Agent.app');
+  electronExecutable = path.join(bundle, 'Contents', 'MacOS', 'Free Local Agent');
   resourceDirectory = path.join(bundle, 'Contents', 'Resources');
 } else {
   resourceDirectory = path.join(artifactRoot, 'resources');
-  const candidates = platform === 'win32' ? ['Local Agent.exe'] : ['local-agent-desktop', 'local-agent', 'Local Agent'];
+  const candidates = platform === 'win32' ? ['Free Local Agent.exe'] : ['free-local-agent-desktop', 'free-local-agent', 'Free Local Agent'];
   electronExecutable = candidates.map(name => path.join(artifactRoot, name)).find(existsSync);
 }
 const researchExecutable = path.join(resourceDirectory, 'research', platform === 'win32' ? 'local-agent-research.exe' : 'local-agent-research');

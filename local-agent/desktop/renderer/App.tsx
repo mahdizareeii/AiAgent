@@ -8,9 +8,9 @@ import Utilities from './Utilities';
 import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, Mode, PermissionRequest, StageProgress, ToolActivity, UtilityPreferences } from './types';
 
 const modes: { id: Mode; name: string; icon: 'code' | 'search' | 'spark'; description: string; examples: string[] }[] = [
-  { id: 'coding', name: 'Coding', icon: 'code', description: 'A thoughtful partner for your next commit.', examples: ['Explore this project and explain its architecture', 'Help me find and fix a bug', 'Review my changes before I commit'] },
-  { id: 'research', name: 'Research', icon: 'search', description: 'Follow the evidence. Keep the sources.', examples: ['Research a topic and compare reliable sources', 'Summarize a document I attach', 'Compare approaches and explain the tradeoffs'] },
-  { id: 'assistant', name: 'Assistant', icon: 'spark', description: 'A little more room to think.', examples: ['Help me work through an idea', 'Turn these notes into a clear plan', 'Explain something step by step'] },
+  { id: 'coding', name: 'Coding', icon: 'code', description: 'Build, explore, and improve your code.', examples: ['Explore this project and explain its architecture', 'Help me find and fix a bug', 'Review my changes before I commit'] },
+  { id: 'research', name: 'Research', icon: 'search', description: 'Explore questions with sources you can review.', examples: ['Research a topic and compare reliable sources', 'Summarize a document I attach', 'Compare approaches and explain the tradeoffs'] },
+  { id: 'assistant', name: 'Assistant', icon: 'spark', description: 'Write, plan, and work through ideas.', examples: ['Help me work through an idea', 'Turn these notes into a clear plan', 'Explain something step by step'] },
 ];
 
 function errorMessage(error: unknown) {
@@ -62,7 +62,7 @@ function PermissionDialog({ request, onRespond }: { request: PermissionRequest; 
       <div className="dialog-symbol"><Icon name="shield" size={24} /></div>
       <p className="eyebrow">YOUR APPROVAL</p>
       <h2 id="permission-title">{request.title || 'Review this action'}</h2>
-      <p className="muted">Review the action before Local Agent continues. Your choice applies to this action only.</p>
+      <p className="muted">Review the action before Free Local Agent continues. Your choice applies to this action only.</p>
       {request.cwd && <div className="review-location"><Icon name="folder" size={15} /><span>{request.cwd}</span></div>}
       {request.command && <section className="review-block"><h3>Command</h3><pre>{request.command}</pre></section>}
       {request.preview !== undefined && <section className="review-block"><h3>Proposed change</h3><pre className="diff-preview">{displayValue(request.preview)}</pre></section>}
@@ -99,6 +99,7 @@ export default function App() {
   const [files, setFiles] = useState<Attachment[]>([]);
   const sessionRef = useRef<string | null>(null);
   const busyRef = useRef(false);
+  const loadingSessionRef = useRef(false);
   const downloadCancelRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -109,7 +110,7 @@ export default function App() {
   const webActive = mode === 'research' && !!status?.utilities.webResearch && selectedModel?.toolCapable !== false;
 
   const refresh = useCallback(async () => {
-    if (!bridge) throw new Error('The desktop connection is unavailable. Launch Local Agent as a desktop app to connect to its local runtime.');
+    if (!bridge) throw new Error('The desktop connection is unavailable. Launch Free Local Agent as a desktop app to connect to its local runtime.');
     const next = await bridge.status();
     setStatus(next);
     return next;
@@ -142,11 +143,15 @@ export default function App() {
       } else if (event.type === 'permission') {
         setPermissions((current) => current.some((request) => request.requestId === event.requestId) ? current : [...current, event]);
       } else if (event.type === 'done') {
-        setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]);
+        setThinking(false); setPermissions([]);
+        setStage((current) => current?.resumable ? current : null);
         void refresh().catch((reason) => setError(errorMessage(reason)));
       } else if (event.type === 'error') {
         setError(event.text ?? event.error ?? 'Something went wrong. Please try again.');
-        if (event.sessionId) { setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]); }
+        if (event.sessionId) {
+          setThinking(false); setPermissions([]);
+          setStage((current) => current?.resumable ? current : null);
+        }
       }
     });
     return () => { live = false; unsubscribe?.(); };
@@ -169,26 +174,35 @@ export default function App() {
   }
 
   function newChat(nextMode = mode) {
-    if (busyRef.current) return;
+    if (busyRef.current || loadingSessionRef.current) return;
     setSessionId(null); sessionRef.current = null;
     setMode(nextMode); setMessages([]); setTools([]); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
     inputRef.current?.focus();
   }
 
   async function loadSession(id: string) {
-    if (!bridge || busyRef.current || loadingSession) return;
+    if (!bridge || busyRef.current || loadingSessionRef.current) return;
+    loadingSessionRef.current = true;
     setLoadingSession(true); setError(null);
     try {
       const loaded = await bridge.loadSession(id);
       setSessionId(loaded.id); sessionRef.current = loaded.id;
       setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setTools([]); setFiles([]); setDraft(''); setStage(loaded.stage ?? null);
     } catch (reason) { setError(errorMessage(reason)); }
-    finally { setLoadingSession(false); }
+    finally { loadingSessionRef.current = false; setLoadingSession(false); }
+  }
+
+  async function synchronizeSession(id: string) {
+    if (!bridge || sessionRef.current !== id) return;
+    const loaded = await bridge.loadSession(id);
+    if (sessionRef.current !== id) return;
+    setMessages(loaded.messages);
+    setStage(loaded.stage?.resumable ? loaded.stage : null);
   }
 
   async function sendMessage() {
     const text = draft.trim();
-    if (!bridge || !ready || !text || busyRef.current || download || calibrating || importing || settingsBusy) return;
+    if (!bridge || !ready || !text || busyRef.current || loadingSessionRef.current || download || calibrating || importing || settingsBusy || setupBusy) return;
     if (mode === 'coding' && !projectPath) { setError('Choose a project folder to start a coding chat.'); return; }
     if (files.length && !status?.utilities.fileReading) { setError('Enable Read files in Tools to use your attached files.'); return; }
     setError(null); setNotice(null); setBusy(true); busyRef.current = true; setThinking(false); setTools([]); setStage({ stage: 'preparing', message: 'Preparing your local task' });
@@ -205,7 +219,11 @@ export default function App() {
       await bridge.send({ sessionId: currentId, text, ...(files.length ? { files } : {}) });
       await refresh();
     } catch (reason) { setError(errorMessage(reason)); if (started) setDraft(text); }
-    finally { setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]); inputRef.current?.focus(); }
+    finally {
+      setStage((current) => current?.resumable ? current : null);
+      if (sessionRef.current) await synchronizeSession(sessionRef.current).catch((reason) => setError((current) => current ?? errorMessage(reason)));
+      setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]); inputRef.current?.focus();
+    }
   }
 
   async function checkRuntime() {
@@ -271,16 +289,18 @@ export default function App() {
 
   async function resumeTask() {
     const id = sessionRef.current;
-    if (!id || !bridge || !ready || busyRef.current) return;
+    if (!id || !bridge || !ready || busyRef.current || loadingSessionRef.current) return;
     setError(null); setBusy(true); busyRef.current = true; setThinking(false); setPermissions([]); setTools([]);
     setStage({ stage: 'resuming', message: 'Resuming from the saved checkpoint' });
     try {
       await bridge.resume(id);
-      const loaded = await bridge.loadSession(id);
-      setMessages(loaded.messages); setStage(loaded.stage ?? { stage: 'complete', message: 'Task finished' });
       await refresh();
     } catch (reason) { setError(errorMessage(reason)); }
-    finally { setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]); }
+    finally {
+      setStage((current) => current?.resumable ? current : null);
+      await synchronizeSession(id).catch((reason) => setError((current) => current ?? errorMessage(reason)));
+      setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]);
+    }
   }
 
   async function respondPermission(approved: boolean) {
@@ -295,7 +315,7 @@ export default function App() {
 
   return <div className="app-shell">
     <aside className="sidebar" aria-label="Chat navigation">
-      <div className="brand"><span className="brand-mark"><Icon name="spark" size={21} /></span><span>Local Agent<span className="brand-tag">A SPACE TO THINK</span></span></div>
+      <div className="brand"><span className="brand-mark"><Icon name="brand" size={21} /></span><span><span className="brand-name">Free<span className="brand-name-secondary">Local Agent</span></span><span className="brand-tag">YOUR AI. YOUR FREEDOM.</span></span></div>
       <button className="new-chat" disabled={locked} onClick={() => newChat()}><Icon name="plus" size={18} />New chat<span className="key-hint">+</span></button>
       <div className="sidebar-heading">YOUR CHATS<span>{status?.sessions.length || ''}</span></div>
       <nav className="session-list" aria-label="Saved chats">
@@ -322,18 +342,18 @@ export default function App() {
 
       {error && !setupOpen && <div className="banner error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError(null)}><Icon name="close" size={16} /></button></div>}
       {notice && <div className="banner notice-banner" role="status"><span><Icon name="check" size={15} />{notice}</span><button className="icon-button" aria-label="Dismiss notice" onClick={() => setNotice(null)}><Icon name="close" size={16} /></button></div>}
-      {stage && !setupOpen && <div className={`stage-banner ${stage.resumable ? 'stage-paused' : ''}`} role="status"><div><span className={`stage-marker ${busy ? 'stage-active' : ''}`} /><strong>{stage.message || stage.stage.replace(/[_-]/g, ' ')}</strong>{stage.total !== undefined && stage.total > 0 && <span className="stage-count">{stage.completed ?? 0} / {stage.total}</span>}</div>{stage.total !== undefined && stage.total > 0 && <progress value={stage.completed ?? 0} max={stage.total} aria-label={`${stage.stage} progress`} />}{stage.resumable && sessionId && <button className="secondary-button" disabled={locked || !ready} onClick={() => void resumeTask()}><Icon name="arrow" size={13} />Resume task</button>}</div>}
+      {stage && !setupOpen && <div className={`stage-banner ${stage.resumable && !busy ? 'stage-paused' : ''}`} role="status"><div><span className={`stage-marker ${busy ? 'stage-active' : ''}`} /><strong>{stage.message || stage.stage.replace(/[_-]/g, ' ')}</strong>{stage.total !== undefined && stage.total > 0 && <span className="stage-count">{stage.completed ?? 0} / {stage.total}</span>}</div>{stage.total !== undefined && stage.total > 0 && <progress value={stage.completed ?? 0} max={stage.total} aria-label={`${stage.stage} progress`} />}{stage.resumable && !busy && sessionId && <button className="secondary-button" disabled={locked || !ready} onClick={() => void resumeTask()}><Icon name="arrow" size={13} />Resume task</button>}</div>}
 
       <div className={`conversation ${messages.length ? 'has-messages' : ''}`} aria-label="Conversation" aria-busy={busy || loadingSession}>
         {loadingSession ? <div className="loading-state"><span className="spinner" />Opening your chat…</div> : !messages.length ? <div className="welcome">
-          <div className="welcome-symbol"><Icon name={chosenMode.icon} size={32} /><span className="welcome-orbit" /></div>
-          <p className="eyebrow">THINK HERE. KEEP IT HERE.</p>
-          <h1>{mode === 'coding' ? 'Make something good.' : mode === 'research' ? 'Start with a question.' : 'What’s on your mind?'}</h1>
-          <p className="welcome-description">{chosenMode.description}<br /><span>Powered by a model running on your computer.</span></p>
+          <div className="welcome-symbol"><Icon name="brand" size={32} /><span className="welcome-orbit" /></div>
+          <p className="eyebrow">YOUR AI. YOUR FREEDOM.</p>
+          <h1>Your ideas. Your own AI.</h1>
+          <p className="welcome-description">{chosenMode.description}<br /><span>A local model, running on your computer.</span></p>
           <div className="suggestions">{chosenMode.examples.map((example, index) => <button key={example} disabled={locked} onClick={() => { setDraft(example); inputRef.current?.focus(); }}><span className="suggestion-number">0{index + 1}</span><span>{example}</span><Icon name="chevron" size={15} /></button>)}</div>
           {!ready && <button className="setup-prompt" onClick={() => setSetupOpen(true)}><span className="status-dot" />Set up your local model<Icon name="chevron" size={13} /></button>}
         </div> : <div className="message-list">
-          {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-avatar">{message.role === 'assistant' ? <Icon name="spark" size={17} /> : 'Y'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'Local Agent' : 'You'}{message.role === 'assistant' && <span>{selectedModelName}</span>}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></div></article>)}
+          {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-avatar">{message.role === 'assistant' ? <Icon name="brand" size={17} /> : 'Y'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}{message.role === 'assistant' && <span>{selectedModelName}</span>}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></div></article>)}
           {tools.length > 0 && <div className="tool-activity" aria-label="Tool activity">{tools.map((tool) => <details key={tool.id}><summary><span className={`tool-dot ${tool.status === 'completed' || tool.status === 'success' ? 'complete' : tool.status === 'failed' || tool.status === 'error' ? 'failed' : ''}`} /><span>{tool.title}</span><span className="tool-status">{tool.status}</span></summary>{tool.input !== undefined && <pre>{displayValue(tool.input)}</pre>}{tool.output !== undefined && <pre>{displayValue(tool.output)}</pre>}</details>)}</div>}
           {busy && <div className="working-status" role="status"><span className="working-dots"><i /><i /><i /></span>{permissions.length ? 'Waiting for your approval' : thinking ? 'Thinking locally…' : 'Working…'}</div>}
         </div>}
@@ -342,7 +362,7 @@ export default function App() {
 
       <div className="composer-area"><form className={`composer ${busy ? 'working' : ''}`} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
         {files.length > 0 && <div className="attachment-list">{files.map((file) => <span className="attachment" key={file.path} title={file.path}><Icon name="attach" size={13} />{file.name}<button type="button" className="icon-button" aria-label={`Remove ${file.name}`} disabled={busy} onClick={() => setFiles((current) => current.filter((item) => item.path !== file.path))}><Icon name="close" size={12} /></button></span>)}</div>}
-        <label className="sr-only" htmlFor="message-input">Message Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} placeholder={ready ? (mode === 'coding' ? 'Ask about your project, or describe what to build…' : 'Ask anything, or add a file to work with…') : 'Set up a local model to start a conversation…'} rows={2} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
+        <label className="sr-only" htmlFor="message-input">Message Free Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} placeholder={ready ? (mode === 'coding' ? 'Ask about your project, or describe what to build…' : 'Ask anything, or add a file to work with…') : 'Set up a local model to start a conversation…'} rows={2} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
         <div className="composer-toolbar"><div className="composer-left"><button className="icon-button" type="button" disabled={locked || !bridge || !status?.utilities.fileReading} title={status?.utilities.fileReading ? 'Attach local files' : 'Enable Read files in Tools to attach documents'} aria-label="Attach local files" onClick={() => void action(async () => { const selected = await bridge!.selectFiles(); setFiles((current) => [...current, ...selected.filter((file) => !current.some((existing) => existing.path === file.path))]); })}><Icon name="attach" size={19} /></button><span className="toolbar-divider" /><label className="model-select"><span className="sr-only">Local model</span><select value={selectedModel?.id ?? ''} disabled={locked || !status?.runtime.ready || !bridge} onChange={(event) => void settingsAction(() => bridge!.selectModel(event.target.value))}><option value="" disabled>Choose a model</option>{status?.models.filter((model) => model.installed).map((model) => <option key={model.id} value={model.id} disabled={!!model.blockedReason || model.fit === 'insufficient' || (model.fit === 'slow' && !status?.slowMode)}>{model.name}</option>)}</select></label></div>{busy ? <button type="button" className="stop-button" aria-label="Stop response" onClick={() => void action(async () => { if (sessionRef.current) await bridge!.cancel(sessionRef.current); })}><Icon name="stop" size={14} />Stop</button> : <button className="send-button" type="submit" aria-label="Send message" disabled={!draft.trim() || !ready || locked}><Icon name="arrow" size={20} /></button>}</div>
       </form><p className="composer-note"><span>Inference stays on this computer.</span>{selectedModel?.toolCapable === false ? 'Chat model · agent tools unavailable.' : mode === 'research' ? webActive ? 'Web research uses the internet.' : 'Web research is off.' : 'Review important answers.'}<span className="enter-note">↵ to send · ⇧↵ new line</span></p></div>
     </main>

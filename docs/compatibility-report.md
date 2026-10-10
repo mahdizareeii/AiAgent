@@ -1,14 +1,17 @@
-# Alpha 0.2 compatibility report
+# Free Local Agent alpha 0.2 compatibility report
 
 This report separates observed setup and native checks from model estimates and
-uncompleted task benchmarks. It covers **0.2.0-alpha.1**, not the previous alpha.
+uncompleted task benchmarks. It covers **0.2.0-alpha.1**, including the current
+Free Local Agent package and explicitly identified earlier Local Agent GUI runs.
 See [build verification](build-verification.md) for current automated checks and
 [the real-model rubric](alpha-validation.md) for the fifteen-task quality run.
 
 ## Development hardware observed
 
-The packaged macOS first-launch screen was inspected on this development machine.
-Available memory and free storage are snapshots and change with other programs.
+The earlier Local Agent packaged macOS first-launch screen was inspected on this
+development machine. Available memory and free storage are snapshots and change
+with other programs. Fresh visible GUI checks of the final Free Local Agent
+package are pending because the desktop is locked.
 
 | Field | Observed value |
 | --- | --- |
@@ -23,27 +26,31 @@ Available memory and free storage are snapshots and change with other programs.
 Native Metal and CPU sanity checks passed using a 260K toy GGUF fixture. Its
 effective context was 2048 tokens, and native token counting/generation reported
 8 prompt tokens and 16 completion tokens for the short native-engine test. The
-exact packaged app also passed an isolated-profile import → chat-only selection
-→ Start a conversation → local chat exercise using “Once upon a time”. These
+earlier Local Agent package also passed an isolated-profile import → chat-only
+selection → Start a conversation → local chat exercise using “Once upon a time”. These
 checks establish native loading and the connected UI/inference path, not useful
 assistant quality or catalogue-model speed/memory. See
 [native inference validation](native-inference-validation.md) for fixture hashes
 and the separate Metal/CPU observations.
 
-The current automated verification passed 81/81 JavaScript/TypeScript tests,
-59/59 research tests, 5/5 frozen-sidecar tests, and the macOS packaged MCP/resource
-smoke. The full JS/TS suite and package smoke ran with public outbound access
-denied by macOS `sandbox-exec`, permitting only localhost; an external HTTPS
-request was confirmed blocked. The full GUI could not initialize inside that
-additional macOS sandbox. Its visual check used normal Electron renderer
-sandboxing and context isolation, so the external denial proof covers the
-native/MCP/tests rather than the GUI itself. The final suite includes tensor
-validation, RAM-only CPU fallback, cancellation-before-mutation, and owned
-command-process cleanup checks; the final package smoke was rerun after rebuilding.
+The final Free Local Agent build passed 81/81 JavaScript/TypeScript tests again
+and its macOS packaged MCP/resource smoke after rebuilding. Both ran with public
+outbound access denied by macOS `sandbox-exec`, permitting only localhost; an
+external HTTPS request was confirmed blocked. Four separate temporary
+hidden-renderer regressions also passed for transient stage cleanup, busy-state
+ownership, and persisted transcripts; these are not included in the 81 count.
+Earlier research and frozen-sidecar reruns passed 59/59 and 5/5 respectively.
 
-The final macOS ZIP is `Local Agent-0.2.0-alpha.1-arm64-mac.zip`, **217,046,083
+The earlier full GUI could not initialize inside the additional macOS sandbox.
+Its visual check used normal Electron renderer sandboxing and context isolation,
+so the external denial proof covers native/MCP/tests rather than the GUI itself.
+The final suite includes tensor validation, RAM-only CPU fallback,
+cancellation-before-mutation, and owned command-process cleanup checks. A hidden
+renderer check does not replace the pending visible GUI and fresh real-chat run.
+
+The final macOS ZIP is `Free Local Agent-0.2.0-alpha.1-arm64-mac.zip`, **217,004,696
 bytes**, SHA-256
-`a4ee4365964395ca38843650b670c1fb129a5fe6dcca58e31aa3fe1124272f9d`.
+`1d3885a5d8115ce193b9c5ecab9cae4ca86125e5849ef5f6bf26eb074ca91e4d`.
 
 ## Estimated model fit versus measured results
 
@@ -57,7 +64,7 @@ context after fallback. Unified GPU memory is shared with system RAM.
 
 | Model | Catalogue working-memory estimate | Calibration / real-model result |
 | --- | --- | --- |
-| Qwen3.5 4B Q4_K_M | 4.5 GiB | Native chat/tools/token counting/Goose file read and final packaged chat passed; 37.48 tokens/sec native calibration, 30.8 tokens/sec packaged calibration |
+| Qwen3.5 4B Q4_K_M | 4.5 GiB | Native chat/tools/Goose file read passed; 37.48 tokens/sec native and 30.8 tokens/sec earlier Local Agent calibration; final visible chat pending |
 | Qwen3.5 9B Q4_K_M | 8 GiB | Not run |
 | Gemma 4 12B QAT Q4_0 | 10 GiB | Not run |
 | Gemma 4 26B A4B QAT Q4_0 | 19 GiB | Not run |
@@ -84,7 +91,7 @@ the earlier explicit Slow mode case, and native shutdown evidence. The 4.5 GiB
 planning estimate remains an estimate: **process peak RSS, long-context memory,
 and the fifteen-task quality rubric have not been measured**.
 
-The exact final packaged app also imported and checksum-verified the real
+The earlier Local Agent packaged app imported and checksum-verified the real
 Qwen4B file into its normal-profile cache. At **4.7 GiB available memory**, setup
 required explicit Slow mode before calibration. It then displayed **30.8
 tokens/sec**, **Metal / 8192-token context**, and calibrated agent tools. A new
@@ -94,7 +101,8 @@ completion. Web research was off, and the toy-fixture chats remained in a
 separate isolated profile. This is a distinct observed GUI run, not the native
 37.48 tokens/sec calibration or a task-quality benchmark. It used the app's
 normal Electron renderer sandbox/context isolation; the external macOS
-public-network-denial proof above did not cover this GUI run.
+public-network-denial proof above did not cover this GUI run. The final Free
+Local Agent package has not yet repeated this visible chat or calibration run.
 
 Record measured tokens/sec, end-to-end task latency, actual memory, context
 profile, and tool-calibration result only after a corresponding run completes.
@@ -106,7 +114,7 @@ passing local tool calibration are required before enabling agent tools.
 
 | Target | Current evidence | Required follow-up |
 | --- | --- | --- |
-| macOS arm64, minimum macOS 13.3 | Final 81-test suite/package smoke, first launch, toy-fixture chat, real Qwen4B native/Goose file read, and normal-profile packaged Qwen4B chat passed; final ZIP checksum recorded | Fifteen-task quality rubric, peak memory, and broader catalogue/model-context benchmarks |
+| macOS arm64, minimum macOS 13.3 | Final 81-test suite, package smoke, and four separate renderer checks passed; earlier native/GUI evidence recorded above | Final visible GUI/screenshots and real-chat revalidation after unlock; task quality, peak memory, and broader model/context benchmarks |
 | Windows x64 | Native CI and Vulkan/CPU packaging configured | Execute CI, extract ZIP, verify drivers/CRT and run setup/task checks on Windows |
 | Ubuntu x64 | Native CI and Vulkan/CPU packaging configured; bundled Linux symbol floors audited | Execute CI, install DEB and run setup/task checks on Ubuntu |
 

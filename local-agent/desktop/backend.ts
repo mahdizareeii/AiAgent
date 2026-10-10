@@ -95,7 +95,7 @@ export class GooseBackend {
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
     }), ndJsonStream(Writable.toWeb(this.child.stdin), Readable.toWeb(this.child.stdout) as unknown as ReadableStream<Uint8Array>));
     await this.withTimeout(this.connection.initialize({ protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'local-agent-desktop', version: '0.1.0-alpha.1' },
+      clientInfo: { name: 'free-local-agent-desktop', version: '0.2.0-alpha.1' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
     const extensions: object[] = [{ type: 'mcp', timeout: 180,
@@ -105,7 +105,7 @@ export class GooseBackend {
         command: o.nodeExecutable, args: [o.bridgeExecutable], env: [] } });
     }
     const session = await this.withTimeout(this.connection.newSession({ cwd: o.cwd, mcpServers: [],
-      _meta: { enabledExtensions: extensions, sessionTitle: 'Local Agent', client: 'local-agent' } }), 60_000);
+      _meta: { enabledExtensions: extensions, sessionTitle: 'Free Local Agent', client: 'free-local-agent' } }), 60_000);
     this.gooseSessionId = session.sessionId;
     const results = session._meta?.extensionResults;
     const expected = o.mode === 'coding' && (o.utilities.fileEditing || o.utilities.terminal) ? ['local_files_and_research', 'reviewed_actions'] : ['local_files_and_research'];
