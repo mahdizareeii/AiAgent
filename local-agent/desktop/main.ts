@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { constants, existsSync, mkdirSync } from 'node:fs';
 import { copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { LocalInferenceRuntime, probeHardware } from '../runtime/index.ts';
 import { GooseBackend } from './backend.ts';
 import { appendThinking } from './thinking.ts';
+import { assertInferenceReady, desktopRuntimeStatus, discoverDesktopModels, resolveStorage, selectionAfterDownload } from './desktop-status.ts';
 import { assertAgentCapabilities, taskInstructions } from './agent-policy.ts';
 import { loadTaskResearchSkill } from './skills/task-research.ts';
 import { LocalActions } from './actions.ts';
@@ -21,7 +22,8 @@ app.setName('Free Local Agent');
 // Keep the existing store across the public rename, including multi-GB models
 // and undo history. Explicit isolated profiles still take precedence.
 const dataOverride = app.commandLine.getSwitchValue('user-data-dir');
-const retainedDataPath = dataOverride ? path.resolve(dataOverride) : path.join(app.getPath('appData'), 'Local Agent');
+const storage = resolveStorage(app.getPath('appData'), dataOverride);
+const retainedDataPath = storage.path;
 mkdirSync(retainedDataPath, { recursive: true, mode: 0o700 });
 app.setPath('userData', retainedDataPath);
 app.setPath('sessionData', retainedDataPath);
@@ -34,6 +36,8 @@ let runtime: LocalInferenceRuntime;
 let persistence = Promise.resolve();
 let quitting = false;
 let settingUp = false;
+interface ModelPreflight { sessionId?: string; controller: AbortController; done: Promise<void>; finish: () => void }
+let checkingTurnModel: ModelPreflight | undefined;
 let updatingCapabilities = false;
 let startupNotice: string | undefined;
 let storageBlocked = false;
@@ -50,6 +54,22 @@ const researchExecutable = () => path.join(resourceDirectory(), app.isPackaged ?
 const skillsDirectory = () => path.join(app.getAppPath(), 'dist', 'skills');
 const emit = (event: AgentEvent) => { if (window && !window.isDestroyed()) window.webContents.send('local-agent:event', event); };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+function directoryDialogOptions(title: string, buttonLabel: string): OpenDialogOptions {
+  // Explicitly clear native file-type restrictions on macOS. In the pinned
+  // Electron implementation, '*' clears allowedFileTypes; omitted/empty
+  // filters only enable allowsOtherFileTypes. openDirectory still excludes files.
+  return { title, buttonLabel, properties: ['openDirectory'],
+    ...(process.platform === 'darwin' ? { filters: [{ name: 'All folders', extensions: ['*'] }] } : {}) };
+}
+
+function beginModelPreflight(sessionId?: string): ModelPreflight {
+  let finish!: () => void;
+  const preflight = { sessionId, controller: new AbortController(), done: new Promise<void>(resolve => { finish = resolve; }),
+    finish: () => { if (checkingTurnModel === preflight) checkingTurnModel = undefined; finish(); emit({ type: 'status' }); } };
+  checkingTurnModel = preflight;
+  return preflight;
+}
 
 async function save(): Promise<void> {
   if (storageBlocked) throw new Error('The existing chat store could not be recovered. Preserve chats.json and repair it before saving new chats.');
@@ -101,23 +121,21 @@ async function checkpoint(sessionId: string): Promise<Checkpoint | undefined> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; return undefined; }
 }
 async function status(): Promise<AgentStatus> {
-  const current = runtime.getStatus();
-  const hardware = current.hardware ?? await probeHardware(dataDirectory());
-  const available = await runtime.listModels().catch(() => []);
-  const models = available.map((row: any) => ({ id: row.id, name: row.title ?? row.name,
-    downloadGB: (row.estimatedDownloadBytes ?? row.sizeBytes ?? 0) / 1e9, description: row.description,
-    installed: row.installed, blockedReason: row.blockedReason ?? undefined, fit: row.fit, fitReason: row.fitReason,
-    license: row.license, quantization: row.quantization, workingMemoryGB: row.workingMemoryGB, memoryEstimate: row.memoryEstimate,
-    toolCapable: row.toolCapable, measuredTokensPerSecond: row.measuredTokensPerSecond, sourceUrl: row.sourceUrl }));
+  const hardware = runtime.getStatus().hardware ?? await probeHardware(dataDirectory());
+  const modelStatus = await discoverDesktopModels(runtime, hardware);
   const missing = !existsSync(backendExecutable()) ? 'Bundled agent backend is missing. Rebuild the desktop package.'
     : !existsSync(researchExecutable()) ? 'Bundled file tools are missing. Rebuild the desktop package.' : undefined;
   const sessions = await Promise.all(state.sessions.map(async ({ id, title, updatedAt }) => {
     const task = await checkpoint(id); return { id, title, updatedAt, resumable: Boolean(task && ['reading', 'reducing', 'ready'].includes(task.phase)) };
   }));
-  return { runtime: { ready: current.state === 'ready' && !missing, version: current.version ?? undefined,
-    error: missing ?? current.error?.message }, models, recommendation: current.recommendation.suggestedModel,
+  // Discovery/checkpoint reads may outlast engine initialization. Report the
+  // runtime's current state instead of the snapshot from before those reads.
+  const current = runtime.getStatus();
+  const measuredHardware = current.hardware ?? hardware;
+  return { runtime: desktopRuntimeStatus(current, missing), ...modelStatus, storage,
+    recommendation: current.recommendation.suggestedModel,
     selectedModel: state.selectedModel, mode: state.mode, projectPath: state.projectPath, sessions,
-    hardware: { ...hardware, freeDiskBytes: hardware.freeDiskBytes ?? 0 }, profile: current.profile ?? undefined,
+    hardware: { ...measuredHardware, freeDiskBytes: measuredHardware.freeDiskBytes ?? 0 }, profile: current.profile ?? undefined,
     utilities: state.utilities, plugins: state.plugins, slowMode: state.slowMode };
 }
 
@@ -130,13 +148,17 @@ function getSession(id: string): SavedSession {
 async function askPermission(sessionId: string, request: PermissionRequest, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false;
   return new Promise(resolve => {
-    const finish = (answer: boolean) => { pending.delete(request.requestId); clearTimeout(timer);
+    let settled = false;
+    const finish = (answer: boolean) => { if (settled) return; settled = true;
+      pending.delete(request.requestId); clearTimeout(timer);
       signal.removeEventListener('abort', cancel); resolve(answer && !signal.aborted); };
-    const cancel = () => finish(false);
+    const cancel = () => { if (settled) return;
+      emit({ type: 'permission_cancelled', sessionId, requestId: request.requestId }); finish(false); };
     const timer = setTimeout(cancel, 10 * 60_000);
     signal.addEventListener('abort', cancel, { once: true });
     pending.set(request.requestId, { sessionId, resolve: finish });
     emit({ type: 'permission', sessionId, ...request });
+    if (signal.aborted) cancel();
   });
 }
 
@@ -184,13 +206,16 @@ async function buildPrompt(session: SavedSession, text: string, sourceContext: s
 
 async function send(options: { sessionId: string; text: string; files?: Attachment[]; resume?: boolean }): Promise<void> {
   if (updatingCapabilities) throw new Error('Wait for tool, plugin, or folder settings to finish.');
-  if (active) throw new Error('A local response is already running. Stop it or wait for completion.');
+  if (active || checkingTurnModel) throw new Error('A local response is already running or preparing. Stop it or wait for completion.');
   const session = getSession(options.sessionId);
-  if (!state.selectedModel) throw new Error('Download and select a local model first.');
-  if (runtime.getStatus().state !== 'ready') throw new Error('Start the local runtime first.');
+  let selectedModel: string;
+  const preflight = beginModelPreflight(session.id);
+  try { selectedModel = await assertInferenceReady(runtime, state.selectedModel, preflight.controller.signal); }
+  finally { preflight.finish(); }
+  preflight.controller.signal.throwIfAborted();
   if (!existsSync(backendExecutable()) || !existsSync(researchExecutable())) throw new Error('Local agent components are missing.');
   if (session.mode === 'coding' && !session.projectPath) throw new Error('Choose a project folder for coding.');
-  const controller = new AbortController();
+  const controller = preflight.controller;
   let finishTurn!: () => void;
   const turn: ActiveTurn = { sessionId: session.id, controller, done: new Promise(resolve => { finishTurn = resolve; }) };
   active = turn;
@@ -210,7 +235,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
     }
     for (const file of session.files) if (await realpath(file.path) !== file.path) throw new Error(`An attached file has moved: ${file.name}`);
     emit({ type: 'stage', sessionId: session.id, stage: 'Loading local model', message: 'Checking model memory and tool support before running your task.', resumable: false });
-    const prepared = await runtime.prepareModel(state.selectedModel, { signal: controller.signal });
+    const prepared = await runtime.prepareModel(selectedModel, { signal: controller.signal });
     const utilities = effectiveUtilities(session.mode, state.utilities, state.plugins);
     assertAgentCapabilities(session.mode, utilities, prepared.toolCapable);
     const inference = new BudgetedInference(runtime, prepared, message => emit({ type: 'stage', sessionId: session.id, stage: 'Adapting context', message, resumable: false }));
@@ -244,7 +269,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
     if (session.mode === 'coding') {
       const actions = new LocalActions({ projectPath: session.projectPath!,
         historyDirectory: path.join(dataDirectory(), 'edit-history', session.id), utilities, resultChars: Math.min(2000, effectiveProfile.contextTokens / 2),
-        onPermission: request => askPermission(session.id, request, controller.signal) });
+        onPermission: (request, requestSignal) => askPermission(session.id, request, requestSignal ?? controller.signal) });
       lastActions = actions;
       host = await createActionHost(actions, controller.signal);
     }
@@ -297,6 +322,7 @@ function handle(name: string, action: (...args: any[]) => unknown): void {
   ipcMain.handle(`local-agent:${name}`, async (event, ...args) => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted desktop request.');
     if (updatingCapabilities && name !== 'status') throw new Error('Wait for tool, plugin, or folder settings to finish.');
+    if (checkingTurnModel && name !== 'status' && name !== 'cancel') throw new Error('Wait for local model verification to finish.');
     return action(...args);
   });
 }
@@ -355,7 +381,7 @@ function registerHandlers(): void {
     const id = modelSchema.parse(raw);
     if (active) throw new Error('Wait for the current response before downloading a model.');
     await runtime.pullModel(id, { onProgress: progress => emit({ type: 'download', modelId: id, progress }) });
-    state.selectedModel ??= id; await save(); emit({ type: 'status' });
+    state.selectedModel = await selectionAfterDownload(runtime, state.selectedModel, id); await save(); emit({ type: 'status' });
   });
   handle('cancelDownload', () => runtime.cancelPull());
   handle('selectModel', async (raw: unknown) => {
@@ -369,7 +395,7 @@ function registerHandlers(): void {
     try {
       return await selectWorkspaceFolder({
         pickDirectory: async () => {
-          const result = await dialog.showOpenDialog(window!, { title: 'Add an agent workspace folder', buttonLabel: 'Use folder', properties: ['openDirectory'] });
+          const result = await dialog.showOpenDialog(window!, directoryDialogOptions('Add an agent workspace folder', 'Use folder'));
           return result.canceled ? null : result.filePaths[0] ?? null;
         },
         assertAvailable: () => { if (active) throw new Error('Wait for the current response before changing projects.'); },
@@ -384,7 +410,7 @@ function registerHandlers(): void {
     try {
       return await createWorkspaceFolder(options.name, {
         pickDirectory: async () => {
-          const result = await dialog.showOpenDialog(window!, { title: `Choose where to create ${options.name}`, buttonLabel: 'Create folder here', properties: ['openDirectory'] });
+          const result = await dialog.showOpenDialog(window!, directoryDialogOptions(`Choose where to create ${options.name}`, 'Create folder here'));
           return result.canceled ? null : result.filePaths[0] ?? null;
         },
         assertAvailable: () => { if (active) throw new Error('Wait for the current response before creating a workspace folder.'); },
@@ -404,14 +430,21 @@ function registerHandlers(): void {
   });
   handle('createSession', async (raw: unknown) => {
     const options = z.object({ mode: modeSchema, projectPath: z.string().optional() }).parse(raw);
-    if (options.projectPath && !pickedRoots.has(options.projectPath)) throw new Error('Choose the folder using the project picker.');
-    if (options.mode === 'coding' && !options.projectPath) throw new Error('Choose a project folder first.');
-    if (state.sessions.length >= 1000) throw new Error('This alpha supports up to 1000 chats.');
-    const session: SavedSession = { id: randomUUID(), title: 'New chat', updatedAt: new Date().toISOString(),
-      mode: options.mode, projectPath: options.projectPath, messages: [], files: [] };
-    state.sessions.unshift(session); state.mode = options.mode; await save(); emit({ type: 'status' });
-    lastActions = undefined;
-    return { id: session.id };
+    if (active || checkingTurnModel) throw new Error('Wait for the current response before creating a new chat.');
+    const preflight = beginModelPreflight();
+    try {
+      await assertInferenceReady(runtime, state.selectedModel, preflight.controller.signal);
+      if (options.projectPath && !pickedRoots.has(options.projectPath)) throw new Error('Choose the folder using the project picker.');
+      if (options.mode === 'coding' && !options.projectPath) throw new Error('Choose a project folder first.');
+      if (state.sessions.length >= 1000) throw new Error('This alpha supports up to 1000 chats.');
+      preflight.controller.signal.throwIfAborted();
+      const session: SavedSession = { id: randomUUID(), title: 'New chat', updatedAt: new Date().toISOString(),
+        mode: options.mode, projectPath: options.projectPath, messages: [], files: [] };
+      state.sessions.unshift(session); state.mode = options.mode; await save(); emit({ type: 'status' });
+      lastActions = undefined;
+      preflight.controller.signal.throwIfAborted();
+      return { id: session.id };
+    } finally { preflight.finish(); }
   });
   handle('loadSession', async (raw: unknown) => {
     if (active) throw new Error('Stop the current response before switching chats.');
@@ -425,7 +458,10 @@ function registerHandlers(): void {
   handle('send', (raw: unknown) => send(z.object({ sessionId: idSchema, text: z.string().trim().min(1).max(1_000_000),
     files: z.array(z.object({ name: z.string(), path: z.string() })).max(20).optional() }).parse(raw)));
   handle('cancel', async (raw: unknown) => {
-    const id = idSchema.parse(raw); if (active?.sessionId === id) { active.controller.abort(); await active.backend?.cancel(); }
+    const id = idSchema.optional().parse(raw);
+    const preflight = checkingTurnModel;
+    if (preflight && (id === undefined || preflight.sessionId === id)) preflight.controller.abort(new Error('Task preparation stopped. Your request has not run.'));
+    if (active && (id === undefined || active.sessionId === id)) { active.controller.abort(); await active.backend?.cancel(); }
   });
   handle('respondPermission', (raw: unknown) => {
     const value = z.object({ requestId: idSchema, approved: z.boolean() }).parse(raw);
@@ -469,7 +505,8 @@ else {
   app.on('before-quit', event => {
     if (quitting) return;
     event.preventDefault(); quitting = true; const turn = active; turn?.controller.abort();
+    const preflight = checkingTurnModel; preflight?.controller.abort();
     for (const request of pending.values()) request.resolve(false);
-    void Promise.allSettled([runtime?.stop(), persistence, turn?.backend?.stop(), turn?.done]).finally(() => app.quit());
+    void Promise.allSettled([runtime?.stop(), persistence, turn?.backend?.stop(), turn?.done, preflight?.done]).finally(() => app.quit());
   });
 }

@@ -1,0 +1,85 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdtemp, mkdir, readdir, realpath, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { test } from 'node:test';
+import { invokeLocalAction } from '../action-client.ts';
+import { createActionHost } from '../action-host.ts';
+import { LocalActions } from '../actions.ts';
+import { cancelledActionResult } from '../backend.ts';
+import { actionRequestAbortedText, actionRequestDeadlines, actionRequestTimeoutText, actionResponseInterruptedText } from '../action-protocol.ts';
+
+test('native action client keeps an approval pending until its explicit deadline then cancels it', { timeout: 5000 }, async () => {
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-client-test-')));
+  const projectPath = path.join(directory, 'project'); await mkdir(projectPath);
+  const controller = new AbortController();
+  let shown!: () => void, aborted!: () => void, approve!: (answer: boolean) => void;
+  let approvals = 0;
+  const permissionShown = new Promise<void>(resolve => { shown = resolve; });
+  const permissionAborted = new Promise<void>(resolve => { aborted = resolve; });
+  const actions = new LocalActions({ projectPath, historyDirectory: path.join(directory, 'history'), onPermission: (_permission, signal) => {
+    approvals++; assert.ok(signal); signal.addEventListener('abort', aborted, { once: true });
+    shown(); return new Promise<boolean>(resolve => { approve = resolve; });
+  } });
+  const host = await createActionHost(actions, controller.signal);
+  try {
+    assert.equal(actionRequestDeadlines.normal, 15 * 60_000);
+    assert.equal(actionRequestDeadlines.command, 25 * 60_000);
+    const pending = invokeLocalAction(host.url, 'run_command', { command: 'echo forbidden > deadline.txt', timeout_ms: 600000 }, undefined, 200);
+    const rejection = assert.rejects(pending, { message: actionRequestTimeoutText });
+    await permissionShown;
+    assert.equal(approvals, 1);
+    await rejection; await permissionAborted; await host.drain();
+    approve(true); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(await readdir(projectPath), []);
+    const repeated = await invokeLocalAction(host.url, 'write_file', { path: 'deadline.txt', content: 'retry' });
+    assert.equal(repeated.errorCode, 'TURN_CANCELLED');
+    assert.equal(approvals, 1);
+  } finally {
+    controller.abort(); await host.drain(); host.server.closeAllConnections();
+    await new Promise<void>(resolve => host.server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('native action client rejects a cancelled caller before opening a connection', async () => {
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(invokeLocalAction(`http://127.0.0.1:1/${'a'.repeat(64)}`, 'write_file', {}, controller.signal), { message: actionRequestAbortedText });
+  await assert.rejects(invokeLocalAction('https://example.com/actions', 'write_file', {}), /app-owned action endpoint/);
+});
+
+test('unconfirmed responses produce an owned interruption error and are never retried', { timeout: 5000 }, async () => {
+  for (const mode of ['reset', 'partial', 'invalid', 'invalid-utf8', 'null', 'empty', 'invalid-content', 'oversized', 'unavailable'] as const) {
+    let requests = 0;
+    const server = createServer(async (request, response) => {
+      for await (const _chunk of request) { /* consume the complete proposal */ }
+      requests++;
+      if (mode === 'reset') { response.destroy(); return; }
+      if (mode === 'unavailable') { response.writeHead(503).end(); return; }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      if (mode === 'partial') {
+        response.write('{"content":[');
+        setImmediate(() => response.destroy());
+      } else if (mode === 'oversized') response.end('x'.repeat(3 * 1024 * 1024 + 1));
+      else if (mode === 'null') response.end('null');
+      else if (mode === 'empty') response.end('{}');
+      else if (mode === 'invalid-content') response.end('{"content":[{"type":"text","text":42}]}');
+      else if (mode === 'invalid-utf8') response.end(Buffer.concat([Buffer.from('{"content":[{"type":"text","text":"'), Buffer.from([0xff]), Buffer.from('"}]}')]));
+      else response.end('not-json');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address(); assert.ok(address && typeof address !== 'string');
+      let captured: Error | undefined;
+      await assert.rejects(invokeLocalAction(`http://127.0.0.1:${address.port}/${'a'.repeat(64)}`, 'run_command', { command: 'proposed once' }), (error: Error) => {
+        captured = error; return error.message === actionResponseInterruptedText;
+      });
+      assert.ok(captured?.cause instanceof Error, 'Retain the transport diagnostic separately.');
+      assert.equal(cancelledActionResult({ type: 'text', text: captured?.message }), true);
+      assert.equal(requests, 1, `${mode} must never cause an automatic retry.`);
+    } finally {
+      server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }
+});

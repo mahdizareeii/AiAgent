@@ -62,3 +62,13 @@ test('ordinary Agent instructions omit the optional research skill and keep acti
   assert.match(normalAgent, /approval dialog/);
   assert.match(normalAgent, /Respect denials/);
 });
+
+test('Agent task execution remains general and requires prerequisite inspection, validation and repair', () => {
+  const instructions = taskInstructions('coding', DEFAULT_UTILITIES);
+  assert.match(instructions, /Inspect installed versions and prerequisites/);
+  assert.match(instructions, /run appropriate validation/);
+  assert.match(instructions, /repair observed failures.*tools and approvals/);
+  assert.match(instructions, /Never claim.*passing test.*without tool evidence/);
+  assert.match(instructions, /Do not automatically repeat completed commands or edits/);
+  assert.doesNotMatch(instructions, /WordPress|docker|MariaDB/i);
+});

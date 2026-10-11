@@ -38,6 +38,7 @@ export interface LocalModel {
   description: string;
   installed: boolean;
   blockedReason?: string;
+  verificationError?: string;
   fit: 'recommended' | 'slow' | 'insufficient';
   fitReason: string;
   license: string;
@@ -64,7 +65,15 @@ export interface SessionSummary {
 }
 
 export interface AgentStatus {
-  runtime: { ready: boolean; version?: string; error?: string };
+  runtime: {
+    ready: boolean;
+    state?: 'stopped' | 'starting' | 'ready' | 'loading' | 'stopping' | 'error';
+    version?: string;
+    error?: string;
+    errorCode?: string;
+  };
+  modelsError?: string;
+  storage?: { profile: 'regular' | 'isolated'; path: string; modelCachePath: string };
   hardware: HardwareSnapshot;
   profile?: ExecutionProfile;
   utilities: UtilityPreferences;
@@ -135,6 +144,7 @@ export type AgentEvent = (
   | { type: 'message'; text: string; role: 'assistant'; thinking?: boolean }
   | ({ type: 'tool' } & ToolActivity)
   | ({ type: 'permission' } & PermissionRequest)
+  | { type: 'permission_cancelled'; requestId: string }
   | { type: 'done' }
   | { type: 'error'; text?: string; error?: string }
 ) & { sessionId?: string };
@@ -156,7 +166,7 @@ export interface LocalAgentBridge {
   createSession(options: { mode: Mode; projectPath?: string }): Promise<{ id: string }>;
   loadSession(id: string): Promise<AgentSession>;
   send(options: { sessionId: string; text: string; files?: Attachment[] }): Promise<void>;
-  cancel(sessionId: string): Promise<void>;
+  cancel(sessionId?: string): Promise<void>;
   resume(sessionId: string): Promise<void>;
   respondPermission(options: { requestId: string; approved: boolean }): Promise<void>;
   undo(): Promise<{ restored: number }>;

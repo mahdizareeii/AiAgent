@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { z } from 'zod';
 import { LocalActions, type ActionResult } from './actions.ts';
+import { interruptedTurnText } from './action-protocol.ts';
 
 export interface ActionHost {
   url: string;
@@ -25,6 +26,7 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
   const secret = randomBytes(32).toString('hex');
   let queue: Promise<void> = Promise.resolve();
   let denied = false;
+  let interrupted = false;
   const inFlight = new Set<Promise<void>>();
   const server = createServer((request, response) => {
     if (request.method !== 'POST' || request.url !== `/${secret}` || request.headers.origin !== undefined || signal.aborted) {
@@ -33,9 +35,21 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
     }
     const work = (async () => {
       let reading = true;
+      let mutation = false;
+      const requestController = new AbortController();
+      // IncomingMessage.close also fires after a normal complete body. The
+      // response's premature close is the signal that its result was abandoned.
+      const onDisconnect = () => {
+        if (response.writableEnded) return;
+        if (mutation) interrupted = true;
+        requestController.abort();
+      };
       const onAbort = () => {
+        requestController.abort();
         if (reading) request.destroy(new Error('The action request was cancelled.'));
       };
+      request.once('aborted', onDisconnect);
+      response.once('close', onDisconnect);
       signal.addEventListener('abort', onAbort, { once: true });
       try {
         if (signal.aborted) onAbort();
@@ -48,10 +62,11 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
           chunks.push(buffer);
         }
         reading = false;
-        signal.removeEventListener('abort', onAbort);
         // Decode once: network chunks can split a Persian/other UTF-8 codepoint.
         const body = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
         const value = requestSchema.parse(JSON.parse(body));
+        mutation = value.tool !== 'read_command_output';
+        if (requestController.signal.aborted && mutation && !signal.aborted) interrupted = true;
         // The host queue covers commands as well as edits. Only one action can
         // wait for permission at a time, even if Goose proposes parallel tools.
         const queued = queue.catch(() => undefined).then(async () => {
@@ -62,8 +77,13 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
             errorCode: 'TURN_DENIED',
             content: [{ type: 'text' as const, text: 'This turn stopped after a denied action. Send a new request to continue. No action was taken.' }],
           };
-          const result = await actions.execute(value.tool, value.args, { signal });
+          if (interrupted && mutation) return {
+            isError: true, errorCode: 'TURN_CANCELLED',
+            content: [{ type: 'text' as const, text: interruptedTurnText }],
+          };
+          const result = await actions.execute(value.tool, value.args, { signal: requestController.signal });
           if (result.errorCode === 'PERMISSION_DENIED') denied = true;
+          if (result.errorCode === 'COMMAND_TIMEOUT' || result.errorCode === 'COMMAND_INTERRUPTED') interrupted = true;
           return result;
         });
         queue = queued.then(() => undefined, () => undefined);
@@ -72,7 +92,10 @@ export async function createActionHost(actions: LocalActions, signal: AbortSigna
       } catch (error) {
         if (!response.destroyed) response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(failure(error)));
       } finally {
+        if (response.destroyed && !response.writableEnded) onDisconnect();
         signal.removeEventListener('abort', onAbort);
+        request.removeListener('aborted', onDisconnect);
+        response.removeListener('close', onDisconnect);
       }
     })();
     inFlight.add(work);

@@ -4,7 +4,8 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeF
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { LocalActions, type ActionPermission, type LocalActionsOptions } from '../actions.ts';
+import { ACTION_TOOL_SCHEMAS, LocalActions, type ActionPermission, type LocalActionsOptions } from '../actions.ts';
+import { commandTimeoutLimits, commandTimeoutText } from '../action-protocol.ts';
 
 async function setup(onPermission: (permission: ActionPermission) => Promise<boolean> = async () => true,
   options: Partial<Pick<LocalActionsOptions, 'resultChars' | 'utilities' | 'onTool'>> = {}) {
@@ -187,7 +188,58 @@ test('commands can be cancelled and are stopped at the configured time limit', a
     const timed = await run.actions.execute('run_command', { command, timeout_ms: 100 });
     assert.equal(timed.isError, true);
     assert.match(timed.content[0].text, /time limit/);
+    assert.equal(timed.errorCode, 'COMMAND_TIMEOUT');
+    assert.equal(timed.content[1].text, commandTimeoutText);
+    const timedRecord = JSON.parse(await readFile(path.join(run.historyDirectory, 'command-logs', `${commandLogId(timed.content[0].text)}.json`), 'utf8'));
+    assert.equal(timedRecord.state, 'interrupted'); assert.equal(timedRecord.timeoutMs, 100); assert.equal(timedRecord.errorCode, 'COMMAND_TIMEOUT');
   } finally { await run.cleanup(); }
+});
+
+test('commands require valid explicit bounds while omitted timeout retains its reviewed 60 second default', async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => { permissions.push(permission); return true; });
+  try {
+    for (const timeout_ms of [99, 600001, 1.5, NaN, Infinity, null, '600000']) {
+      const rejected = await run.actions.execute('run_command', { command: 'echo forbidden', timeout_ms });
+      assert.equal(rejected.errorCode, 'INVALID_TIMEOUT');
+    }
+    assert.equal(permissions.length, 0);
+    const defaultCommand = await run.actions.execute('run_command', { command: 'exit 0' });
+    assert.equal(defaultCommand.isError, undefined);
+    assert.equal(permissions[0].arguments.timeout_ms, commandTimeoutLimits.default);
+    const defaultRecord = JSON.parse(await readFile(path.join(run.historyDirectory, 'command-logs', `${commandLogId(defaultCommand.content[0].text)}.json`), 'utf8'));
+    assert.equal(defaultRecord.timeoutMs, 60000); assert.equal(defaultRecord.state, 'completed');
+    const longCommand = await run.actions.execute('run_command', { command: 'exit 0', timeout_ms: 600000 });
+    assert.equal(longCommand.isError, undefined); assert.equal(permissions[1].arguments.timeout_ms, 600000);
+    const longRecord = JSON.parse(await readFile(path.join(run.historyDirectory, 'command-logs', `${commandLogId(longCommand.content[0].text)}.json`), 'utf8'));
+    assert.equal(longRecord.timeoutMs, 600000); assert.equal(longRecord.state, 'completed');
+    const schema = ACTION_TOOL_SCHEMAS.find(item => item.name === 'run_command')!;
+    assert.equal(schema.inputSchema.properties.timeout_ms.minimum, 100);
+    assert.equal(schema.inputSchema.properties.timeout_ms.maximum, 600000);
+    assert.equal(schema.inputSchema.properties.timeout_ms.default, 60000);
+  } finally { await run.cleanup(); }
+});
+
+test('explicit 10 minute dependency commands still cancel promptly and preserve partial work without replay', async () => {
+  const run = await setup(); const controller = new AbortController();
+  try {
+    const command = process.platform === 'win32' ? 'echo EXECUTED>>count.txt & ping -n 30 127.0.0.1 >nul' : "printf 'EXECUTED\\n' >> count.txt; sleep 30";
+    const pending = run.actions.execute('run_command', { command, timeout_ms: 600000 }, { signal: controller.signal });
+    for (let index = 0; index < 100; index++) {
+      if (await readFile(path.join(run.projectPath, 'count.txt'), 'utf8').catch(() => '')) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal((await readFile(path.join(run.projectPath, 'count.txt'), 'utf8')).trim(), 'EXECUTED');
+    const stoppedAt = Date.now(); controller.abort();
+    const output = await pending;
+    assert.equal(output.isError, true); assert.equal(output.errorCode, 'COMMAND_INTERRUPTED');
+    assert.ok(Date.now() - stoppedAt < 5000);
+    const record = JSON.parse(await readFile(path.join(run.historyDirectory, 'command-logs', `${commandLogId(output.content[0].text)}.json`), 'utf8'));
+    assert.equal(record.state, 'interrupted'); assert.equal(record.timeoutMs, 600000);
+    const reopened = new LocalActions({ projectPath: run.projectPath, historyDirectory: run.historyDirectory, onPermission: async () => { throw new Error('No automatic replay approval expected.'); } });
+    assert.equal((await reopened.execute('read_command_output', { id: record.id })).isError, undefined);
+    assert.equal((await readFile(path.join(run.projectPath, 'count.txt'), 'utf8')).trim(), 'EXECUTED');
+  } finally { controller.abort(); await run.cleanup(); }
 });
 
 test('cancellation stops an owned descendant that ignores SIGTERM after its shell closes', { skip: process.platform === 'win32' }, async () => {
@@ -320,7 +372,8 @@ test('the saved command log stops at its 64 MiB resource cap', async () => {
     assert.equal((await lstat(path.join(run.historyDirectory, 'command-logs', `${id}.log`))).size, 64 * 1024 * 1024);
     assert.ok(Buffer.byteLength(output.content[0].text) < 2500);
     const record = JSON.parse(await readFile(path.join(run.historyDirectory, 'command-logs', `${id}.json`), 'utf8'));
-    assert.equal(record.state, 'failed');
+    assert.equal(record.state, 'interrupted');
+    assert.equal(record.errorCode, 'COMMAND_INTERRUPTED');
   } finally { await run.cleanup(); }
 });
 
@@ -348,6 +401,38 @@ test('paged UTF-8 command output is complete and reading it never reruns executi
     assert.equal(excerpts.join(''), original);
     assert.equal(approvals, 1);
     assert.equal(await readFile(path.join(run.projectPath, 'execution-count.txt'), 'utf8'), 'x');
+  } finally { await run.cleanup(); }
+});
+
+test('file edit IDs and missing command logs give actionable guidance without exposing internal paths', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    await writeFile(path.join(run.projectPath, 'app.txt'), 'before');
+    const edited = await run.actions.execute('edit_file', { path: 'app.txt', old_text: 'before', new_text: 'after' });
+    assert.equal(edited.isError, undefined);
+    const editSnapshot = (await readdir(run.historyDirectory)).find(name => name.endsWith('.json'));
+    assert.ok(editSnapshot);
+    const editId = editSnapshot.slice(0, -5);
+    for (const id of [editId, '00000000-0000-4000-8000-000000000000']) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await run.actions.execute('read_command_output', { id });
+        assert.equal(response.isError, true);
+        assert.equal(response.errorCode, 'COMMAND_LOG_NOT_FOUND');
+        assert.match(response.content[0].text, /Do not retry the same id/);
+        assert.match(response.content[0].text, /log id returned by run_command/);
+        assert.match(response.content[0].text, /use read_file to verify edited files/);
+        assert.ok(!response.content[0].text.includes(run.historyDirectory));
+        assert.ok(!response.content[0].text.includes('ENOENT'));
+      }
+    }
+    const invalid = await run.actions.execute('read_command_output', { id: 'invented-id' });
+    assert.equal(invalid.errorCode, 'INVALID_ARGUMENT');
+    assert.match(invalid.content[0].text, /exact saved command log UUID returned by run_command/);
+    assert.equal(approvals, 1, 'Reading a nonexistent log never asks for another action approval.');
+    assert.equal(await readFile(path.join(run.projectPath, 'app.txt'), 'utf8'), 'after');
+    assert.equal(await run.actions.undo(), 1, 'The successful edit and its undo remain intact.');
+    assert.equal(await readFile(path.join(run.projectPath, 'app.txt'), 'utf8'), 'before');
   } finally { await run.cleanup(); }
 });
 

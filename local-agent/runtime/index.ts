@@ -21,7 +21,7 @@ export interface ModelRecommendation {supported:boolean;totalMemoryGB:number;sug
 export function recommendModel(memoryBytes=totalmem()):ModelRecommendation {
   const gb=memoryBytes/GIB;return {supported:gb>=8,totalMemoryGB:Math.round(gb*10)/10,suggestedModel:gb>=24?'gemma4:12b':gb>=8?'qwen3.5:4b':null,contextTokens:8192,reason:gb>=8?null:'The curated models require at least 8 GB of system memory.'};
 }
-export interface AvailableModel extends CuratedModel,FitResult {installed:boolean;sizeBytes:number;digest:string|null;blockedReason:string|null;measuredTokensPerSecond?:number;}
+export interface AvailableModel extends CuratedModel,FitResult {installed:boolean;sizeBytes:number;digest:string|null;blockedReason:string|null;verificationError?:string;measuredTokensPerSecond?:number;}
 export interface VerifiedModel {model:string;digest:string;sizeBytes:number;capabilities:string[];verifiedAt:string;toolCapable:boolean;}
 export interface PreparedModel extends VerifiedModel {sourceModel:string;baseUrl:string;apiKey:string;contextTokens:number;outputTokens:number;measuredTokensPerSecond?:number;}
 export interface InferenceProfile {contextTokens:number;outputTokens:number;batchTokens:number;microBatchTokens:number;backend:string;index:number;}
@@ -55,6 +55,7 @@ export class LocalInferenceRuntime extends EventEmitter {
   private startController:AbortController|null=null;private loadController:AbortController|null=null;private pullController:AbortController|null=null;
   private lastLog='';private suppressExit=false;private apiKey='';private prepared:PreparedModel|null=null;
   private verification=new Map<string,VerificationRecord>();private measurements=new Map<string,number>();private profileIndex=0;
+  private modelFailures=new Map<string,string>();
   private imports=new Map<string,CuratedModel>();private importsLoaded=false;private toolsPassed=new Map<string,boolean>();
   private calibrationPromise:Promise<PreparedModel>|null=null;private calibrationController:AbortController|null=null;
   private settingsPromise:Promise<void>|null=null;
@@ -131,15 +132,24 @@ export class LocalInferenceRuntime extends EventEmitter {
   async listModels():Promise<AvailableModel[]>{
     await this.loadImports();
     const hardware=this.status.hardware??await probeHardware(this.settings.dataDirectory,{totalMemoryBytes:this.settings.totalMemoryBytes,availableMemoryBytes:this.settings.availableMemoryBytes,freeDiskBytes:d=>this.disk(d)});
-    return Promise.all(this.catalog().map(async spec=>{let installed=false,sizeBytes=0;try{const s=await lstat(path.join(this.status.modelCacheDirectory,spec.filename));installed=s.isFile()&&!s.isSymbolicLink()&&s.size===spec.estimatedDownloadBytes;sizeBytes=s.size;}catch{}
-      const fit=classifyModel(spec,hardware);return {...spec,...fit,toolCapable:this.toolsPassed.get(spec.id)??spec.toolCapable,installed,sizeBytes,digest:installed?spec.sha256:null,blockedReason:fit.fit==='insufficient'?fit.fitReason:null,measuredTokensPerSecond:this.measurements.get(spec.id)};}));
+    return Promise.all(this.catalog().map(async spec=>{let installed=false,sizeBytes=0;try{const s=await lstat(path.join(this.status.modelCacheDirectory,spec.filename));installed=s.isFile()&&!s.isSymbolicLink()&&s.size===spec.estimatedDownloadBytes;sizeBytes=s.size;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new RuntimeError('MODEL_DISCOVERY_FAILED','The model cache could not be inspected. Check its folder permissions and storage path.',{cause:error});}
+      const fit=classifyModel(spec,hardware),verificationError=sizeBytes>0?this.modelFailures.get(spec.id):undefined;return {...spec,...fit,toolCapable:this.toolsPassed.get(spec.id)??spec.toolCapable,installed,sizeBytes,digest:installed&&!verificationError?spec.sha256:null,blockedReason:verificationError??(fit.fit==='insufficient'?fit.fitReason:null),verificationError,measuredTokensPerSecond:this.measurements.get(spec.id)};}));
   }
   async inspectModel(model:string,options:{signal?:AbortSignal;acceptNewDigest?:boolean}={}):Promise<VerifiedModel>{
-    await this.loadImports();const spec=this.spec(model);throwIfAborted(options.signal);const file=path.join(this.status.modelCacheDirectory,spec.filename);let s;try{s=await lstat(file);}catch{throw new RuntimeError('MODEL_NOT_FOUND','Download or import this model first.');}
-    if(!s.isFile()||s.isSymbolicLink()||s.size!==spec.estimatedDownloadBytes)throw new RuntimeError('MODEL_SIZE_MISMATCH','The model file does not match the pinned artifact size.');const mark=fingerprint(s);const known=this.verification.get(model);if(known&&same(known.fingerprint,mark))return {...known.verified};
+    try{
+    await this.loadImports();const spec=this.spec(model);throwIfAborted(options.signal);const file=path.join(this.status.modelCacheDirectory,spec.filename);let s;try{s=await lstat(file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')throw new RuntimeError('MODEL_NOT_FOUND','Download or import this model first.');throw new RuntimeError('MODEL_ACCESS_FAILED','The local model file could not be read. Check its permissions and storage path.',{cause:error});}
+    if(!s.isFile()||s.isSymbolicLink()||s.size!==spec.estimatedDownloadBytes)throw new RuntimeError('MODEL_SIZE_MISMATCH','The model file does not match the pinned artifact size.');const mark=fingerprint(s);const known=this.verification.get(model);if(known&&same(known.fingerprint,mark)){this.modelValidated(model);return {...known.verified};}
     const digest=await sha256File(file,options.signal);if(digest!==spec.sha256)throw new RuntimeError('MODEL_DIGEST_MISMATCH','The model does not match its pinned SHA-256. Download or import the approved file again.');const metadata=await readGGUFMetadata(file,options.signal);if(!metadata.architecture.startsWith(spec.architecture))throw new RuntimeError('MODEL_ARCHITECTURE_MISMATCH','The model architecture does not match the curated catalog.');
     const after=await stat(file);if(!same(mark,fingerprint(after)))throw new RuntimeError('MODEL_CHANGED','The model changed while it was being verified.');
-    const toolCapable=this.toolsPassed.get(model)??spec.toolCapable;const verified={model,digest,sizeBytes:s.size,capabilities:toolCapable?['completion','tools']:['completion'],toolCapable,verifiedAt:new Date().toISOString()};this.verification.set(model,{fingerprint:mark,verified});return {...verified};
+    const toolCapable=this.toolsPassed.get(model)??spec.toolCapable;const verified={model,digest,sizeBytes:s.size,capabilities:toolCapable?['completion','tools']:['completion'],toolCapable,verifiedAt:new Date().toISOString()};this.verification.set(model,{fingerprint:mark,verified});this.modelValidated(model);return {...verified};
+    }catch(error){if(options.signal?.aborted||(error instanceof Error&&error.name==='AbortError'))throw error;const failure=error instanceof RuntimeError?error:new RuntimeError((error as NodeJS.ErrnoException)?.code==='ENOENT'?'MODEL_NOT_FOUND':'MODEL_ACCESS_FAILED','The local model could not be verified. Check its permissions and storage path, or import a valid GGUF.',{cause:error});this.verification.delete(model);if(failure.code==='MODEL_NOT_FOUND')this.modelFailures.delete(model);else this.modelFailures.set(model,failure.message);this.emit('status',this.getStatus());throw failure;}
+  }
+  private modelValidated(model:string):void {
+    const cleared=this.modelFailures.delete(model);
+    // A verified replacement can recover from a model failure without probing
+    // or restarting the engine. Engine/transport failures need their own retry.
+    const recoverable=/^(?:MODEL_(?:NOT_FOUND|NOT_ALLOWED|ACCESS_FAILED|SIZE_MISMATCH|DIGEST_MISMATCH|ARCHITECTURE_MISMATCH|CHANGED|LOAD_FAILED|LOAD_TIMEOUT)|INVALID_GGUF|INSUFFICIENT_MEMORY|SLOW_MODE_REQUIRED|ALLOCATION_FAILED)$/.test(this.status.error?.code??'');
+    if(this.status.state==='ready'&&recoverable)this.update({error:null});else if(cleared)this.emit('status',this.getStatus());
   }
   async pullModel(model:string,options:{signal?:AbortSignal;onProgress?:(p:PullProgress)=>void}={}):Promise<VerifiedModel>{
     this.assertIdle();const spec=this.spec(model);if(!spec.repository)throw new RuntimeError('MODEL_DOWNLOAD_UNAVAILABLE','Imported files cannot be downloaded from the catalog.');if(this.pullController)throw new RuntimeError('DOWNLOAD_BUSY','A model download is already running.');throwIfAborted(options.signal);

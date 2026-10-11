@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { cancelledActionText, commandTimeoutLimits, commandTimeoutText, interruptedTurnText } from './action-protocol.ts';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -36,7 +37,7 @@ export interface ActionResult {
 export interface LocalActionsOptions {
   projectPath: string;
   historyDirectory: string;
-  onPermission: (permission: ActionPermission) => Promise<boolean>;
+  onPermission: (permission: ActionPermission, signal?: AbortSignal) => Promise<boolean>;
   onTool?: (event: ActionToolEvent) => void;
   resultChars?: number;
   utilities?: { fileEditing: boolean; terminal: boolean };
@@ -67,7 +68,7 @@ class ActionError extends Error {
 
 const result = (text: string, isError = false): ActionResult => ({ content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) });
 const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
-const cancelled = () => new ActionError('CANCELLED', 'The action was cancelled before it completed.');
+const cancelled = () => new ActionError('CANCELLED', cancelledActionText);
 const contained = (root: string, file: string) => { const relative = path.relative(root, file); return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); };
 
 function assertSafeName(relative: string): void {
@@ -102,7 +103,7 @@ export const ACTION_TOOL_SCHEMAS = [
   { name: 'edit_file', description: 'Propose one exact text replacement in a project file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
   { name: 'write_file', description: 'Propose creating or replacing a project text file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
   { name: 'create_files', description: 'Propose 1–20 new project text files in one reviewed batch. Parent folders are created automatically; existing files cannot be replaced. Total content <=512 KiB. One approval shows every file and grouped undo is available.', inputSchema: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } } }, required: ['files'], additionalProperties: false } },
-  { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command and working directory. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', minimum: 100, maximum: 120000 } }, required: ['command'], additionalProperties: false } },
+  { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command, working directory and time limit. timeout_ms defaults to 60000; explicitly select up to 600000 for dependency setup. Interrupted commands preserve partial work and are never automatically repeated. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', ...commandTimeoutLimits, description: 'Approved execution time limit in milliseconds, 100–600000; default 60000. Longer dependency setup requires an explicit value.' } }, required: ['command'], additionalProperties: false } },
 ] as const;
 
 /**
@@ -202,7 +203,7 @@ export class LocalActions {
   private async permission(permission: ActionPermission, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) throw cancelled();
     let onAbort: (() => void) | undefined;
-    const decision = this.options.onPermission(permission);
+    const decision = this.options.onPermission(permission, signal);
     try {
       const approved = signal ? await Promise.race([decision, new Promise<never>((_, reject) => { onAbort = () => reject(cancelled()); signal.addEventListener('abort', onAbort, { once: true }); if (signal.aborted) onAbort(); })]) : await decision;
       if (signal?.aborted) throw cancelled();
@@ -373,9 +374,9 @@ export class LocalActions {
     if (Buffer.byteLength(command) > 32_768) throw new ActionError('COMMAND_TOO_LARGE', 'The proposed command is too long.');
     const requestedCwd = args.cwd === undefined ? '.' : textArgument(args, 'cwd');
     const target = await this.target(requestedCwd, true);
-    const timeout = args.timeout_ms ?? 60_000;
-    if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 100 || timeout > 120_000) throw new ActionError('INVALID_TIMEOUT', 'timeout_ms must be an integer between 100 and 120000.');
-    await this.permission({ requestId: id, title: 'Run command with your account permissions', arguments: args, command, cwd: target.absolute }, signal);
+    const timeout = args.timeout_ms === undefined ? commandTimeoutLimits.default : args.timeout_ms;
+    if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < commandTimeoutLimits.minimum || timeout > commandTimeoutLimits.maximum) throw new ActionError('INVALID_TIMEOUT', 'timeout_ms must be an integer between 100 and 600000.');
+    await this.permission({ requestId: id, title: 'Run command with your account permissions', arguments: { ...args, timeout_ms: timeout }, command, cwd: target.absolute }, signal);
     const checked = await this.target(requestedCwd, true);
     if (checked.root !== target.root || checked.absolute !== target.absolute) throw new ActionError('STALE_PREVIEW', 'The command working directory changed while approval was pending.');
     if (signal?.aborted) throw cancelled();
@@ -384,19 +385,23 @@ export class LocalActions {
     const logDirectory = path.join(this.options.historyDirectory, 'command-logs');
     await mkdir(logDirectory, { recursive: true, mode: 0o700 });
     const recordPath = path.join(logDirectory, `${id}.json`);
-    await writeFile(recordPath, JSON.stringify({ id, command, cwd: target.absolute, state: 'started', startedAt: new Date().toISOString() }), { mode: 0o600, flag: 'wx' });
+    await writeFile(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout, state: 'started', startedAt: new Date().toISOString() }), { mode: 0o600, flag: 'wx' });
     const log = await open(path.join(logDirectory, `${id}.log`), 'wx', 0o600);
     try {
       if (signal?.aborted) {
-        await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, state: 'interrupted', finishedAt: new Date().toISOString() }), 0o600);
+        await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout, state: 'interrupted', finishedAt: new Date().toISOString() }), 0o600);
         throw cancelled();
       }
       const child = spawn(windows ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh', windows ? ['/d', '/s', '/c', command] : ['-c', command], { cwd: target.absolute, env: process.env, shell: false, detached: !windows, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const outcome = await this.commandResult(child, timeout, signal, async chunk => { await log.writeFile(chunk); });
       await log.sync();
-      await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute,
-        state: signal?.aborted ? 'interrupted' : outcome.isError ? 'failed' : 'completed', finishedAt: new Date().toISOString() }), 0o600);
-      return { ...outcome, content: outcome.content.map(item => ({ ...item, text: `${item.text}\n\nSaved command log: ${id}. Use read_command_output with this id and offset 0 to read more. Commands are never replayed by task resume.` })) };
+      await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout,
+        state: signal?.aborted || ['COMMAND_TIMEOUT', 'COMMAND_INTERRUPTED'].includes(outcome.errorCode ?? '') ? 'interrupted' : outcome.isError ? 'failed' : 'completed',
+        ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}), finishedAt: new Date().toISOString() }), 0o600);
+      const content = outcome.content.map(item => ({ ...item, text: `${item.text}\n\nSaved command log: ${id}. Use read_command_output with this id and offset 0 to read more. Commands are never replayed by task resume.` }));
+      if (outcome.errorCode === 'COMMAND_TIMEOUT') content.push({ type: 'text', text: commandTimeoutText });
+      else if (outcome.errorCode === 'COMMAND_INTERRUPTED') content.push({ type: 'text', text: interruptedTurnText });
+      return { ...outcome, content };
     } finally { await log.close(); }
   }
 
@@ -408,11 +413,12 @@ export class LocalActions {
       let writes = Promise.resolve();
       const previewLimit = Math.max(256, this.options.resultChars ?? 2000);
       let stopped: string | null = null;
+      let stoppedCode: string | undefined;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       let terminationCleanup: Promise<void> | undefined;
-      const terminate = (reason: string) => {
+      const terminate = (reason: string, errorCode = 'COMMAND_INTERRUPTED') => {
         if (stopped) return;
-        stopped = reason;
+        stopped = reason; stoppedCode = errorCode;
         if (process.platform === 'win32' && child.pid) {
           const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', shell: false });
           killer.on('error', () => child.kill());
@@ -443,7 +449,7 @@ export class LocalActions {
       };
       child.stdout?.on('data', collect);
       child.stderr?.on('data', collect);
-      const timeout = setTimeout(() => terminate(`The command exceeded its ${timeoutMs} ms time limit and was stopped.`), timeoutMs);
+      const timeout = setTimeout(() => terminate(`The command exceeded its ${timeoutMs} ms time limit and was stopped.`, 'COMMAND_TIMEOUT'), timeoutMs);
       const onAbort = () => terminate('The command was cancelled.');
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) onAbort();
@@ -456,7 +462,8 @@ export class LocalActions {
         await writes;
         await terminationCleanup;
         if (killTimer) clearTimeout(killTimer);
-        resolve(result(`${message}${output ? `\n\n${output}` : ''}${outputBytes > previewBytes ? '\n[Excerpt only; the full output is in the saved command log.]' : ''}`, failed));
+        resolve({ ...result(`${message}${output ? `\n\n${output}` : ''}${outputBytes > previewBytes ? '\n[Excerpt only; the full output is in the saved command log.]' : ''}`, failed),
+          ...(stoppedCode ? { errorCode: stoppedCode } : {}) });
       };
       child.once('error', (error) => finish(`The command could not start: ${error.message}`, true));
       child.once('close', (code, exitSignal) => finish(stopped ?? `Command exited with ${exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`}.`, Boolean(stopped) || code !== 0));
@@ -466,10 +473,15 @@ export class LocalActions {
   private async readCommandOutput(args: Record<string, unknown>): Promise<ActionResult> {
     if (this.options.utilities?.terminal === false) throw new ActionError('DISABLED_TOOL', 'Command logs are disabled with terminal utilities.');
     const id = textArgument(args, 'id');
-    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new ActionError('INVALID_ARGUMENT', 'id must be a saved command log UUID.');
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new ActionError('INVALID_ARGUMENT', 'Use the exact saved command log UUID returned by run_command. Do not invent an id; use read_file to verify edited files.');
     const offset = args.offset ?? 0;
     if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new ActionError('INVALID_ARGUMENT', 'offset must be a non-negative byte position.');
-    const file = await open(path.join(this.options.historyDirectory, 'command-logs', `${id}.log`), 'r');
+    let file: Awaited<ReturnType<typeof open>>;
+    try { file = await open(path.join(this.options.historyDirectory, 'command-logs', `${id}.log`), 'r'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new ActionError('COMMAND_LOG_NOT_FOUND', 'No saved command log exists for this id. Do not retry the same id. Use only a log id returned by run_command; use read_file to verify edited files.');
+      throw error;
+    }
     try {
       const size = (await file.stat()).size;
       const buffer = Buffer.alloc(Math.min(4000, this.options.resultChars ?? 2000));

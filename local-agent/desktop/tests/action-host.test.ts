@@ -10,11 +10,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createActionHost } from '../action-host.ts';
 import { LocalActions, type ActionPermission } from '../actions.ts';
+import { commandTimeoutText } from '../action-protocol.ts';
+import { cancelledActionResult } from '../backend.ts';
 
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const body = (tool: string, args: Record<string, unknown>) => JSON.stringify({ tool, args });
 
-async function setup(onPermission: (permission: ActionPermission) => Promise<boolean> = async () => false) {
+async function setup(onPermission: (permission: ActionPermission, signal?: AbortSignal) => Promise<boolean> = async () => false) {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-host-test-')));
   const projectPath = path.join(directory, 'project');
   await mkdir(projectPath);
@@ -228,6 +230,87 @@ test('abort cancels the pending action and queued action without a second approv
   } finally { await run.cleanup(); }
 });
 
+test('disconnect cancels an abandoned approval and late approval cannot write or automatically retry', { timeout: 5000 }, async () => {
+  let approvals = 0;
+  let showPermission!: () => void;
+  let abortPermission!: () => void;
+  let approve!: (answer: boolean) => void;
+  const shown = new Promise<void>(resolve => { showPermission = resolve; });
+  const cancelled = new Promise<void>(resolve => { abortPermission = resolve; });
+  const run = await setup((_permission, signal) => {
+    approvals++;
+    assert.ok(signal);
+    signal.addEventListener('abort', abortPermission, { once: true });
+    showPermission();
+    return new Promise<boolean>(resolve => { approve = resolve; });
+  });
+  const outgoing = request(run.host.url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  outgoing.on('error', () => {});
+  try {
+    outgoing.end(body('write_file', { path: 'abandoned.txt', content: 'must not be written' }));
+    await shown;
+    const queued = post(run.host.url, 'run_command', { command: 'echo forbidden > command.txt' });
+    outgoing.destroy();
+    await cancelled;
+    assert.equal((await (await queued).json()).errorCode, 'TURN_CANCELLED');
+    await run.host.drain();
+    approve(true);
+    await delay(20);
+    const retry = await (await post(run.host.url, 'write_file', { path: 'abandoned.txt', content: 'retry' })).json();
+    assert.equal(retry.errorCode, 'TURN_CANCELLED');
+    assert.equal(approvals, 1);
+    assert.deepEqual(await readdir(run.projectPath), []);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { outgoing.destroy(); await run.cleanup(); }
+});
+
+test('delivered command results do not cancel the turn and saved output never reruns a command', { timeout: 5000 }, async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const command = process.platform === 'win32' ? 'echo EXECUTED>>count.txt & echo COMMAND_OK' : "printf 'EXECUTED\\n' >> count.txt; printf COMMAND_OK";
+    const output = await (await post(run.host.url, 'run_command', { command })).json();
+    assert.equal(output.isError, undefined);
+    const logId = output.content[0].text.match(/Saved command log: ([a-f0-9-]+)/)[1];
+    // A normal body completion/response close must not be mistaken for a disconnect.
+    await delay(20);
+    const written = await (await post(run.host.url, 'write_file', { path: 'next.txt', content: 'explicit follow-up action' })).json();
+    assert.equal(written.isError, undefined);
+    for (let index = 0; index < 2; index++) {
+      const saved = await (await post(run.host.url, 'read_command_output', { id: logId })).json();
+      assert.equal(saved.isError, undefined);
+      assert.match(JSON.parse(saved.content[0].text).text, /COMMAND_OK/);
+    }
+    assert.equal(approvals, 2);
+    assert.equal((await readFile(path.join(run.projectPath, 'count.txt'), 'utf8')).trim(), 'EXECUTED');
+    assert.equal(await readFile(path.join(run.projectPath, 'next.txt'), 'utf8'), 'explicit follow-up action');
+  } finally { await run.cleanup(); }
+});
+
+test('disconnect after command execution starts retains its record and blocks automatic repetition', { timeout: 5000 }, async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  const outgoing = request(run.host.url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  outgoing.on('error', () => {});
+  try {
+    const command = process.platform === 'win32' ? 'echo EXECUTED>>count.txt & ping -n 6 127.0.0.1 >nul' : "printf 'EXECUTED\\n' >> count.txt; sleep 10";
+    outgoing.end(body('run_command', { command }));
+    for (let index = 0; index < 100 && !existsSync(path.join(run.projectPath, 'count.txt')); index++) await delay(10);
+    assert.equal(existsSync(path.join(run.projectPath, 'count.txt')), true, 'The approved command really began.');
+    outgoing.destroy();
+    await run.host.drain();
+    const repeated = await (await post(run.host.url, 'run_command', { command })).json();
+    assert.equal(repeated.errorCode, 'TURN_CANCELLED');
+    assert.equal(approvals, 1);
+    assert.equal((await readFile(path.join(run.projectPath, 'count.txt'), 'utf8')).trim(), 'EXECUTED');
+    const logs = await readdir(path.join(run.directory, 'history', 'command-logs'));
+    const metadata = logs.filter(name => name.endsWith('.json'));
+    assert.equal(metadata.length, 1);
+    const record = JSON.parse(await readFile(path.join(run.directory, 'history', 'command-logs', metadata[0]), 'utf8'));
+    assert.equal(record.state, 'interrupted');
+  } finally { outgoing.destroy(); await run.cleanup(); }
+});
+
 test('malformed and unknown actions return MCP errors without approval', { timeout: 5000 }, async () => {
   let approvals = 0;
   const run = await setup(async () => { approvals++; return true; });
@@ -275,6 +358,68 @@ test('packaged MCP stdio bridge routes an edit through the real host and obeys d
     assert.equal(result.isError, true);
     assert.equal(approvals, 1);
     assert.equal(await readFile(path.join(run.projectPath, 'app.txt'), 'utf8'), 'before');
+  } finally { await client.close(); await transport.close(); await run.cleanup(); }
+});
+
+test('MCP cancellation reaches a pending approval and late approval cannot execute it', { timeout: 15000, skip: !existsSync(bridgePath) && 'Build the bundled MCP bridge first.' }, async () => {
+  let approvals = 0;
+  let showPermission!: () => void;
+  let abortPermission!: () => void;
+  let approve!: (answer: boolean) => void;
+  const shown = new Promise<void>(resolve => { showPermission = resolve; });
+  const cancelled = new Promise<void>(resolve => { abortPermission = resolve; });
+  const run = await setup((_permission, signal) => {
+    approvals++; assert.ok(signal); signal.addEventListener('abort', abortPermission, { once: true });
+    showPermission(); return new Promise<boolean>(resolve => { approve = resolve; });
+  });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [bridgePath], env: { LOCAL_AGENT_ACTION_URL: run.host.url }, stderr: 'pipe' });
+  const client = new Client({ name: 'local-agent-cancel-test', version: '0.4.0' });
+  const controller = new AbortController();
+  try {
+    await client.connect(transport);
+    const pending = client.callTool({ name: 'write_file', arguments: { path: 'cancelled.txt', content: 'forbidden' } }, undefined, { signal: controller.signal });
+    const rejected = assert.rejects(pending);
+    await shown; controller.abort();
+    await rejected; await cancelled; await run.host.drain();
+    approve(true); await delay(20);
+    const repeated = await client.callTool({ name: 'write_file', arguments: { path: 'cancelled.txt', content: 'retry' } });
+    assert.equal(repeated.isError, true);
+    assert.ok(JSON.stringify(repeated).includes('TURN_CANCELLED') || JSON.stringify(repeated).includes('interrupted action request'));
+    assert.equal(approvals, 1);
+    assert.deepEqual(await readdir(run.projectPath), []);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await client.close(); await transport.close(); await run.cleanup(); }
+});
+
+test('MCP advertises timeout bounds and stops interrupted commands without retry while logs stay readable', { timeout: 15000, skip: !existsSync(bridgePath) && 'Build the bundled MCP bridge first.' }, async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => { permissions.push(permission); return true; });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [bridgePath], env: { LOCAL_AGENT_ACTION_URL: run.host.url }, stderr: 'pipe' });
+  const client = new Client({ name: 'local-agent-timeout-test', version: '0.4.0' });
+  try {
+    await client.connect(transport);
+    const commandTool = (await client.listTools()).tools.find(tool => tool.name === 'run_command')!;
+    const timeout = commandTool.inputSchema.properties!.timeout_ms as Record<string, unknown>;
+    assert.equal(timeout.minimum, 100); assert.equal(timeout.maximum, 600000); assert.equal(timeout.default, 60000);
+    assert.match(String(timeout.description), /dependency setup/);
+    const invalid = await client.callTool({ name: 'run_command', arguments: { command: 'echo forbidden', timeout_ms: 600001 } });
+    assert.equal(invalid.isError, true); assert.equal(permissions.length, 0);
+    const accepted = await client.callTool({ name: 'run_command', arguments: { command: 'exit 0', timeout_ms: 600000 } });
+    assert.equal(accepted.isError, undefined); assert.equal(permissions[0].arguments.timeout_ms, 600000);
+    const command = process.platform === 'win32' ? 'echo EXECUTED>>count.txt & ping -n 30 127.0.0.1 >nul' : "printf 'EXECUTED\\n' >> count.txt; sleep 30";
+    const interrupted = await client.callTool({ name: 'run_command', arguments: { command, timeout_ms: 100 } });
+    assert.equal(interrupted.isError, true);
+    assert.ok(JSON.stringify(interrupted.content).includes(commandTimeoutText));
+    assert.equal(cancelledActionResult(interrupted), true, 'The exact notice survives MCP serialization even if a backend drops the extra errorCode.');
+    const content = interrupted.content as Array<{ type: string; text: string }>;
+    const logId = content[0].text.match(/Saved command log: ([a-f0-9-]+)/)![1];
+    const record = JSON.parse(await readFile(path.join(run.directory, 'history', 'command-logs', `${logId}.json`), 'utf8'));
+    assert.equal(record.state, 'interrupted'); assert.equal(record.errorCode, 'COMMAND_TIMEOUT');
+    const repeated = await client.callTool({ name: 'run_command', arguments: { command, timeout_ms: 600000 } });
+    assert.equal(repeated.isError, true); assert.equal(permissions.length, 2);
+    const saved = await client.callTool({ name: 'read_command_output', arguments: { id: logId } });
+    assert.equal(saved.isError, undefined);
+    assert.equal((await readFile(path.join(run.projectPath, 'count.txt'), 'utf8')).trim(), 'EXECUTED');
   } finally { await client.close(); await transport.close(); await run.cleanup(); }
 });
 

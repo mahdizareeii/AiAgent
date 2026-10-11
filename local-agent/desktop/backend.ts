@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentEvent, Mode, PluginPreferences, UtilityPreferences } from './renderer/types.ts';
+import { actionRequestAbortedText, actionRequestDeadlines, actionRequestTimeoutText, actionResponseInterruptedText, cancelledActionText, commandTimeoutText, interruptedTurnText } from './action-protocol.ts';
 import { loadTaskResearchSkill, taskResearchInstructions, type TaskResearchSkill } from './skills/task-research.ts';
 import { DEFAULT_PLUGINS, effectiveUtilities } from './state.ts';
 import { appendThinking } from './thinking.ts';
@@ -35,6 +36,15 @@ const platformExtensions = ['analyze', 'todo', 'apps', 'chatrecall', 'extensionm
   'scheduler', 'summon', 'summarize', 'code_execution', 'developer', 'orchestrator', 'tom', 'skills'];
 const actionsEnabled = (options: BackendOptions) => options.mode === 'coding' &&
   (options.utilities.fileEditing || options.utilities.terminal);
+
+/** Goose's extension limit must accommodate the bridge's longest approved operation. */
+export function backendExtensions(options: BackendOptions) {
+  const extensions = [{ type: 'mcp', timeout: 180,
+    server: { name: 'local_files_and_research', command: options.researchExecutable, args: [] as string[], env: [] } }];
+  if (actionsEnabled(options)) extensions.push({ type: 'mcp', timeout: actionRequestDeadlines.command / 1000,
+    server: { name: 'reviewed_actions', command: options.nodeExecutable, args: [options.bridgeExecutable], env: [] } });
+  return extensions;
+}
 const taskResearchEnabled = (options: BackendOptions) => (options.plugins ?? DEFAULT_PLUGINS).taskResearch &&
   (options.mode === 'coding' || options.mode === 'research');
 const denialText = 'The user denied this action. No action was taken.';
@@ -48,6 +58,18 @@ export function deniedActionResult(value: unknown, depth = 0): boolean {
   if (item.errorCode === 'PERMISSION_DENIED' && item.isError === true) return true;
   if (item.type === 'text' && item.text === denialText) return true;
   return deniedActionResult(item.content, depth + 1);
+}
+
+/** An abandoned reviewed action ends model retries, separately from a user denial. */
+export function cancelledActionResult(value: unknown, depth = 0): boolean {
+  if (depth > 5 || !value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(item => cancelledActionResult(item, depth + 1));
+  const item = value as Record<string, unknown>;
+  if (item.isError === true && typeof item.errorCode === 'string' &&
+    ['CANCELLED', 'TURN_CANCELLED', 'COMMAND_TIMEOUT', 'COMMAND_INTERRUPTED'].includes(item.errorCode)) return true;
+  if (item.type === 'text' && typeof item.text === 'string' &&
+    [cancelledActionText, interruptedTurnText, commandTimeoutText, actionRequestAbortedText, actionRequestTimeoutText, actionResponseInterruptedText].includes(item.text)) return true;
+  return cancelledActionResult(item.content, depth + 1);
 }
 
 /** Tell small local models what this particular turn can actually do. */
@@ -102,6 +124,7 @@ export class GooseBackend {
   private prompting = false;
   private reviewedActionIds = new Set<string>();
   private actionDenied = false;
+  private actionCancelled = false;
   private researchSkill?: TaskResearchSkill;
   private thinking = '';
   constructor(options: BackendOptions) { this.options = options; }
@@ -151,6 +174,10 @@ export class GooseBackend {
             // The host's denial latch blocks subsequent mutation requests. End
             // the model turn too, so it cannot loop asking for the same action.
             void this.stop().catch(() => {});
+          } else if (update.status === 'failed' && this.reviewedActionIds.has(update.toolCallId) &&
+            cancelledActionResult(update.rawOutput ?? update.content)) {
+            this.actionCancelled = true;
+            void this.stop().catch(() => {});
           }
         }
       },
@@ -158,17 +185,11 @@ export class GooseBackend {
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
     }), ndJsonStream(Writable.toWeb(this.child.stdin), Readable.toWeb(this.child.stdout) as unknown as ReadableStream<Uint8Array>));
     await this.withTimeout(this.connection.initialize({ protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'free-local-agent-desktop', version: '0.4.0-alpha.2' },
+      clientInfo: { name: 'free-local-agent-desktop', version: '0.4.0-alpha.3' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
-    const extensions: object[] = [{ type: 'mcp', timeout: 180,
-      server: { name: 'local_files_and_research', command: o.researchExecutable, args: [], env: [] } }];
-    if (actionsEnabled(o)) {
-      extensions.push({ type: 'mcp', timeout: 900, server: { name: 'reviewed_actions',
-        command: o.nodeExecutable, args: [o.bridgeExecutable], env: [] } });
-    }
     const session = await this.withTimeout(this.connection.newSession({ cwd: o.cwd, mcpServers: [],
-      _meta: { enabledExtensions: extensions, sessionTitle: 'Free Local Agent', client: 'free-local-agent' } }), 60_000);
+      _meta: { enabledExtensions: backendExtensions(o), sessionTitle: 'Free Local Agent', client: 'free-local-agent' } }), 60_000);
     this.gooseSessionId = session.sessionId;
     const results = session._meta?.extensionResults;
     const expected = actionsEnabled(o) ? ['local_files_and_research', 'reviewed_actions'] : ['local_files_and_research'];
@@ -188,8 +209,10 @@ export class GooseBackend {
     try {
       await this.connection.prompt({ sessionId: this.gooseSessionId, prompt: [{ type: 'text', text: agentPrompt(this.options, text, this.researchSkill) }] });
       if (this.actionDenied) throw new Error(denialNotice);
+      if (this.actionCancelled) throw new Error(interruptedTurnText);
     } catch (error) {
       if (this.actionDenied) throw new Error(denialNotice);
+      if (this.actionCancelled) throw new Error(interruptedTurnText);
       throw error;
     }
     finally { this.prompting = false; }

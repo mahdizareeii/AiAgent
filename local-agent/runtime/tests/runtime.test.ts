@@ -23,8 +23,8 @@ const bytes=ggufFixture();
 const spec:CuratedModel={id:'fixture:4b',title:'Fixture',description:'Test model',estimatedDownloadBytes:bytes.length,minimumMemoryGB:8,workingMemoryGB:4,license:'Apache-2.0',sourceUrl:'https://huggingface.co/example/model',quantization:'Q4',repository:'example/model',revision:'a'.repeat(40),filename:'fixture.gguf',sha256:createHash('sha256').update(bytes).digest('hex'),architecture:'llama',toolCapable:true};
 const hardware:HardwareInfo={platform:'darwin',architecture:'arm64',cpuModel:'Fixture',cpuCores:8,totalMemoryBytes:24*GIB,availableMemoryBytes:20*GIB,freeDiskBytes:100*GIB,gpus:[{name:'Metal fixture',backend:'metal',totalMemoryBytes:20*GIB,freeMemoryBytes:20*GIB,unifiedMemory:true}]};
 const fake=fileURLToPath(new URL('./fake-engine.cjs',import.meta.url));
-async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch){
-  const directory=await mkdtemp(path.join(tmpdir(),'local-agent-runtime-'));t.after(()=>rm(directory,{recursive:true,force:true}));await mkdir(path.join(directory,'models'));await writeFile(path.join(directory,'models',spec.filename),bytes);
+async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch,options:{installedModel?:boolean}={}){
+  const directory=await mkdtemp(path.join(tmpdir(),'local-agent-runtime-'));t.after(()=>rm(directory,{recursive:true,force:true}));if(options.installedModel!==false){await mkdir(path.join(directory,'models'));await writeFile(path.join(directory,'models',spec.filename),bytes);}
   const launches:string[][]=[];
   const runtime=new LocalInferenceRuntime({dataDirectory:directory,executablePath:process.execPath,catalog:[spec],hardware:detectedHardware,startupTimeoutMs:3000,stopTimeoutMs:500,fetch:fetchImplementation,
     env:{...process.env,OPENAI_API_KEY:'secret',LLAMA_ARG_TOOLS:'all',LLAMA_ARG_RPC:'remote:5000'},
@@ -32,7 +32,20 @@ async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardw
   t.after(()=>runtime.stop());return {runtime,directory,launches};
 }
 
-test('pinned engine starts without loading weights; private offline process strips inherited secrets and reuses a verified model',async t=>{
+test('a genuinely empty first-run cache initializes the engine without launching inference or reporting a model error',async t=>{
+  const {runtime,directory,launches}=await fixture(t,{},hardware,undefined,{installedModel:false});
+  assert.deepEqual(await readdir(directory),[]);
+  const status=await runtime.start();
+  assert.equal(status.state,'ready');assert.equal(status.version,'0.6.0');assert.equal(status.error,null);
+  assert.equal(status.baseUrl,null);assert.equal(status.loadedModel,null);assert.equal(status.profile,null);assert.equal(status.downloadingModel,null);
+  const models=await runtime.listModels();assert.equal(models.length,1);assert(models.every(model=>!model.installed&&model.digest===null&&model.sizeBytes===0));
+  assert.deepEqual(launches,[['--version']]);assert.deepEqual(await readdir(path.join(directory,'models')),[]);
+  await assert.rejects(runtime.inspectModel(spec.id),{code:'MODEL_NOT_FOUND'});
+  await assert.rejects(runtime.requestJson('/props'),{code:'RUNTIME_NOT_READY'});
+  assert.equal(runtime.getStatus().error,null);assert.equal(runtime.getStatus().state,'ready');
+});
+
+test('private offline inference strips inherited secrets and reuses a verified installed model',async t=>{
   const {runtime,directory,launches}=await fixture(t);const status=await runtime.start();assert.equal(status.state,'ready');assert.equal(status.baseUrl,null);
   const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.toolCapable,true);assert.equal(prepared.model,'local-agent-fixture-4b');assert.match(prepared.apiKey,/^[a-f0-9]{64}$/);assert.equal(prepared.measuredTokensPerSecond,42);assert.equal(prepared.outputTokens,2048);assert.equal(runtime.getStatus().profile?.outputTokens,2048);
   const env=await runtime.requestJson<{secret?:string;tools?:string;rpc?:string;flags:string[];pid:number;calibrationThinking?:boolean}>('/env');assert.equal(env.secret,undefined);assert.equal(env.tools,undefined);assert.equal(env.rpc,undefined);
@@ -45,6 +58,116 @@ test('pinned engine starts without loading weights; private offline process stri
   assert.equal((await fetch(`${prepared.baseUrl}/props`)).status,401);assert.deepEqual((await readdir(directory)).filter(f=>f.startsWith('.inference-key-')),[]);
   const again=await runtime.prepareModel(spec.id);assert.equal(again.baseUrl,prepared.baseUrl);assert.equal((await runtime.requestJson<{pid:number}>('/env')).pid,env.pid);assert.equal(launches.filter(a=>a.includes('--model')).length,1);
   await runtime.stop();assert.equal(runtime.getStatus().state,'stopped');await assert.rejects(fetch(`${prepared.baseUrl}/props`));
+});
+
+test('cancelling a runtime download leaves first-run onboarding ready and resumes the verified artifact without a restart',async t=>{
+  let downloads=0,streamCancelled=false;
+  const nativeFetch=fetch;
+  const fetcher:typeof fetch=async (input,init)=>{
+    if(String(input).startsWith('http://127.0.0.1:'))return nativeFetch(input,init);
+    downloads++;
+    if(downloads===1){assert.equal(new Headers(init?.headers).get('range'),null);return new Response(new ReadableStream<Uint8Array>({start(stream){stream.enqueue(bytes.subarray(0,41));},cancel(){streamCancelled=true;}}));}
+    assert.equal(new Headers(init?.headers).get('range'),'bytes=41-');
+    return new Response(bytes.subarray(41),{status:206,headers:{'Content-Range':`bytes 41-${bytes.length-1}/${bytes.length}`}});
+  };
+  const {runtime,directory,launches}=await fixture(t,{},hardware,fetcher,{installedModel:false});await runtime.start();
+  await assert.rejects(runtime.pullModel(spec.id,{onProgress(event){assert.equal(runtime.getStatus().downloadingModel,spec.id);if(event.status==='downloading'&&(event.completed??0)>0)runtime.cancelPull();}}),{name:'AbortError'});
+  assert(streamCancelled);assert.equal(runtime.getStatus().downloadingModel,null);assert.equal(runtime.getStatus().state,'ready');assert.equal(runtime.getStatus().error,null);
+  assert.deepEqual(await readFile(path.join(directory,'models',`${spec.filename}.part`)),bytes.subarray(0,41));assert.equal((await runtime.listModels())[0].installed,false);
+  const verified=await runtime.pullModel(spec.id);assert.equal(verified.digest,spec.sha256);assert.equal(downloads,2);assert.equal(runtime.getStatus().downloadingModel,null);
+  assert.deepEqual(await readdir(path.join(directory,'models')),[spec.filename]);assert.equal((await runtime.listModels())[0].installed,true);
+  await runtime.prepareModel(spec.id);assert.equal(runtime.getStatus().loadedModel,spec.id);assert.equal(launches.filter(args=>args.includes('--version')).length,1);
+});
+
+test('an interrupted runtime download stays unavailable and retry reuses its partial instead of discarding other cached files',async t=>{
+  let downloads=0;
+  const fetcher:typeof fetch=async (_input,init)=>{
+    downloads++;
+    if(downloads===1)return new Response(bytes.subarray(0,97));
+    assert.equal(new Headers(init?.headers).get('range'),'bytes=97-');
+    return new Response(bytes.subarray(97),{status:206,headers:{'Content-Range':`bytes 97-${bytes.length-1}/${bytes.length}`}});
+  };
+  const {runtime,directory,launches}=await fixture(t,{},hardware,fetcher,{installedModel:false});await runtime.start();
+  const retained=path.join(directory,'models','retained-cache.gguf');await writeFile(retained,'existing independent model cache');
+  await assert.rejects(runtime.pullModel(spec.id),{code:'DOWNLOAD_INTERRUPTED'});
+  assert.equal(runtime.getStatus().state,'ready');assert.equal(runtime.getStatus().error,null);assert.equal(runtime.getStatus().downloadingModel,null);
+  assert.equal((await runtime.listModels())[0].installed,false);assert.deepEqual(await readFile(path.join(directory,'models',`${spec.filename}.part`)),bytes.subarray(0,97));
+  await runtime.pullModel(spec.id);assert.equal(downloads,2);assert.equal((await runtime.listModels())[0].installed,true);
+  assert.equal(await readFile(retained,'utf8'),'existing independent model cache');assert.deepEqual(launches,[['--version']]);
+});
+
+test('a removed previously verified selection requests model setup before inference and preserves the rest of the cache',async t=>{
+  const {runtime,directory,launches}=await fixture(t);await runtime.start();await runtime.inspectModel(spec.id);
+  const retained=path.join(directory,'models','retained-cache.gguf');await writeFile(retained,'existing independent model cache');await rm(path.join(directory,'models',spec.filename));
+  assert.equal((await runtime.listModels())[0].installed,false);
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'MODEL_NOT_FOUND'});
+  const status=runtime.getStatus();assert.equal(status.state,'ready');assert.equal(status.error?.code,'MODEL_NOT_FOUND');assert.equal(status.loadedModel,null);assert.equal(status.baseUrl,null);
+  assert.deepEqual(launches,[['--version']]);assert.equal(await readFile(retained,'utf8'),'existing independent model cache');
+});
+
+test('same-size corrupt weights remain an actionable integrity failure without launching inference or deleting cached artifacts',async t=>{
+  const {runtime,directory,launches}=await fixture(t);await runtime.start();
+  const target=path.join(directory,'models',spec.filename),corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;await writeFile(target,corrupt);
+  const retained=path.join(directory,'models','retained-cache.gguf');await writeFile(retained,'existing independent model cache');
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});
+  assert.equal(runtime.getStatus().state,'ready');assert.equal(runtime.getStatus().error?.code,'MODEL_DIGEST_MISMATCH');assert.equal(runtime.getStatus().baseUrl,null);
+  assert.deepEqual(launches,[['--version']]);assert.deepEqual(await readFile(target),corrupt);assert.equal(await readFile(retained,'utf8'),'existing independent model cache');
+});
+
+test('a failed preflight inspection blocks corrupt same-size weights until the artifact passes verification again',async t=>{
+  const {runtime,directory,launches}=await fixture(t);await runtime.start();await runtime.inspectModel(spec.id);
+  const target=path.join(directory,'models',spec.filename),corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;await writeFile(target,corrupt);
+  await assert.rejects(runtime.inspectModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});
+  const blocked=(await runtime.listModels())[0];assert.equal(blocked.installed,true);assert.match(blocked.blockedReason!,/SHA-256/);assert.equal(blocked.verificationError,blocked.blockedReason);assert.equal(blocked.digest,null);
+  assert.equal(runtime.getStatus().error,null);assert.equal(runtime.getStatus().state,'ready');assert.deepEqual(launches,[['--version']]);
+  await writeFile(target,bytes);await runtime.inspectModel(spec.id);
+  const restored=(await runtime.listModels())[0];assert.equal(restored.installed,true);assert.equal(restored.verificationError,undefined);assert.equal(restored.blockedReason,null);assert.equal(restored.digest,spec.sha256);
+});
+
+test('importing a verified replacement clears stale model integrity errors without restarting the ready engine',async t=>{
+  const {runtime,directory,launches}=await fixture(t);await runtime.start();
+  const target=path.join(directory,'models',spec.filename),corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;await writeFile(target,corrupt);
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});assert.equal(runtime.getStatus().error?.code,'MODEL_DIGEST_MISMATCH');
+  const source=path.join(directory,'valid-replacement.gguf');await writeFile(source,bytes);const replacement=await runtime.importModel(source);
+  assert.equal(replacement.model,spec.id);assert.equal(runtime.getStatus().error,null);assert.equal(runtime.getStatus().state,'ready');assert.equal((await runtime.listModels())[0].verificationError,undefined);
+  assert.deepEqual(launches,[['--version']]);await runtime.prepareModel(spec.id);assert.equal(runtime.getStatus().loadedModel,spec.id);assert.equal(launches.filter(args=>args.includes('--version')).length,1);
+});
+
+test('valid model selection clears a previous model-load failure while retaining the initialized engine',async t=>{
+  const {runtime,launches}=await fixture(t,{FAKE_BAD_MODEL:'1'});await runtime.start();
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'MODEL_LOAD_FAILED'});assert.equal(runtime.getStatus().error?.code,'MODEL_LOAD_FAILED');assert.equal(runtime.getStatus().state,'ready');
+  await runtime.inspectModel(spec.id);assert.equal(runtime.getStatus().error,null);assert.equal(runtime.getStatus().loadedModel,null);
+  assert.equal(launches.filter(args=>args.includes('--version')).length,1);
+});
+
+test('verified model inspection never clears a genuine engine startup error',async t=>{
+  const {directory}=await fixture(t);const unavailable=new LocalInferenceRuntime({dataDirectory:directory,resourcesDirectory:path.join(directory,'absent-resources'),catalog:[spec],hardware});t.after(()=>unavailable.stop());
+  await assert.rejects(unavailable.start(),{code:'ENGINE_NOT_AVAILABLE'});const before=unavailable.getStatus();
+  await unavailable.inspectModel(spec.id);assert.equal(unavailable.getStatus().state,'error');assert.deepEqual(unavailable.getStatus().error,before.error);
+});
+
+test('a removed imported artifact retains its catalog identity but cannot load using a stale verification record',async t=>{
+  const {runtime,directory,launches}=await fixture(t);const source=path.join(directory,'custom.gguf');await writeFile(source,ggufFixture('llama','User import'));
+  const imported=await runtime.importModel(source);await runtime.start();
+  const catalog=(await runtime.listModels()).find(model=>model.id===imported.model);assert(catalog);assert.equal(catalog.installed,true);await rm(path.join(directory,'models',catalog.filename));
+  const missing=(await runtime.listModels()).find(model=>model.id===imported.model);assert(missing);assert.equal(missing.installed,false);assert.equal(missing.digest,null);
+  await assert.rejects(runtime.prepareModel(imported.model),{code:'MODEL_NOT_FOUND'});assert.deepEqual(launches,[['--version']]);
+  assert.deepEqual(await readFile(path.join(directory,'models',spec.filename)),bytes);assert((await readFile(path.join(directory,'imports.json'),'utf8')).includes(imported.model));
+});
+
+test('an unreadable model cache is a discovery failure rather than an empty first-run catalog',async t=>{
+  const {runtime,directory}=await fixture(t,{},hardware,undefined,{installedModel:false});await runtime.start();
+  const cache=path.join(directory,'models');await rm(cache,{recursive:true});await writeFile(cache,'unexpected cache entry');
+  await assert.rejects(runtime.listModels(),{code:'MODEL_DISCOVERY_FAILED'});
+  assert.equal(await readFile(cache,'utf8'),'unexpected cache entry');assert.equal(runtime.getStatus().state,'ready');assert.equal(runtime.getStatus().error,null);
+});
+
+test('a corrupt local import reports invalid GGUF and leaves existing verified models and source files intact',async t=>{
+  const {runtime,directory,launches}=await fixture(t);await runtime.start();const source=path.join(directory,'invalid-import.gguf'),invalid=Buffer.alloc(64,0x61);await writeFile(source,invalid);
+  await assert.rejects(runtime.importModel(source),{code:'INVALID_GGUF'});
+  assert.deepEqual(await readFile(source),invalid);assert.deepEqual(await readFile(path.join(directory,'models',spec.filename)),bytes);
+  assert.deepEqual(await readdir(path.join(directory,'models')),[spec.filename]);assert.equal((await runtime.listModels())[0].installed,true);assert.equal(runtime.getStatus().error,null);
+  await assert.rejects(readFile(path.join(directory,'imports.json')),{code:'ENOENT'});assert.deepEqual(launches,[['--version']]);
 });
 
 test('allocation failures reduce batches before the bounded 4K CPU profile, with finite exhaustion',async t=>{

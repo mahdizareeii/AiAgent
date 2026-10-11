@@ -3,7 +3,7 @@ import type { Mode, UtilityPreferences } from './types';
 
 const utilities: { id: keyof UtilityPreferences; label: string; icon: 'folder' | 'search' | 'code' | 'monitor' | 'external'; description: string; modes?: Mode[]; review?: boolean }[] = [
   { id: 'fileReading', label: 'Read files & PDFs', icon: 'folder', description: 'Read selected text, code, and text PDFs. Reads need no further approval after you grant access. Scanned pages need OCR.', },
-  { id: 'projectSearch', label: 'Search project', icon: 'search', description: 'Find filenames and text in your selected project. Read-only searches need no further approval.', modes: ['coding'] },
+  { id: 'projectSearch', label: 'Find files & text', icon: 'search', description: 'Find filenames and text locally in your workspace. This does not search the internet. Read-only searches need no further approval.', modes: ['coding'] },
   { id: 'fileEditing', label: 'Create & edit files', icon: 'code', description: 'Create project files and propose changes for your approval.', modes: ['coding'], review: true },
   { id: 'terminal', label: 'Terminal', icon: 'monitor', description: 'Approved commands run as you and may access the network or files beyond this project.', modes: ['coding'], review: true },
 ];

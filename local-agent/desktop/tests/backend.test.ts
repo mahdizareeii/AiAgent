@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentPrompt, backendEnvironment, deniedActionResult, GooseBackend, type BackendOptions } from '../backend.ts';
+import { agentPrompt, backendEnvironment, backendExtensions, cancelledActionResult, deniedActionResult, GooseBackend, type BackendOptions } from '../backend.ts';
+import { actionRequestDeadlines, actionRequestTimeoutText, actionResponseInterruptedText, cancelledActionText, commandTimeoutLimits, commandTimeoutText, interruptedTurnText } from '../action-protocol.ts';
 import { loadTaskResearchSkill } from '../skills/task-research.ts';
 import { fileURLToPath } from 'node:url';
 
@@ -82,6 +83,20 @@ test('enabled project actions require an owned loopback approval endpoint', () =
   assert.doesNotThrow(() => backendEnvironment({ ...options, actionUrl: undefined, utilities: { ...options.utilities, fileEditing: false, terminal: false } }));
 });
 
+test('emitted reviewed extension deadline permits approval and an explicit dependency command within the native cap', () => {
+  const extensions = backendExtensions(options);
+  const actions = extensions.find(extension => extension.server.name === 'reviewed_actions')!;
+  assert.equal(actions.timeout, 1500);
+  assert.equal(actions.timeout * 1000, actionRequestDeadlines.command);
+  assert.ok(actions.timeout * 1000 > 10 * 60_000 + commandTimeoutLimits.maximum, 'The extension must not preempt a permitted review followed by a long command.');
+  assert.ok(actionRequestDeadlines.normal < actions.timeout * 1000, 'Other local action requests retain their shorter native deadline.');
+  assert.equal(actions.server.command, options.nodeExecutable);
+  assert.deepEqual(actions.server.args, [options.bridgeExecutable]);
+  assert.equal(extensions.find(extension => extension.server.name === 'local_files_and_research')?.timeout, 180);
+  assert.equal(backendExtensions({ ...options, mode: 'assistant' }).some(extension => extension.server.name === 'reviewed_actions'), false);
+  assert.equal(backendExtensions({ ...options, utilities: { ...options.utilities, fileEditing: false, terminal: false } }).some(extension => extension.server.name === 'reviewed_actions'), false);
+});
+
 test('denial detection accepts exact owned results without matching quoted prose or command logs', () => {
   const text = 'The user denied this action. No action was taken.';
   assert.equal(deniedActionResult([{ type: 'content', content: { type: 'text', text } }]), true);
@@ -90,4 +105,20 @@ test('denial detection accepts exact owned results without matching quoted prose
   assert.equal(deniedActionResult({ type: 'text', text: JSON.stringify({ text }) }), false);
   assert.equal(deniedActionResult({ isError: false, errorCode: 'PERMISSION_DENIED' }), false);
   assert.equal(deniedActionResult({ type: 'text', text: 'The command failed.' }), false);
+});
+
+test('cancellation detection recognizes owned interrupted requests without interpreting command prose', () => {
+  for (const text of [cancelledActionText, interruptedTurnText, commandTimeoutText, actionRequestTimeoutText, actionResponseInterruptedText]) {
+    assert.equal(cancelledActionResult([{ type: 'content', content: { type: 'text', text } }]), true);
+    assert.equal(cancelledActionResult({ type: 'text', text: `Command output: ${text}` }), false);
+    assert.equal(cancelledActionResult({ type: 'text', text: JSON.stringify({ text }) }), false);
+    assert.equal(deniedActionResult({ type: 'text', text }), false);
+  }
+  for (const errorCode of ['CANCELLED', 'TURN_CANCELLED', 'COMMAND_TIMEOUT', 'COMMAND_INTERRUPTED']) {
+    assert.equal(cancelledActionResult({ isError: true, errorCode }), true);
+    assert.equal(cancelledActionResult({ isError: false, errorCode }), false);
+  }
+  assert.equal(cancelledActionResult({ type: 'text', text: 'fetch failed' }), false);
+  assert.equal(cancelledActionResult({ type: 'text', text: { toString: 'untrusted' } }), false);
+  assert.equal(cancelledActionResult({ isError: true, errorCode: { toString: 'untrusted' } }), false);
 });
