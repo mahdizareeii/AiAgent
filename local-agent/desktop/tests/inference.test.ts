@@ -139,6 +139,60 @@ test('native-counted read compaction makes room at 8K without rewriting current 
   assert.equal(f.restarts(), 0);
   assert.deepEqual(stages, ['Compacting completed conversation and read-only activity locally']);
 });
+function constrainedSummaryFixture(honorsAllowance = true) {
+  const f = fixture();
+  f.runtime.requestJson = async <T>(url: string, raw?: object) => {
+    const body = raw as ChatBody;
+    if (url.endsWith('input_tokens')) {
+      f.counted.push(body);
+      return { input_tokens: JSON.stringify(body.messages).length + JSON.stringify(body.tools ?? []).length } as T;
+    }
+    f.completed.push(body);
+    const length = honorsAllowance ? Number(body.max_tokens) : 384;
+    return { choices: [{ message: { content: 'Observed read fact. '.repeat(384).slice(0, length) } }] } as T;
+  };
+  const instructions = { role: 'system', content: 'TRUSTED_POLICY '.padEnd(3700, 'T') };
+  const current = { role: 'user', content: 'Exact current task: inspect and verify once.' };
+  const old = exchange('old-read', 'local_files_and_research__read_file', JSON.stringify({
+    path: 'app.txt', sha256: 'a'.repeat(64), start_line: 12, text: 'OLD_READ_FACT '.repeat(150),
+  }), '{"path":"app.txt","start_line":12}');
+  const action = exchange('command', 'reviewed_actions__run_command', 'COMMAND_RESULT_EXACT '.padEnd(520, 'C'), '{"command":"verify once"}');
+  const latest = exchange('latest-read', 'local_files_and_research__read_file', JSON.stringify({ path: 'app.txt', start_line: 20, text: 'CURRENT_FACT' }), '{"path":"app.txt","start_line":20}');
+  const tools = [{ function: { name: 'reviewed_actions__run_command', parameters: { type: 'object' }, description: 'SCHEMA_EXACT '.padEnd(200, 'S') } }];
+  const body: ChatBody = { messages: [instructions, current, ...old, ...action, ...latest], tools, max_tokens: 2048 };
+  return { ...f, body, instructions, current, action, latest, tools };
+}
+test('compaction reduces generated facts to the complete request’s remaining native-counted space', async () => {
+  const f = constrainedSummaryFixture();
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 8192, outputTokens: 2048 });
+  const before = JSON.stringify(f.body), prepared = await inference.prepare(f.body);
+  assert.ok(f.completed.length > 1, 'A 384-token summary below 30% of context still exceeds this complete request’s remaining space.');
+  assert.equal(f.completed[0].max_tokens, 384);
+  assert.ok(Number(f.completed.at(-1)!.max_tokens) < 384);
+  assert.equal(prepared.max_tokens, 2048, 'Compaction must preserve the requested output reserve.');
+  assert.ok(await inference.count(prepared) + 2048 <= 8128);
+  assert.strictEqual(prepared.messages[0], f.instructions);
+  assert.strictEqual(prepared.messages[1], f.current);
+  assert.strictEqual(prepared.tools, f.tools);
+  for (const message of [...f.action, ...f.latest]) assert.ok(prepared.messages.includes(message));
+  const memory = String(prepared.messages.find(message => String(message.content).includes('Exact read references'))?.content);
+  for (const source of ['old-read', 'app.txt', 'a'.repeat(64), '"start_line":12']) assert.ok(memory.includes(source));
+  assert.ok(f.completed.every(body => !JSON.stringify(body.messages).includes('COMMAND_RESULT_EXACT') && !JSON.stringify(body.messages).includes('verify once')));
+  assert.equal(JSON.stringify(f.body), before);
+  assert.equal(f.restarts(), 0);
+});
+test('remaining-budget reductions stop after four attempts when generated facts cannot shrink', async () => {
+  const f = constrainedSummaryFixture(false);
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 8192, outputTokens: 2048 });
+  const before = JSON.stringify(f.body);
+  await assert.rejects(inference.prepare(f.body), /within four reductions.*shorter request or start a new task/);
+  assert.equal(f.completed.length, 5, 'One initial summary and at most four budget reductions are allowed.');
+  const allowances = f.completed.map(body => Number(body.max_tokens));
+  assert.ok(allowances.slice(1).every((value, index) => value < allowances[index]));
+  assert.ok(f.completed.every(body => !JSON.stringify(body.messages).includes('COMMAND_RESULT_EXACT') && !JSON.stringify(body.messages).includes('verify once')));
+  assert.equal(JSON.stringify(f.body), before);
+  assert.equal(f.restarts(), 0);
+});
 test('long completed older chat requests compact while current multipart request and instructions stay exact', async () => {
   const f = fixture(), inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
   const system = { role: 'system', content: 'Trusted instructions' }, developer = { role: 'developer', content: 'Exact app policy' };
@@ -170,8 +224,9 @@ test('oversized immutable actions fail safely even after reads are compacted', a
   const command = exchange('command', 'reviewed_actions__run_command', 'DO_NOT_LOSE_ACTION '.repeat(140), '{"command":"never replay me"}');
   const body: ChatBody = { messages: [{ role: 'user', content: 'Exact task' }, ...exchange('read', 'local_files_and_research__read_file', 'read evidence '.repeat(100)), ...command] };
   const before = JSON.stringify(body);
-  await assert.rejects(inference.prepare(body), /Required context still does not fit/);
+  await assert.rejects(inference.prepare(body), /Required context still does not fit.*source references, and action history.*shorter request or start a new task/);
   assert.equal(JSON.stringify(body), before);
+  assert.equal(f.calls(), 0, 'Immutable request overflow is detected before spending inference on summaries.');
   assert.ok(f.completed.every(summary => !JSON.stringify(summary.messages).includes('DO_NOT_LOSE_ACTION') && !JSON.stringify(summary.messages).includes('never replay me')));
   assert.equal(f.restarts(), 0);
 });
