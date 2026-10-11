@@ -60,7 +60,16 @@ function directoryDialogOptions(title: string, buttonLabel: string): OpenDialogO
   // Electron implementation, '*' clears allowedFileTypes; omitted/empty
   // filters only enable allowsOtherFileTypes. openDirectory still excludes files.
   return { title, buttonLabel, properties: ['openDirectory'],
-    ...(process.platform === 'darwin' ? { filters: [{ name: 'All folders', extensions: ['*'] }] } : {}) };
+    ...(process.platform === 'darwin' ? { defaultPath: app.getPath('documents'),
+      filters: [{ name: 'All folders', extensions: ['*'] }] } : {}) };
+}
+
+function chooseWorkspaceDirectory(title: string, buttonLabel: string) {
+  const options = directoryDialogOptions(title, buttonLabel);
+  // On this macOS/Electron combination attached sheets left folder confirmation
+  // disabled. Use the native application-modal panel; selection is still
+  // validated and granted by the main process after the panel returns.
+  return process.platform === 'darwin' ? dialog.showOpenDialog(options) : dialog.showOpenDialog(window!, options);
 }
 
 function beginModelPreflight(sessionId?: string): ModelPreflight {
@@ -395,7 +404,7 @@ function registerHandlers(): void {
     try {
       return await selectWorkspaceFolder({
         pickDirectory: async () => {
-          const result = await dialog.showOpenDialog(window!, directoryDialogOptions('Add an agent workspace folder', 'Use folder'));
+          const result = await chooseWorkspaceDirectory('Add an agent workspace folder', 'Use folder');
           return result.canceled ? null : result.filePaths[0] ?? null;
         },
         assertAvailable: () => { if (active) throw new Error('Wait for the current response before changing projects.'); },
@@ -410,7 +419,7 @@ function registerHandlers(): void {
     try {
       return await createWorkspaceFolder(options.name, {
         pickDirectory: async () => {
-          const result = await dialog.showOpenDialog(window!, directoryDialogOptions(`Choose where to create ${options.name}`, 'Create folder here'));
+          const result = await chooseWorkspaceDirectory(`Choose where to create ${options.name}`, 'Create folder here');
           return result.canceled ? null : result.filePaths[0] ?? null;
         },
         assertAvailable: () => { if (active) throw new Error('Wait for the current response before creating a workspace folder.'); },
