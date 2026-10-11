@@ -955,7 +955,7 @@ impl GooseAcpAgent {
 
         let permission_manager = Arc::new(PermissionManager::new(options.config_dir.clone()));
         let provider_inventory = ProviderInventoryService::new(session_manager.storage().clone());
-        let agent_config = AgentConfig::new(
+        let mut agent_config = AgentConfig::new(
             Arc::clone(&session_manager),
             Arc::clone(&permission_manager),
             options.scheduler,
@@ -963,6 +963,10 @@ impl GooseAcpAgent {
             options.disable_session_naming,
             options.goose_platform.clone(),
         );
+        // Free Local Agent owns these bundled MCP servers. A fixed handshake
+        // avoids discovery timing out during Python cold start and falling back
+        // to a different protocol after the server has selected the modern era.
+        agent_config.mcp_protocol_version = Some(rmcp::model::ProtocolVersion::V_2025_11_25);
         let agent_manager = Arc::new(AgentManager::new(agent_config, None).await?);
         let (thinking_effort_update_tx, thinking_effort_update_rx) = mpsc::unbounded_channel();
 

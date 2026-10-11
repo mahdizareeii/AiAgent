@@ -8,11 +8,13 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:http';
 import { sha256File, validateNativeEngine, verifyInferenceResources } from './prepare-inference.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createActionHost } from '../local-agent/desktop/action-host.ts';
 import { LocalActions } from '../local-agent/desktop/actions.ts';
+import { GooseBackend } from '../local-agent/desktop/backend.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const platform = process.platform;
@@ -42,6 +44,7 @@ const gooseManifest = JSON.parse(await readFile(path.join(resourceDirectory, 'go
 assert.equal(gooseManifest.version, '1.53.0');
 assert.equal(gooseManifest.target, `${platform}-${process.arch}`);
 assert.equal(gooseManifest.offline, true, 'The bundled Goose must be built with offline metadata behavior.');
+assert.equal(gooseManifest.mcpProtocolVersion, '2025-11-25', 'Bundled ACP tools must use the tested fixed MCP protocol.');
 assert.deepEqual([...gooseManifest.features].sort(), ['disable-update', 'rustls-tls']);
 assert.ok(!gooseManifest.features.includes('online-model-meta'), 'Online model metadata must be absent.');
 assert.equal(await sha256File(gooseExecutable), gooseManifest.sha256, 'Packaged Goose differs from its build manifest.');
@@ -86,6 +89,8 @@ const projectPath = path.join(directory, 'project');
 const controller = new AbortController();
 const connections = [];
 let host;
+let startupBackend;
+let startupProvider;
 let approvals = 0;
 let researchTools = [];
 try {
@@ -154,7 +159,43 @@ try {
     }), `Explicit web preference in ${mode}`);
     assert.deepEqual((await bounded(optedIn.listTools(), 'Opted-in web tool listing')).tools.map(tool => tool.name).sort(), mode === 'assistant' ? [] : ['web_fetch', 'web_search']);
   }
+
+  // A direct MCP client does not exercise Goose's protocol negotiation. Start
+  // the actual packaged backend too; the provider accepts metadata only and
+  // cannot generate a reply or request an action.
+  const startupRequests = [];
+  startupProvider = createServer((request, response) => {
+    startupRequests.push(`${request.method} ${request.url}`);
+    const modelsRequest = request.method === 'GET' && request.url === '/v1/models';
+    response.writeHead(modelsRequest ? 200 : 400, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(modelsRequest ? { object: 'list', data: [
+      { id: 'packaged-startup-only', object: 'model', owned_by: 'local' },
+    ] } : { error: 'This startup check has no inference endpoint.' }));
+  });
+  await new Promise((resolve, reject) => {
+    startupProvider.once('error', reject);
+    startupProvider.listen(0, '127.0.0.1', resolve);
+  });
+  const startupAddress = startupProvider.address();
+  startupBackend = new GooseBackend({ executable: gooseExecutable, researchExecutable,
+    bridgeExecutable, nodeExecutable: electronExecutable, dataDirectory: path.join(directory, 'goose-startup'),
+    cwd: projectPath, mode: 'coding', model: 'packaged-startup-only',
+    baseUrl: `http://127.0.0.1:${startupAddress.port}`, apiKey: 'local-startup-only',
+    contextTokens: 8192, outputTokens: 1024,
+    utilities: { fileReading: true, projectSearch: true, fileEditing: true, terminal: true, webResearch: false },
+    plugins: { taskResearch: false }, grantedRoots: [projectPath], grantedFiles: [],
+    actionUrl: host.url, onEvent: () => { throw new Error('Startup check must not execute a model turn.'); },
+  });
+  await bounded(startupBackend.start(), 'Packaged Goose ACP tool startup', 60_000);
+  assert.ok(startupRequests.every(request => request === 'GET /v1/models'), 'Startup must not request inference.');
+  assert.equal(approvals, 1, 'Startup must not request or repeat an action.');
+  assert.equal(await readFile(path.join(projectPath, 'smoke.txt'), 'utf8'), 'unchanged\n');
 } finally {
+  await startupBackend?.stop();
+  if (startupProvider) {
+    startupProvider.closeAllConnections();
+    await new Promise(resolve => startupProvider.close(resolve));
+  }
   controller.abort();
   await host?.drain();
   await Promise.allSettled(connections.map(async ({ client, transport }) => {
@@ -170,6 +211,7 @@ try {
 console.log(`Packaged smoke passed (${platform}-${process.arch}).`);
 console.log('Packaged Electron + app.asar bridge: write denied; project file unchanged.');
 console.log('Offline Goose build manifest and bundled inference pins, hashes, and native version verified.');
+console.log('Actual packaged Goose ACP initializes both local tool servers with the fixed MCP protocol.');
 console.log(`Frozen packaged research MCP tools: ${researchTools.join(', ')}.`);
 console.log('Web tools absent by default and listed only after explicit enablement.');
 console.log('Bundled research skill read from packaged ASAR; enabled web tools work in Agent/Research and stay absent in Chat.');

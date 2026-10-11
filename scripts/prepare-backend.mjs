@@ -7,6 +7,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = path.join(root, 'vendor/goose');
 const manifest = await readFile(path.join(source, 'Cargo.toml'), 'utf8');
 if (!/^version = "1\.53\.0"$/m.test(manifest)) throw new Error('Expected pinned Goose v1.53.0 source.');
+const mcpProtocolVersion = '2025-11-25';
+const acpSource = await readFile(path.join(source, 'crates/goose/src/acp/server.rs'), 'utf8');
+if (!acpSource.includes('agent_config.mcp_protocol_version = Some(rmcp::model::ProtocolVersion::V_2025_11_25);')) {
+  throw new Error('Expected the app-owned ACP backend to pin bundled MCP initialization to 2025-11-25.');
+}
 const target = `${process.platform}-${process.arch}`;
 if (!['darwin-arm64', 'linux-x64', 'win32-x64'].includes(target)) throw new Error(`Unsupported target ${target}`);
 // No online metadata, telemetry, updater, cloud SDKs, or second inference engine.
@@ -30,5 +35,5 @@ await copyFile(binary, path.join(output, `${executable}.next`));
 await rename(path.join(output, `${executable}.next`), path.join(output, executable));
 if (process.platform !== 'win32') await chmod(path.join(output, executable), 0o755);
 await writeFile(path.join(output, 'manifest.json'), JSON.stringify({ version: '1.53.0', target,
-  features, offline: true, source: 'vendor/goose', sha256: createHash('sha256').update(await readFile(binary)).digest('hex') }, null, 2));
+  features, offline: true, mcpProtocolVersion, source: 'vendor/goose', sha256: createHash('sha256').update(await readFile(binary)).digest('hex') }, null, 2));
 console.log(`Bundled offline backend ready (${target})`);

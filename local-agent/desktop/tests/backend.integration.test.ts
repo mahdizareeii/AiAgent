@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { GooseBackend, type BackendOptions } from '../backend.ts';
+import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { GooseBackend, backendEnvironment, type BackendOptions } from '../backend.ts';
 import { loadTaskResearchSkill } from '../skills/task-research.ts';
 import { LocalActions, type ActionPermission } from '../actions.ts';
 import { createActionHost } from '../action-host.ts';
@@ -254,6 +257,76 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
     throw error;
   }
 }
+
+test('real Goose initializes bundled file tools after a delayed cold start with one fixed MCP handshake',
+  { skip: skipReason('research'), timeout: 120_000 }, async () => {
+    const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-cold-start-')));
+    const dataDirectory = path.join(directory, 'data');
+    const wirePath = path.join(directory, 'first-mcp-request.json');
+    const launcher = path.join(directory, 'delayed-research.cjs');
+    await mkdir(path.join(dataDirectory, 'config'), { recursive: true });
+    await writeFile(path.join(dataDirectory, 'config/config.yaml'), JSON.stringify({ GOOSE_PROVIDER: 'openai', GOOSE_MODEL: model,
+      GOOSE_MODE: 'auto', GOOSE_TELEMETRY_ENABLED: false, CONTEXT_FILE_NAMES: [],
+      extensions: { developer: { type: 'platform', name: 'developer', enabled: false } } }));
+    // Delay exceeds the discovery probe's eight-second fallback window. No
+    // inference, tools, edits, or commands are requested by this fixture.
+    await writeFile(launcher, `const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+let child, wire = '', recorded = false;
+process.on('SIGTERM', () => { child?.kill('SIGTERM'); process.exit(0); });
+setTimeout(() => {
+  child = spawn(${JSON.stringify(research)}, [], { env: process.env, stdio: ['pipe', 'pipe', 'inherit'], shell: false });
+  process.stdin.on('data', chunk => {
+    if (recorded) return;
+    wire += String(chunk);
+    const boundary = wire.indexOf('\\n');
+    if (boundary < 0) return;
+    const request = JSON.parse(wire.slice(0, boundary));
+    fs.writeFileSync(${JSON.stringify(wirePath)}, JSON.stringify({ method: request.method, protocolVersion: request.params?.protocolVersion }));
+    recorded = true;
+  });
+  process.stdin.pipe(child.stdin); child.stdout.pipe(process.stdout);
+  child.on('close', code => { process.stdin.destroy(); process.exitCode = code ?? 1; });
+}, 9000);
+`);
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? '');
+      if (request.url === '/v1/models') sendJson(response, 200, { object: 'list', data: [{ id: model, object: 'model' }] });
+      else sendJson(response, 404, { error: 'This fixture does not provide inference or actions.' });
+    });
+    const baseUrl = await listen(server);
+    const options: BackendOptions = { executable: goose, researchExecutable: research, nodeExecutable: process.execPath,
+      bridgeExecutable: bridge, dataDirectory, cwd: directory, mode: 'research', model, baseUrl, apiKey, contextTokens: 8192,
+      outputTokens, utilities: defaults('research'), grantedRoots: [directory], grantedFiles: [], onEvent: () => assert.fail('No agent events expected without a prompt.') };
+    const child = spawn(goose, ['acp'], { cwd: directory, env: backendEnvironment(options), stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      const connection = new ClientSideConnection(() => ({ sessionUpdate: async () => {},
+        requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }) }),
+      ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>));
+      await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'free-local-agent-cold-start-test', version: '1' },
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
+      const started = Date.now();
+      const session = await connection.newSession({ cwd: directory, mcpServers: [], _meta: { enabledExtensions: [
+        { type: 'mcp', timeout: 180, server: { name: 'local_files_and_research', command: process.execPath, args: [launcher], env: [] } },
+      ] } });
+      assert.deepEqual(session._meta?.extensionResults, [{ name: 'local_files_and_research', success: true }], stderr);
+      assert.ok(Date.now() - started >= 9000, 'The file-tools startup delay must actually be exercised.');
+      assert.deepEqual(JSON.parse(await readFile(wirePath, 'utf8')), { method: 'initialize', protocolVersion: '2025-11-25' });
+      assert.ok(requests.every(url => url === '/v1/models'), 'Startup cannot request inference or perform project actions.');
+    } finally {
+      child.stdin.end();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([closed, new Promise<void>(resolve => { timer = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 5000); })]); }
+      finally { if (timer) clearTimeout(timer); }
+      await closed;
+      await close(server);
+      await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    }
+  });
 
 test('real Goose streams local-model thoughts separately from its final answer through ACP',
   { skip: skipReason('assistant'), timeout: 120_000 }, async () => {
