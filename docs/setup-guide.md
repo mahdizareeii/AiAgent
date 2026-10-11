@@ -1,6 +1,6 @@
 # Free Local Agent setup and developer guide
 
-Free Local Agent **0.4.0-alpha.2** runs local models through a bundled llama.cpp engine. The
+Free Local Agent **0.4.0-alpha.3** runs local models through a bundled llama.cpp engine. The
 packaged app includes the native inference engine, offline Goose backend, and
 research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
@@ -8,12 +8,15 @@ platform support.
 
 ## First launch
 
-On macOS Apple Silicon, unzip `Free Local Agent-0.4.0-alpha.2-arm64-mac.zip`, move `Free Local Agent.app` into
+On macOS Apple Silicon, unzip `Free Local Agent-0.4.0-alpha.3-arm64-mac.zip`, move `Free Local Agent.app` into
 Applications, and open it; the runtime is included and model weights are downloaded
 or imported separately.
 
 1. Open **Models & hardware** and inspect the detected hardware and bundled runtime.
-2. Choose a model that fits, then **Download model** and **Use model**. Alternatively,
+   **Preparing local engine…** is normal during initialization. An empty model
+   library shows **Download or import your first model**, rather than an engine error.
+2. Choose a model that fits, then **Download model**. The first successful download
+   is selected automatically; use **Use model** to select an existing downloaded model. Alternatively,
    choose **Import GGUF**. Compatible GGUF architecture and chat-template metadata
    are required; unsupported files or variants can fail validation. An imported
    model starts in chat-only mode. Agent tools are enabled only after the runtime
@@ -25,7 +28,7 @@ or imported separately.
    use **Add folder** in the sidebar to choose an existing workspace, or
    **Create folder** to name a new folder and choose its parent in the native
    picker. Enable the tools your task needs. File reading works
-   in every mode; project search, file creation/editing, and terminal commands
+   in every mode; **Find files & text**, file creation/editing, and terminal commands
    work in Agent independently of Research. Web tools work in Agent and Read-only
    research after you enable both Research and web access in **Plugins**. Use
    **Chat** for conversation and attached-file reading. A chat-only model can
@@ -35,12 +38,33 @@ or imported separately.
    interrupted agent turn needs a new request; Resume does not replay its actions.
 
 The neutral, Codex-inspired workspace has a task sidebar, a centered conversation,
-and a bottom composer. The composer groups mode, workspace, tool, research, and
+and a bottom composer. The composer groups mode, workspace, tool, and
 model controls with your message. **Plugins** and **Models & hardware** are in the
 sidebar. Use the moon/sun toggle at the bottom of the sidebar to switch light/dark
 themes; the preference is saved locally. **Read-only research** appears in the mode
 selector when its plugin is enabled. Saved research tasks can still be opened
 with the plugin disabled, without reactivating it.
+
+## Model setup and recovery
+
+You can draft a task and attach files before a model is ready. **Choose model**
+opens setup and preserves both. Downloading, importing, or choosing a verified
+usable model enables sending without restarting the app. A later download keeps
+an existing valid selection; it replaces a selection whose weights are missing
+or fail verification.
+
+If a selected model was removed or changed, verification stops the request before
+starting a turn or its tools. The app refreshes model availability and opens setup
+when needed, retaining the draft and attachments. Known integrity failures block
+the affected model. Use **Download again** for a curated model, or **Import GGUF**
+to replace an imported model with a valid file. Successfully verified replacements
+clear stale model failures without restarting the engine. Setup never automatically
+retries the rejected task, commands, or edits.
+
+Actual engine failures retain their error code and **Retry runtime** action.
+**Model library unavailable** means the cache could not be inspected; check its
+displayed storage path and permissions, then use **Retry model library**. These
+states are distinct from having no downloaded models.
 
 ## Workspace folders
 
@@ -70,16 +94,52 @@ keyboard accessible: Tab to it and press Enter or Space. Tool entries can be
 expanded to inspect their inputs and outputs. Approval prompts retain their
 separate **Approve once** and **Deny** controls.
 
+Expansion persists while thinking and tool results stream. Working reports the
+active tool, thinking, processing stage, or waiting approval state. Opening its
+details or scrolling up stops automatic scrolling to new output, so you can read
+without the conversation moving away.
+
 Thinking appears only when the model emits it. The panel says when thinking
 text has not been provided; the app does not construct a reasoning transcript.
 Thinking is separate from the answer, bounded to 64 KiB per reply, and stored
 locally with the conversation. It can be expanded after completion and restored
 when the task is reopened, including partial thinking captured before a stop or
-error. Tool activity and stage details are current-run information and are not
-restored from saved conversation history. See the
-[0.4.0-alpha.2 Working and folder validation record](working-folders-validation.md).
+error. Named tool calls, supplied inputs/results, and statuses are saved with
+the assistant exchange and restored on reopening. Display history is bounded
+to 256 calls and 16 KiB each for input/output, with visible truncation notices.
+Processing-stage progress remains transient, and saved activity never replays
+a command or edit. See the [current validation record](general-agent-validation.md)
+for separate synthetic-renderer, component, and native checks. Mouse, Enter,
+and Space activation passed during an actual R7 task; R9 also visibly restored
+five named tools after reopening its saved task. The earlier
+[alpha.2 Working and folder record](working-folders-validation.md) retains its
+original evidence.
 This update and its package are kept local and have not been pushed or published
 as a GitHub release.
+
+## Longer tasks and command limits
+
+The app counts the full templated request, including instructions, tools,
+conversation, tool results, and reserved output. It can summarize older completed
+conversation and completed local read-only exchanges within a turn. The current
+request, pending tools, and command/edit calls and results remain exact. Source
+references are retained so the agent can reread files or saved command output.
+Summaries are lossy and do not make model weights smaller. If the exact retained
+context cannot fit, use a smaller request; the app does not restart the task or
+replay its actions to recover context.
+
+Commands default to a 60-second execution limit. For dependency downloads or
+other longer setup, the agent can explicitly propose `timeout_ms` up to `600000`
+(ten minutes). The proposed command, working directory, and time limit are
+included in the normal approval review. This is a general terminal capability,
+not a project-specific shortcut.
+
+The local command transport allows up to 25 minutes for approval review and
+execution; other native action requests allow 15 minutes. These transport limits
+do not extend the command's approved limit, and pending approvals still expire
+after ten minutes. A stopped or timed-out command may have made partial changes.
+The turn stops rather than automatically rerunning it. Read its saved paged log
+and inspect the project before sending a new request to continue.
 
 ## Optional Research plugin
 
@@ -89,6 +149,9 @@ When enabled, it guides Agent and Read-only research tasks to inspect project
 versions, resolve changing setup/API requirements, and use the findings while
 completing the task. It needs no hosted model account or separate installation.
 There is no arbitrary external plugin installer in this version.
+Enable Research and grant web access here; the composer has no duplicate Research
+switch. **Find files & text** in **Tools** searches only the selected workspace
+and is independent of the Research plugin or internet permission.
 
 1. Use a validated tool-capable model. In Agent, choose a workspace.
 2. Open **Plugins** and turn on **Enable Research**. It is off by default on a
@@ -118,7 +181,7 @@ upgrades, automatically update the model, or install app updates. Model quality
 still affects how well it follows the skill; verify its findings and actual checks.
 
 Turning off **Enable Research** removes research instructions and web tools from
-the next turn. File reading, project search, file editing, and terminal controls
+the next turn. File reading, **Find files & text**, file editing, and terminal controls
 remain in **Tools** and work independently. Plugin and web preferences persist
 separately; disabling Research retains the saved web permission for your next
 explicit enable. Changes are unavailable while a task is running. Legacy version
@@ -129,6 +192,10 @@ selected models, workspaces, and undo records are preserved. See the
 
 ## Creating a WordPress project
 
+WordPress is an example for verifying the general Agent tools. The app has no
+WordPress-specific generator or runtime; the same tools build and validate other
+projects.
+
 Use Agent mode for work that creates files or executes commands. An older saved
 Chat conversation remains read-only; start **New task** in Agent mode to build a project.
 An earlier Qwen4B test created approved files, but its complete WordPress setup
@@ -137,13 +204,29 @@ file creation, readback, and static checks, but no PHP or WordPress runtime ran.
 Review generated configuration and reported checks rather than treating file
 creation as successful installation.
 
+An earlier alpha.3 packaged-component attempt was incomplete: normal approvals
+created Compose and README files and checked Compose before a later edit hit
+output/context limits. A subsequent image download reached the default 60-second
+command limit used in that run, and verification was cancelled. That attempt did
+not establish an installed site. These historical observations led to the general
+command-limit and read-only compaction changes above; they retain their original
+scope in the [sanitized task attempts](general-agent-task-attempts.json).
+
+Later guided native R11 app tasks repaired, started, and installed WordPress
+through normal approvals. All **12 independent checks** passed, including the
+healthy database, installed core, homepage HTTP 200, and actual login form
+HTTP 200. One installation executed; its separate read-only postcheck succeeded.
+See the [native acceptance record](wordpress-native-acceptance.json) and
+[current validation report](general-agent-validation.md) for exact package
+provenance, the install's upload-directory warning, and final R12 check scope.
+
 1. Select a model that has passed **Check tools & speed**. A chat-only model
    cannot create project files or run commands.
 2. Choose **Agent**, then use sidebar **Add folder** for an existing empty
    workspace, or **Create folder** to name a new workspace and choose its parent
    folder. Start **New task** if you want to change an existing task's workspace.
 3. In **Tools**, enable **Create & edit files** and **Terminal**. File
-   reading and project search let the model inspect its workspace and results.
+   reading and **Find files & text** let the model inspect its workspace and results.
 4. Ask for the result you want, for example:
 
    > Create a local WordPress project in this empty workspace, including setup
@@ -171,8 +254,10 @@ it created and any newly created directories that remain empty. Files changed
 outside the app are preserved. Undo cannot reverse package installations,
 database changes, or other terminal-command side effects.
 
-Agent mode is instructed to inspect, implement, and validate rather than stop
-after a plan. It respects action denials, and an interrupted task never
+Agent mode is instructed to inspect versions and prerequisites, implement, run
+appropriate checks, and repair observed failures through its tools and approvals.
+This policy applies to general tasks, including an empty workspace. It respects
+action denials, and an interrupted task never
 automatically repeats an approved command or edit. If tools, an approval, a
 dependency, or networking block completion, the result should identify that
 observed blocker and the work already performed. The
@@ -263,7 +348,10 @@ existing chats, cached models, project paths, and undo records. The normal
 application-data locations are
 `~/Library/Application Support/Local Agent`, `%APPDATA%/Local Agent`, or
 `~/.config/Local Agent` (subject to XDG configuration). An explicit
-`--user-data-dir` override is also supported. The folder contains chats, model
+`--user-data-dir` override starts a separate profile with independent chats and
+models. Its **Separate test profile** banner and model setup show the app-data
+and model-cache locations. Profiles are not automatically merged or copied; open
+the app without an override to use the regular retained store. The folder contains chats, model
 files, imported-model records, stage checkpoints, and edit snapshots. Speed and
 tool-calibration results currently stay in memory for the runtime session and
 are checked again after restarting it.

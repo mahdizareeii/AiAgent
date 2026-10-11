@@ -1,0 +1,865 @@
+{
+  "appVersion": "0.4.0-alpha.3",
+  "date": "2026-10-10",
+  "scope": "Real packaged-component chat/file/offline checks and one explicitly unfinalized run snapshot, with each run tied to its actual recorded revision; component execution does not establish native renderer interaction or installed WordPress.",
+  "sanitization": "Absolute home, profile, repository, packaged-app, and workspace paths replaced with placeholders. Raw message chunks and model thinking text omitted. No credentials or authentication URLs included.",
+  "runs": [
+    {
+      "startedAt": "2026-10-10T15:59:22.662Z",
+      "package": "<packaged-app>",
+      "profile": "<isolated-profile>",
+      "project": "<test-workspace>",
+      "folderCreatedThroughAppWorkspaceHelper": true,
+      "nativeUIVerified": false,
+      "syntheticProvider": false,
+      "weightsDownloaded": false,
+      "modelImportedThroughAppRuntime": true,
+      "approvalsAutomatic": false,
+      "acceptanceScope": "Agent component execution; tasks without expectedAnswer/expectedFiles require additional independent outcome validation.",
+      "requests": [
+        {
+          "name": "ordinary-chat",
+          "mode": "assistant",
+          "request": "What is 17 plus 25? Reply with only the number.",
+          "startedAt": "2026-10-10T15:59:31.324Z",
+          "events": [],
+          "approvals": [],
+          "answer": "42",
+          "passed": true,
+          "independentAssertions": 1,
+          "taskOutcomeValidated": true,
+          "completedAt": "2026-10-10T15:59:37.953Z",
+          "thinkingBytes": 464,
+          "toolEvents": 0
+        },
+        {
+          "name": "general-file-task",
+          "mode": "coding",
+          "request": "Create a new notes.txt containing exactly 'Local agent works.' followed by a newline. Read it back and verify the exact text. Then edit it to exactly 'Local agent works locally.' followed by a newline. Read back and verify before reporting success.",
+          "startedAt": "2026-10-10T15:59:37.954Z",
+          "events": [
+            {
+              "type": "tool",
+              "id": "9Mkmj0LMLlYnWbwdNkOhFNGUj2ImEHeV",
+              "title": "reviewed actions: write file \u00b7 notes.txt",
+              "status": "pending",
+              "input": {
+                "path": "notes.txt",
+                "content": "Local agent works.\n"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "9Mkmj0LMLlYnWbwdNkOhFNGUj2ImEHeV",
+              "title": "Tool",
+              "status": "completed",
+              "output": [
+                {
+                  "content": {
+                    "text": "Created notes.txt. A snapshot is available for undo.",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            },
+            {
+              "type": "tool",
+              "id": "zPyF2wIrQe7Osz9W5zhpCoeIcaOSVhsx",
+              "title": "reviewed actions: read command output",
+              "status": "pending",
+              "input": {
+                "id": "a2b3c4d5-6e7f-8901-2345-6789abcdef01"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "zPyF2wIrQe7Osz9W5zhpCoeIcaOSVhsx",
+              "title": "Tool",
+              "status": "failed",
+              "output": [
+                {
+                  "content": {
+                    "text": "MCP error -32602: Input validation error: Invalid arguments for tool read_command_output: Invalid UUID at id",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            },
+            {
+              "type": "tool",
+              "id": "Iou6pkPw1SkP1zyRWQjihyuGHkfaikZp",
+              "title": "local files and research: read file \u00b7 notes.txt",
+              "status": "pending",
+              "input": {
+                "path": "notes.txt"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "Iou6pkPw1SkP1zyRWQjihyuGHkfaikZp",
+              "title": "Tool",
+              "status": "completed",
+              "output": {
+                "ok": true,
+                "path": "<test-workspace>/notes.txt",
+                "sha256": "d9b92c0f41377b1ce712c00aa0fbe9c55e8c30d9b2907c775607864ea74c7ea0",
+                "size": 19,
+                "total_lines": 1,
+                "start_line": 1,
+                "start_column": 1,
+                "text": "1: Local agent works.",
+                "eof": true,
+                "next_cursor": null,
+                "truncated": false
+              }
+            },
+            {
+              "type": "tool",
+              "id": "EKT8215ykc5sPWDl1RquoTB9DlKjIX8y",
+              "title": "reviewed actions: edit file \u00b7 notes.txt",
+              "status": "pending",
+              "input": {
+                "path": "notes.txt",
+                "old_text": "Local agent works.",
+                "new_text": "Local agent works locally."
+              }
+            },
+            {
+              "type": "tool",
+              "id": "EKT8215ykc5sPWDl1RquoTB9DlKjIX8y",
+              "title": "Tool",
+              "status": "completed",
+              "output": [
+                {
+                  "content": {
+                    "text": "Updated notes.txt. A snapshot is available for undo.",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            },
+            {
+              "type": "tool",
+              "id": "i497OsFaJajhrbBiO4LNj40GmmZdzQkz",
+              "title": "local files and research: read file \u00b7 notes.txt",
+              "status": "pending",
+              "input": {
+                "path": "notes.txt"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "i497OsFaJajhrbBiO4LNj40GmmZdzQkz",
+              "title": "Tool",
+              "status": "completed",
+              "output": {
+                "ok": true,
+                "path": "<test-workspace>/notes.txt",
+                "sha256": "0451c6b8f88f5a0112a7d5f7dd5feb4ed42f86212e9787864ecbebf0a9785370",
+                "size": 27,
+                "total_lines": 1,
+                "start_line": 1,
+                "start_column": 1,
+                "text": "1: Local agent works locally.",
+                "eof": true,
+                "next_cursor": null,
+                "truncated": false
+              }
+            }
+          ],
+          "approvals": [
+            {
+              "requestedAt": "2026-10-10T15:59:53.603Z",
+              "requestId": "2cbdc1b5-961e-40ea-900c-ec6d20edaeac",
+              "title": "Create notes.txt",
+              "arguments": {
+                "path": "notes.txt",
+                "content": "Local agent works.\n"
+              },
+              "preview": "--- /dev/null\n+++ notes.txt\n@@ -1,0 +1,2 @@\n+Local agent works.\n+",
+              "approved": true,
+              "decidedAt": "2026-10-10T16:00:26.315Z"
+            },
+            {
+              "requestedAt": "2026-10-10T16:00:55.276Z",
+              "requestId": "55e8ab5e-b5d4-48b3-85cf-a8d085a87cce",
+              "title": "Change notes.txt",
+              "arguments": {
+                "path": "notes.txt",
+                "old_text": "Local agent works.",
+                "new_text": "Local agent works locally."
+              },
+              "preview": "--- notes.txt\n+++ notes.txt\n@@ -1,1 +1,1 @@\n-Local agent works.\n+Local agent works locally.",
+              "approved": true,
+              "decidedAt": "2026-10-10T16:01:52.987Z"
+            }
+          ],
+          "answer": "All tasks completed successfully:\n\n1. **Created `notes.txt`** with content \"Local agent works.\\n\" (19 bytes)\n2. **Verified initial content** - confirmed exact text matches the requirement\n3. **Edited `notes.txt`** to \"Local agent works locally.\\n\" (27 bytes)\n4. **Verified final content** - confirmed exact text matches the requirement\n\nThe file has been updated and the SHA256 hash changed from `d9b92c0f41377b1ce712c00aa0fbe9c55e8c30d9b2907c775607864ea74c7ea0` to `0451c6b8f88f5a0112a7d5f7dd5feb4ed42f86212e9787864ecbebf0a9785370`, confirming the edit was applied successfully.",
+          "passed": true,
+          "independentFiles": [
+            {
+              "path": "notes.txt",
+              "bytes": 27,
+              "sha256": "0451c6b8f88f5a0112a7d5f7dd5feb4ed42f86212e9787864ecbebf0a9785370"
+            }
+          ],
+          "independentAssertions": 1,
+          "taskOutcomeValidated": true,
+          "completedAt": "2026-10-10T16:02:45.630Z",
+          "thinkingBytes": 1174,
+          "toolEvents": 10
+        }
+      ],
+      "ownedProcessesStopped": true,
+      "model": {
+        "id": "qwen3.5:4b",
+        "digest": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+        "toolCapable": true,
+        "tokensPerSecond": 30.393182575354636
+      },
+      "hardware": {
+        "platform": "darwin",
+        "architecture": "arm64",
+        "cpuModel": "Apple M5",
+        "cpuCores": 10,
+        "totalMemoryBytes": 25769803776,
+        "availableMemoryBytes": 5305925632,
+        "freeDiskBytes": 510088351744,
+        "gpus": [
+          {
+            "name": "Apple M5",
+            "backend": "metal",
+            "totalMemoryBytes": 19069403136,
+            "freeMemoryBytes": 19068354560,
+            "unifiedMemory": true
+          }
+        ]
+      },
+      "profileSettings": {
+        "contextTokens": 8192,
+        "outputTokens": 2048,
+        "batchTokens": 256,
+        "microBatchTokens": 64,
+        "backend": "metal",
+        "index": 1
+      },
+      "passed": true,
+      "completedAt": "2026-10-10T16:02:45.958Z",
+      "messageEventOmission": "Token-sized message events and raw thought text are omitted; final answers, thought byte counts, approvals, and tool/status events are retained.",
+      "networkRestriction": {
+        "publicNetworking": "not restricted for this harness run"
+      },
+      "runName": "components",
+      "artifactRevision": "0.4.0-alpha.3 package before later approval-disconnect cancellation changes"
+    },
+    {
+      "startedAt": "2026-10-10T16:19:12.410Z",
+      "package": "<packaged-app>",
+      "profile": "<isolated-profile>",
+      "project": "<test-workspace>",
+      "folderCreatedThroughAppWorkspaceHelper": false,
+      "nativeUIVerified": false,
+      "syntheticProvider": false,
+      "weightsDownloaded": false,
+      "modelImportedThroughAppRuntime": true,
+      "approvalsAutomatic": false,
+      "acceptanceScope": "Agent component execution; tasks without expectedAnswer/expectedFiles require additional independent outcome validation.",
+      "requests": [
+        {
+          "name": "offline-chat",
+          "mode": "assistant",
+          "request": "What is 17 plus 25? Reply with only the number.",
+          "startedAt": "2026-10-10T16:19:22.219Z",
+          "events": [],
+          "approvals": [],
+          "answer": "42",
+          "passed": true,
+          "independentAssertions": 1,
+          "taskOutcomeValidated": true,
+          "completedAt": "2026-10-10T16:20:06.661Z",
+          "thinkingBytes": 4074,
+          "toolEvents": 0
+        }
+      ],
+      "ownedProcessesStopped": true,
+      "model": {
+        "id": "qwen3.5:4b",
+        "digest": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+        "toolCapable": true,
+        "tokensPerSecond": 32.9375339668319
+      },
+      "hardware": {
+        "platform": "darwin",
+        "architecture": "arm64",
+        "cpuModel": "Apple M5",
+        "cpuCores": 10,
+        "totalMemoryBytes": 25769803776,
+        "availableMemoryBytes": 5711511552,
+        "freeDiskBytes": 500138852352,
+        "gpus": [
+          {
+            "name": "Apple M5",
+            "backend": "metal",
+            "totalMemoryBytes": 19069403136,
+            "freeMemoryBytes": 19068354560,
+            "unifiedMemory": true
+          }
+        ]
+      },
+      "profileSettings": {
+        "contextTokens": 8192,
+        "outputTokens": 2048,
+        "batchTokens": 256,
+        "microBatchTokens": 64,
+        "backend": "metal",
+        "index": 1
+      },
+      "passed": true,
+      "completedAt": "2026-10-10T16:20:06.850Z",
+      "messageEventOmission": "Token-sized message events and raw thought text are omitted; final answers, thought byte counts, approvals, and tool/status events are retained.",
+      "networkRestriction": {
+        "publicNetworking": "denied",
+        "allowed": "loopback only"
+      },
+      "runName": "offline-chat",
+      "artifactRevision": "0.4.0-alpha.3 package before later approval-disconnect cancellation changes"
+    },
+    {
+      "startedAt": "2026-10-10T17:00:07.769Z",
+      "package": "<packaged-app>",
+      "profile": "<isolated-profile>",
+      "project": "<test-workspace>",
+      "folderCreatedThroughAppWorkspaceHelper": false,
+      "nativeUIVerified": false,
+      "syntheticProvider": false,
+      "weightsDownloaded": false,
+      "modelImportedThroughAppRuntime": true,
+      "approvalsAutomatic": false,
+      "acceptanceScope": "Agent component execution; tasks without expectedAnswer/expectedFiles require additional independent outcome validation.",
+      "ownedProcessesStopped": true,
+      "model": {
+        "id": "qwen3.5:4b",
+        "digest": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+        "toolCapable": true,
+        "tokensPerSecond": 37.90203490194306
+      },
+      "hardware": {
+        "platform": "darwin",
+        "architecture": "arm64",
+        "cpuModel": "Apple M5",
+        "cpuCores": 10,
+        "totalMemoryBytes": 25769803776,
+        "availableMemoryBytes": 5529780224,
+        "freeDiskBytes": 497050664960,
+        "gpus": [
+          {
+            "name": "Apple M5",
+            "backend": "metal",
+            "totalMemoryBytes": 19069403136,
+            "freeMemoryBytes": 19068354560,
+            "unifiedMemory": true
+          }
+        ]
+      },
+      "profileSettings": {
+        "contextTokens": 8192,
+        "outputTokens": 2048,
+        "batchTokens": 256,
+        "microBatchTokens": 64,
+        "backend": "metal",
+        "index": 1
+      },
+      "passed": false,
+      "completedAt": "2026-10-10T17:06:44.030Z",
+      "requests": [
+        {
+          "name": "final-ordinary-chat",
+          "mode": "assistant",
+          "startedAt": "2026-10-10T17:00:14.484Z",
+          "approvals": [],
+          "answer": "42",
+          "passed": true,
+          "independentAssertions": 1,
+          "taskOutcomeValidated": true,
+          "completedAt": "2026-10-10T17:00:19.786Z",
+          "thinkingBytes": 483,
+          "toolEvents": 0,
+          "events": [],
+          "approvalCount": 0,
+          "approvedActions": 0,
+          "deniedActions": 0
+        },
+        {
+          "name": "final-general-file-task",
+          "mode": "coding",
+          "startedAt": "2026-10-10T17:00:19.787Z",
+          "approvals": [
+            {
+              "requestedAt": "2026-10-10T17:00:31.880Z",
+              "requestId": "ce7c8aeb-26dc-4a3b-83f5-c7eb9cde9719",
+              "title": "Create validation-note.txt",
+              "arguments": {
+                "path": "validation-note.txt",
+                "content": {
+                  "omitted": true,
+                  "utf8Bytes": 19
+                }
+              },
+              "preview": {
+                "omitted": true,
+                "utf8Bytes": 75
+              },
+              "approved": true,
+              "cancelled": false,
+              "decidedAt": "2026-10-10T17:03:07.504Z"
+            },
+            {
+              "requestedAt": "2026-10-10T17:03:26.295Z",
+              "requestId": "ea1eff14-d43a-4c0a-9fe2-8ff26e3f76fb",
+              "title": "Change validation-note.txt",
+              "arguments": {
+                "path": "validation-note.txt",
+                "old_text": {
+                  "omitted": true,
+                  "utf8Bytes": 18
+                },
+                "new_text": {
+                  "omitted": true,
+                  "utf8Bytes": 26
+                }
+              },
+              "preview": {
+                "omitted": true,
+                "utf8Bytes": 111
+              },
+              "approved": true,
+              "cancelled": false,
+              "decidedAt": "2026-10-10T17:04:55.872Z"
+            }
+          ],
+          "answer": "All tasks completed successfully:\n\n1. \u2705 Created `validation-note.txt` with content \"Local agent works.\\n\"\n2. \u2705 Read it back - confirmed correct content (19 bytes, 1 line)\n3. \u2705 Edited it to \"Local agent works locally.\\n\"\n4. \u2705 Read it back - confirmed updated content (27 bytes, 1 line)\n\nThe file now contains exactly: `Local agent works locally.` followed by a newline.",
+          "passed": true,
+          "independentFiles": [
+            {
+              "path": "validation-note.txt",
+              "bytes": 27,
+              "sha256": "0451c6b8f88f5a0112a7d5f7dd5feb4ed42f86212e9787864ecbebf0a9785370"
+            }
+          ],
+          "independentAssertions": 1,
+          "taskOutcomeValidated": true,
+          "completedAt": "2026-10-10T17:05:16.629Z",
+          "thinkingBytes": 1049,
+          "toolEvents": 8,
+          "events": [
+            {
+              "type": "tool",
+              "id": "kKwxORQmnnw5q5Qmx7ZAw4ILNMblsLwN",
+              "title": "reviewed actions: write file \u00b7 validation-note.txt",
+              "status": "pending",
+              "input": {
+                "path": "validation-note.txt",
+                "content": {
+                  "omitted": true,
+                  "utf8Bytes": 19
+                }
+              }
+            },
+            {
+              "type": "tool",
+              "id": "kKwxORQmnnw5q5Qmx7ZAw4ILNMblsLwN",
+              "title": "Tool",
+              "status": "completed",
+              "output": [
+                {
+                  "content": {
+                    "text": "Created validation-note.txt. A snapshot is available for undo.",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            },
+            {
+              "type": "tool",
+              "id": "GnofOlCESGOBXBBNLiJdzVZ8hFnMLR8c",
+              "title": "local files and research: read file \u00b7 validation-note.txt",
+              "status": "pending",
+              "input": {
+                "path": "validation-note.txt"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "GnofOlCESGOBXBBNLiJdzVZ8hFnMLR8c",
+              "title": "Tool",
+              "status": "completed",
+              "output": {
+                "ok": true,
+                "path": "<test-workspace>/validation-note.txt",
+                "sha256": "d9b92c0f41377b1ce712c00aa0fbe9c55e8c30d9b2907c775607864ea74c7ea0",
+                "size": 19,
+                "total_lines": 1,
+                "start_line": 1,
+                "start_column": 1,
+                "text": "1: Local agent works.",
+                "eof": true,
+                "next_cursor": null,
+                "truncated": false
+              }
+            },
+            {
+              "type": "tool",
+              "id": "X6FPcqvdKg1CiN32Ulg1NKsRX6rYlTdZ",
+              "title": "reviewed actions: edit file \u00b7 validation-note.txt",
+              "status": "pending",
+              "input": {
+                "new_text": {
+                  "omitted": true,
+                  "utf8Bytes": 26
+                },
+                "old_text": {
+                  "omitted": true,
+                  "utf8Bytes": 18
+                },
+                "path": "validation-note.txt"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "X6FPcqvdKg1CiN32Ulg1NKsRX6rYlTdZ",
+              "title": "Tool",
+              "status": "completed",
+              "output": [
+                {
+                  "content": {
+                    "text": "Updated validation-note.txt. A snapshot is available for undo.",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            },
+            {
+              "type": "tool",
+              "id": "6M0S52CrGtW3k8RHSMyvn9rxeTxD9lOp",
+              "title": "local files and research: read file \u00b7 validation-note.txt",
+              "status": "pending",
+              "input": {
+                "path": "validation-note.txt"
+              }
+            },
+            {
+              "type": "tool",
+              "id": "6M0S52CrGtW3k8RHSMyvn9rxeTxD9lOp",
+              "title": "Tool",
+              "status": "completed",
+              "output": {
+                "ok": true,
+                "path": "<test-workspace>/validation-note.txt",
+                "sha256": "0451c6b8f88f5a0112a7d5f7dd5feb4ed42f86212e9787864ecbebf0a9785370",
+                "size": 27,
+                "total_lines": 1,
+                "start_line": 1,
+                "start_column": 1,
+                "text": "1: Local agent works locally.",
+                "eof": true,
+                "next_cursor": null,
+                "truncated": false
+              }
+            }
+          ],
+          "approvalCount": 2,
+          "approvedActions": 2,
+          "deniedActions": 0
+        },
+        {
+          "name": "final-inspect-image-tools",
+          "mode": "coding",
+          "startedAt": "2026-10-10T17:05:16.630Z",
+          "approvals": [
+            {
+              "requestedAt": "2026-10-10T17:05:34.105Z",
+              "requestId": "0569ea37-98af-4fdf-8197-1920443199f7",
+              "title": "Run command with your account permissions",
+              "arguments": {
+                "command": "docker run --rm --pull never --entrypoint sh mariadb:11.4.13 -c 'command -v healthcheck.sh; command -v mysqladmin; command -v mariadb-admin; healthcheck.sh --help'",
+                "timeout_ms": 60000
+              },
+              "command": "docker run --rm --pull never --entrypoint sh mariadb:11.4.13 -c 'command -v healthcheck.sh; command -v mysqladmin; command -v mariadb-admin; healthcheck.sh --help'",
+              "cwd": "<test-workspace>",
+              "approved": true,
+              "cancelled": false,
+              "decidedAt": "2026-10-10T17:06:20.240Z"
+            },
+            {
+              "requestedAt": "2026-10-10T17:06:30.971Z",
+              "requestId": "494820f9-b4b4-4392-bbed-8ef462c3f1cb",
+              "title": "Run command with your account permissions",
+              "arguments": {
+                "command": "docker run --rm --pull never --entrypoint sh wordpress:cli-2.12.0-php8.3 -c 'command -v wp; wp --version'",
+                "timeout_ms": 60000
+              },
+              "command": "docker run --rm --pull never --entrypoint sh wordpress:cli-2.12.0-php8.3 -c 'command -v wp; wp --version'",
+              "cwd": "<test-workspace>",
+              "approved": false,
+              "cancelled": true,
+              "decidedAt": "2026-10-10T17:06:43.985Z"
+            }
+          ],
+          "answer": "",
+          "passed": false,
+          "error": "This turn stopped after an interrupted action request. Completed actions are preserved. Send a new request to continue; no action will be automatically repeated.",
+          "completedAt": "2026-10-10T17:06:43.995Z",
+          "thinkingBytes": 1291,
+          "toolEvents": 4,
+          "events": [
+            {
+              "type": "tool",
+              "id": "fRoFDqGMJjacDs1NN1VCyhFsgPdLIOzT",
+              "title": "reviewed actions: run command \u00b7 docker run --rm --pull never --entrypoint sh mariadb:1...\u2026",
+              "status": "pending",
+              "input": {
+                "command": "docker run --rm --pull never --entrypoint sh mariadb:11.4.13 -c 'command -v healthcheck.sh; command -v mysqladmin; command -v mariadb-admin; healthcheck.sh --help'",
+                "timeout_ms": 60000
+              }
+            },
+            {
+              "type": "tool",
+              "id": "fRoFDqGMJjacDs1NN1VCyhFsgPdLIOzT",
+              "title": "Tool",
+              "status": "failed",
+              "output": [
+                {
+                  "content": {
+                    "text": "Command exited with code 1.\n\npermission denied while trying to connect to the docker API at unix://<local-home>/.docker/run/docker.sock\n\n\nSaved command log: 0569ea37-98af-4fdf-8197-1920443199f7. Use read_command_output with this id and offset 0 to read more. Commands are never replayed by task resume.",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            },
+            {
+              "type": "tool",
+              "id": "WCQ0SKUBsodRjisuqw7U3o9gYAqGX78p",
+              "title": "reviewed actions: run command \u00b7 docker run --rm --pull never --entrypoint sh wordpress...\u2026",
+              "status": "pending",
+              "input": {
+                "command": "docker run --rm --pull never --entrypoint sh wordpress:cli-2.12.0-php8.3 -c 'command -v wp; wp --version'",
+                "timeout_ms": 60000
+              }
+            },
+            {
+              "type": "tool",
+              "id": "WCQ0SKUBsodRjisuqw7U3o9gYAqGX78p",
+              "title": "Tool",
+              "status": "failed",
+              "output": [
+                {
+                  "content": {
+                    "text": "The action was cancelled before it completed.",
+                    "type": "text"
+                  },
+                  "type": "content"
+                }
+              ]
+            }
+          ],
+          "taskOutcomeValidated": false,
+          "approvalCount": 2,
+          "approvedActions": 1,
+          "deniedActions": 1
+        }
+      ],
+      "runName": "final-package-offline-components",
+      "artifactRevision": "Preceding 0.4.0-alpha.3 package after Stop-during-model-verification fix, before later missing-command-log recovery; actual package hashes retained",
+      "packageArtifact": {
+        "version": "0.4.0-alpha.3",
+        "platform": "darwin-arm64",
+        "builtAt": "2026-10-10T16:59:26.289Z",
+        "archiveBytes": 217061765,
+        "archiveSha256": "d7bb737c5bdf5f6adf99d9a3960670b1df73b0ee3e2d3d5093d5fb66aad1c25e",
+        "asarSha256": "39c4d025a7cf3bc8adcbb040bd33910a7a2ba0365a7538c375bdeb05cfaa0011"
+      },
+      "networkRestriction": {
+        "publicNetworking": "denied",
+        "allowed": "loopback only",
+        "unixSockets": "Docker socket access was unavailable under this offline harness wrapper"
+      },
+      "messageEventOmission": "Raw streamed message chunks and thoughts omitted; final answers, thought byte counts and tool events retained.",
+      "runOutcome": "Final-package ordinary chat and approved file task independently passed. A subsequent Docker-inspection command failed under the offline wrapper socket restriction; the next pending command was cancelled, so that task did not pass. No automatic repeat or site-success claim."
+    },
+    {
+      "runName": "latest-package-interrupted-components",
+      "startedAt": "2026-10-10T17:19:48.166Z",
+      "package": "<packaged-app>",
+      "profile": "<isolated-profile>",
+      "project": "<test-workspace>",
+      "packageArtifact": {
+        "version": "0.4.0-alpha.3",
+        "platform": "darwin-arm64",
+        "builtAt": "2026-10-10T17:18:24.463661+00:00",
+        "archiveBytes": 217062281,
+        "archiveSha256": "5acc46203b96e2fa11549729403d8036855edc9be862c0054a1c7bf6bb8c6134",
+        "asarSha256": "0fa0d1d036b1bce21376a2f4ae268973a334c66f18514625901bfa3d8ad578af"
+      },
+      "reportFinalized": false,
+      "nativeUIVerified": false,
+      "syntheticProvider": false,
+      "weightsDownloaded": false,
+      "modelImportedThroughAppRuntime": true,
+      "approvalsAutomatic": false,
+      "publicNetworkDenialEstablished": false,
+      "model": {
+        "id": "qwen3.5:4b",
+        "digest": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+        "toolCapable": true,
+        "tokensPerSecond": 38.02264687344162
+      },
+      "profileSettings": {
+        "contextTokens": 8192,
+        "outputTokens": 2048,
+        "batchTokens": 256,
+        "microBatchTokens": 64,
+        "backend": "metal",
+        "index": 1
+      },
+      "requests": [
+        {
+          "name": "final2-ordinary-chat",
+          "mode": "assistant",
+          "startedAt": "2026-10-10T17:19:54.812Z",
+          "completedAt": "2026-10-10T17:20:33.213Z",
+          "answer": "42",
+          "passed": true,
+          "independentAssertions": 1,
+          "taskOutcomeValidated": true,
+          "thinkingBytes": 4210,
+          "toolEvents": 0,
+          "approvals": []
+        },
+        {
+          "name": "final2-general-file-task",
+          "mode": "coding",
+          "startedAt": "2026-10-10T17:20:33.214Z",
+          "taskOutcomeValidated": false,
+          "outcome": "Interrupted with an unresolved edit approval; no final task response or independent final-file assertion was recorded.",
+          "recordedEvents": [
+            {
+              "tool": "create_files",
+              "status": "completed",
+              "path": "validation-second.txt",
+              "approved": true,
+              "result": "Created 1 project file; grouped undo snapshot recorded."
+            },
+            {
+              "tool": "read_command_output",
+              "status": "failed",
+              "result": "Missing-log guidance returned. No repeated read of the same id was recorded in this turn."
+            },
+            {
+              "tool": "read_file",
+              "status": "completed",
+              "path": "validation-second.txt",
+              "size": 19,
+              "sha256": "d9b92c0f41377b1ce712c00aa0fbe9c55e8c30d9b2907c775607864ea74c7ea0",
+              "result": "Readback of Local agent works. followed by a newline."
+            },
+            {
+              "tool": "edit_file",
+              "status": "pending",
+              "path": "validation-second.txt",
+              "approvalDecisionRecorded": false,
+              "executionResultRecorded": false
+            }
+          ],
+          "approvedActions": 1,
+          "unresolvedApprovals": 1
+        }
+      ],
+      "runOutcome": "The ordinary chat assertion passed. The subsequent file task and planned WordPress stages did not finish in the recorded report. No whole-run pass/fail or shutdown conclusion is inferred from this unfinalized snapshot.",
+      "installedWordPressVerified": false,
+      "ownedProcessShutdownEstablished": false,
+      "messageEventOmission": "Raw model thoughts, streamed message chunks, prompts, file-mutation bodies and previews, and absolute local paths omitted. Pending approval does not establish execution."
+    }
+  ],
+  "profilePreservation": {
+    "checkedAt": "2026-10-10T17:07:24.190Z",
+    "scope": "Recorded preceding packaged app reopened in its regular profile; saved chats, selected model and undo records retained, and separate preview partial download left unchanged.",
+    "packageAsarSha256": "39c4d025a7cf3bc8adcbb040bd33910a7a2ba0365a7538c375bdeb05cfaa0011",
+    "regular": {
+      "chatStoreSha256": "ff627327fd1e299492d55450b39f0472d6bd6313eb680e643dfa4055683c241d",
+      "sessions": 5,
+      "selectedModel": "qwen3.5:4b",
+      "slowMode": true,
+      "undoGroups": 1,
+      "modelBytes": 2740937888
+    },
+    "preview": {
+      "parts": [
+        {
+          "name": "Qwen3.5-4B-Q4_K_M.gguf.part",
+          "bytes": 156942952
+        }
+      ]
+    },
+    "verificationSummary": {
+      "regularAppReopened": true,
+      "savedChatStoreUnchanged": true,
+      "cachedModelRetained": true,
+      "undoRecordsRetained": true,
+      "previewPartialUnchanged": true
+    },
+    "evidenceLimit": "Sanitized metadata/hash snapshot plus recorded preservation checks. Raw chats, undo contents, drafts, and absolute user paths are excluded; this is not a completed interactive task check."
+  },
+  "latestReadOnlyPreservation": {
+    "checkedOn": "2026-10-11",
+    "scope": "Read-only metadata checks reported by the coordinating test run; final-package regular-profile reopening was not performed in this check.",
+    "regular": {
+      "chatStoreSha256": "ff627327fd1e299492d55450b39f0472d6bd6313eb680e643dfa4055683c241d",
+      "chatStoreUnchanged": true
+    },
+    "preview": {
+      "partialFilename": "Qwen3.5-4B-Q4_K_M.gguf.part",
+      "partialBytes": 156942952,
+      "partialSizeUnchanged": true
+    },
+    "finalPackageRegularProfileReopenVerified": false,
+    "evidenceLimit": "Metadata preservation only. It does not establish final-package migration or native task completion; prior profile-preservation evidence retains its original date and package hash."
+  },
+  "nativePartialChecks": {
+    "checkedOn": "2026-10-11",
+    "scope": "Actual native accessibility observations; no fresh task screenshot or completed Agent turn.",
+    "precedingMissingLogFixBuild": {
+      "asarSha256": "0fa0d1d036b1bce21376a2f4ae268973a334c66f18514625901bfa3d8ad578af",
+      "existingWorkspaceSelectedThroughNativeAddFolder": true,
+      "workspaceLabel": "wordpress-working-test",
+      "workspaceOriginallyCreatedBy": "User",
+      "toolCalibrationTokensPerSecond": 28.7,
+      "calibrationEvidence": "Speed displayed by the app and read through native accessibility; one short sample, not a task benchmark.",
+      "actualAgentTurnObserved": false,
+      "freshTaskScreenshotCaptured": false
+    },
+    "currentFolderFixBuild": {
+      "asarSha256": "93947053968fd1c631434f7ad533bdb2e60eccb0ca5b7a27646ab73ab7daa142",
+      "retainedWorkspaceLabel": "wordpress-working-test",
+      "retainedModelSelection": "qwen3.5:4b",
+      "recalibrationRequired": true,
+      "ggufPickerAttempt": {
+        "knownVerifiedLocalArtifactSelected": true,
+        "openButtonEnabled": false,
+        "cancelled": true,
+        "importCompleted": false,
+        "changesRecorded": false
+      },
+      "actualAgentTurnObserved": false,
+      "workingNativeActivationVerified": false
+    },
+    "interactionLimit": "Native HTML accessibility actions intermittently reported invalid ids or no available window; screenshots were stale. These observations do not establish a renderer graphics root cause.",
+    "installedWordPressVerified": false,
+    "evidenceLimit": "Folder selection and calibration are partial native evidence. The complete folder-to-Agent-to-Working workflow and mouse/Enter/Space activation remain unverified."
+  }
+}

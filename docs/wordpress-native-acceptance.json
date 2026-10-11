@@ -1,0 +1,227 @@
+{
+  "date": "2026-10-11",
+  "passed": true,
+  "checkCount": 12,
+  "startedAt": "2026-10-11T10:53:52.959Z",
+  "completedAt": "2026-10-11T10:53:55.352Z",
+  "scope": "Independent acceptance of the WordPress project created, repaired, started and installed through guided native app tasks with normal approvals. It is a general-agent acceptance example, not a product feature or one-prompt autonomy benchmark.",
+  "nativeTaskProvenance": {
+    "revision": "R11",
+    "sourceCommit": "7608ed7758b0adb96f2b7492b15305aa8700227d",
+    "appAsarSha256": "cb4a43a52096461b6134cce8d7f54d30c278fa7591fb96ae661efa7194e27ba7",
+    "bundledGooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+    "serviceStartExecutions": 1,
+    "coreInstallExecutions": 1,
+    "installTurnFinalAssistantHistoryClaimed": true,
+    "installTurnFinalizedAt": "2026-10-11T10:58:35.439Z",
+    "installTurnSavedTools": 5,
+    "installTurnThinkingBytes": 1433,
+    "postInstallCheck": {
+      "approvedNormally": true,
+      "readOnly": true,
+      "executions": 1,
+      "exitCode": 0,
+      "completedAt": "2026-10-11T10:58:09.924Z",
+      "replayedInstall": false
+    }
+  },
+  "expectedTitle": "Free Local Agent Acceptance",
+  "checks": [
+    {
+      "name": "Compose configuration",
+      "passed": true,
+      "evidence": {
+        "services": [
+          "wordpress",
+          "db",
+          "wp-cli"
+        ],
+        "publishedPorts": [
+          {
+            "mode": "ingress",
+            "host_ip": "127.0.0.1",
+            "target": 80,
+            "published": "8096",
+            "protocol": "tcp"
+          }
+        ]
+      }
+    },
+    {
+      "name": "wordpress runtime health",
+      "passed": true,
+      "evidence": {
+        "status": "running",
+        "health": null
+      }
+    },
+    {
+      "name": "db runtime health",
+      "passed": true,
+      "evidence": {
+        "status": "running",
+        "health": "healthy"
+      }
+    },
+    {
+      "name": "Loopback-only HTTP binding",
+      "passed": true,
+      "evidence": [
+        {
+          "HostIp": "127.0.0.1",
+          "HostPort": "8096"
+        }
+      ]
+    },
+    {
+      "name": "PHP version",
+      "passed": true,
+      "evidence": "8.3.35"
+    },
+    {
+      "name": "WordPress installed",
+      "passed": true,
+      "evidence": "WP-CLI core is-installed exited 0 (explicit ephemeral CLI container)."
+    },
+    {
+      "name": "Installed WordPress version",
+      "passed": true,
+      "evidence": "7.1.3"
+    },
+    {
+      "name": "WP-CLI version",
+      "passed": true,
+      "evidence": "WP-CLI 2.12.0"
+    },
+    {
+      "name": "MariaDB server version",
+      "passed": true,
+      "evidence": "11.4.13-MariaDB-ubu2404"
+    },
+    {
+      "name": "Intended site title",
+      "passed": true,
+      "evidence": "Free Local Agent Acceptance"
+    },
+    {
+      "name": "Running homepage",
+      "passed": true,
+      "evidence": {
+        "url": "http://127.0.0.1:8096/",
+        "httpStatus": 200,
+        "renderedTitle": "Free Local Agent Acceptance"
+      }
+    },
+    {
+      "name": "Administration login page",
+      "passed": true,
+      "evidence": {
+        "url": "http://127.0.0.1:8096/wp-login.php",
+        "httpStatus": 200
+      }
+    }
+  ],
+  "images": [
+    {
+      "service": "wordpress",
+      "configuredReference": "wordpress:7.1.3-php8.3-apache",
+      "resolvedRepoDigests": [
+        "wordpress@sha256:8ecd8d8e374167ea22235acf30f80d1165b82f07ffa5bcef90c1cad8f7be251f"
+      ],
+      "imageContentDigest": "sha256:8ecd8d8e374167ea22235acf30f80d1165b82f07ffa5bcef90c1cad8f7be251f",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    {
+      "service": "db",
+      "configuredReference": "mariadb:11.4.13",
+      "resolvedRepoDigests": [
+        "mariadb@sha256:1292844148b311e4ed4300022a996d39083f415a963e970cf47cad1b3b18e3a6"
+      ],
+      "imageContentDigest": "sha256:1292844148b311e4ed4300022a996d39083f415a963e970cf47cad1b3b18e3a6",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    {
+      "service": "wp-cli",
+      "configuredReference": "wordpress:cli-2.12.0-php8.3",
+      "resolvedRepoDigests": [
+        "wordpress@sha256:36243da432a0f0a3b56dc3240ecee9b159108d71305e7c064d987a20a465bfde"
+      ],
+      "imageContentDigest": "sha256:36243da432a0f0a3b56dc3240ecee9b159108d71305e7c064d987a20a465bfde",
+      "architecture": "arm64",
+      "os": "linux"
+    }
+  ],
+  "verifier": {
+    "servicesStarted": false,
+    "imagesPulled": false,
+    "projectFilesModified": false,
+    "ephemeralCachedReadOnlyCliContainers": 5,
+    "scope": "Five explicitly authorized cached read-only CLI one-shots, loopback HTTP checks and Docker/configuration inspection. No setup, start, pull, install, or edit performed by the verifier."
+  },
+  "knownLimitations": [
+    "The original install emitted an uploads-directory permission warning. A later R12 app task created the dated uploads directory as www-data and independent read-only checks confirmed both uploads directories writable as that user. Browser administration media upload was not tested."
+  ],
+  "screenshots": [
+    "docs/screenshots/free-local-agent-wordpress-home.png",
+    "docs/screenshots/free-local-agent-wordpress-login.png"
+  ],
+  "uploadRepairAndHandoff": {
+    "revision": "R12",
+    "sourceCommit": "92749018ce8a4afb426d990744fa01c4a7e75079",
+    "appAsarSha256": "cd7c1a487cb3d9b03236e1b364731e47c54a4e7def4e12a4b96913dfb67d60df",
+    "bundledGooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+    "passed": true,
+    "completedAt": "2026-10-11T11:19:20.681992+00:00",
+    "scope": "Actual R12 app task created the dated uploads directory as www-data, confirmed it writable, inspected the three cached image digests, and wrote RUNNING.md through normal approvals. Independent read-only checks confirmed writable permissions as www-data and handoff content.",
+    "uploadsDirectoryWritableAsWebUser": true,
+    "datedUploadsDirectoryWritableAsWebUser": true,
+    "permissionsCheckedAs": "www-data",
+    "permissionChecksReadOnly": true,
+    "browserMediaUploadWorkflowTested": false,
+    "installOrServiceStartReplayed": false,
+    "nativeSavedHistory": {
+      "toolCount": 7,
+      "allToolsCompleted": true,
+      "thinkingBytes": 2984,
+      "finalizedAt": "2026-10-11T11:17:20.223Z"
+    },
+    "handoff": {
+      "bytes": 620,
+      "sha256": "aef8048b70984ce31136c812d4fd2277a45e72a882b47ff9bae51dd609b32547",
+      "siteURLCorrect": true,
+      "stopCommandCorrect": true,
+      "stopRetainsVolumes": true,
+      "restartCommandCorrect": true,
+      "allThreeOfficialDigestsPresentExactly": true,
+      "resolvedImageDigests": [
+        "wordpress@sha256:8ecd8d8e374167ea22235acf30f80d1165b82f07ffa5bcef90c1cad8f7be251f",
+        "mariadb@sha256:1292844148b311e4ed4300022a996d39083f415a963e970cf47cad1b3b18e3a6",
+        "wordpress@sha256:36243da432a0f0a3b56dc3240ecee9b159108d71305e7c064d987a20a465bfde"
+      ],
+      "unexpectedDigestCount": 0,
+      "containsPasswordMention": false,
+      "stopCommand": "docker compose stop",
+      "imageLabelDigestMatches": [
+        {
+          "configuredReference": "wordpress:7.1.3-php8.3-apache",
+          "resolvedRepoDigest": "wordpress@sha256:8ecd8d8e374167ea22235acf30f80d1165b82f07ffa5bcef90c1cad8f7be251f",
+          "handoffLabelAndDigestMatch": true
+        },
+        {
+          "configuredReference": "mariadb:11.4.13",
+          "resolvedRepoDigest": "mariadb@sha256:1292844148b311e4ed4300022a996d39083f415a963e970cf47cad1b3b18e3a6",
+          "handoffLabelAndDigestMatch": true
+        },
+        {
+          "configuredReference": "wordpress:cli-2.12.0-php8.3",
+          "resolvedRepoDigest": "wordpress@sha256:36243da432a0f0a3b56dc3240ecee9b159108d71305e7c064d987a20a465bfde",
+          "handoffLabelAndDigestMatch": true
+        }
+      ],
+      "file": "RUNNING.md"
+    },
+    "observerPerformedSetupActions": false
+  }
+}

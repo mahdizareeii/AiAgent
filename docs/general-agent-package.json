@@ -1,0 +1,405 @@
+{
+  "version": "0.4.0-alpha.3",
+  "platform": "darwin-arm64",
+  "builtAt": "2026-10-11T10:48:37.394028+00:00",
+  "archive": "release/general-agent-delivery/Free Local Agent-0.4.0-alpha.3-arm64-mac.zip",
+  "archiveBytes": 216988256,
+  "archiveSha256": "8dd30c4b8a201b7253d671240fb434cfcf1b8cce4ac1eaf150021ebdd1a56ff0",
+  "asarSha256": "cd7c1a487cb3d9b03236e1b364731e47c54a4e7def4e12a4b96913dfb67d60df",
+  "publicNetworkBlockedForTests": true,
+  "appRuntimeTests": {
+    "passed": 210,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "syntheticRendererScenarioGroups": 14,
+  "packagedSmokePassed": true,
+  "signed": false,
+  "notarized": false,
+  "pushed": false,
+  "sourceCheckDurationMs": 38060.4675,
+  "validationLogs": {
+    "source": ".cache/general-agent-validation/check-r12-offline-sequential.log",
+    "buildAndPackage": ".cache/general-agent-validation/package-r12.log",
+    "packagedSmoke": ".cache/general-agent-validation/smoke-r12-offline.log"
+  },
+  "revisionScope": "Read-only compaction uses native-counted remaining capacity after the complete protected request, plus exact scoped command-log handles, screenshot export, bundled protocol compatibility, durable Working history, workspace panels, and general-agent changes. Native task acceptance is recorded separately.",
+  "packagedSmokeScope": "Native resource/pin checks, denied-action boundary, and actual packaged Goose ACP startup of both tool extensions using a metadata-only loopback provider in a temporary workspace. No GUI, model prompt/inference, or saved-profile change.",
+  "syntheticRendererEvidence": {
+    "originalTestedAsarSha256": "39c4d025a7cf3bc8adcbb040bd33910a7a2ba0365a7538c375bdeb05cfaa0011",
+    "currentRendererAssetsUnchanged": false,
+    "scope": "14 groups passed on the preceding renderer, last exactly compared on R7. R8/R9 changed the renderer for saved tool history; R10 changed text-field spellcheck attributes. These groups have not been rerun on the current renderer and do not establish new native interaction.",
+    "comparison": [
+      {
+        "file": "dist/renderer/assets/index-CtfOBoOy.css",
+        "currentSha256": "666893ca66a1d9ebecd16174b7a0501ddf3b5f08f34f2c2a771af5b0e35740c8",
+        "precedingSha256": "666893ca66a1d9ebecd16174b7a0501ddf3b5f08f34f2c2a771af5b0e35740c8",
+        "unchanged": true
+      },
+      {
+        "file": "dist/renderer/assets/index-DaYiJwX2.js",
+        "currentSha256": "80a59a37bad23d8949e9d6be563402c3e78d910184c3ba8bfbfa72b08ed9daf8",
+        "precedingSha256": "80a59a37bad23d8949e9d6be563402c3e78d910184c3ba8bfbfa72b08ed9daf8",
+        "unchanged": true
+      }
+    ],
+    "comparisonScope": "Historical R7 asset comparison. These hashes describe the assets compared at that stage; the current R12 renderer differs and the 14 scenario groups have not been rerun."
+  },
+  "sourceCommit": "92749018ce8a4afb426d990744fa01c4a7e75079",
+  "sourceCommitScope": "Production source in this artifact is the local source commit shown here. Documentation and acceptance evidence are recorded separately.",
+  "precedingDeliveries": [
+    {
+      "builtAt": "2026-10-11T10:27:19.671336+00:00",
+      "archiveBytes": 216987288,
+      "archiveSha256": "6a1a0361cae766039e49f3f80cda33b20dfd2ab9131761943902a9bc4f7e347e",
+      "asarSha256": "cb4a43a52096461b6134cce8d7f54d30c278fa7591fb96ae661efa7194e27ba7",
+      "sourceCommit": "7608ed7758b0adb96f2b7492b15305aa8700227d",
+      "sourceCheckDurationMs": 73002.063375,
+      "validationLogs": {
+        "source": ".cache/general-agent-validation/check-r11-offline-sequential.log",
+        "buildAndPackage": ".cache/general-agent-validation/package-r11.log",
+        "packagedSmoke": ".cache/general-agent-validation/smoke-r11-offline.log"
+      },
+      "appRuntimeTests": {
+        "passed": 208,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "gooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+      "gooseManifest": {
+        "version": "1.53.0",
+        "target": "darwin-arm64",
+        "features": [
+          "rustls-tls",
+          "disable-update"
+        ],
+        "offline": true,
+        "mcpProtocolVersion": "2025-11-25",
+        "source": "vendor/goose",
+        "sha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055"
+      },
+      "nativePartialAcceptance": {
+        "packageRevision": "R11",
+        "bundleAsarSha256": "cb4a43a52096461b6134cce8d7f54d30c278fa7591fb96ae661efa7194e27ba7",
+        "bundledGooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+        "status": "partial",
+        "scope": "R11 native startup-stage snapshot: guided healthcheck repair, validated Compose and cached DB/WordPress start via normal approvals; DB healthy, WP on loopback8096. Core installation and independent acceptance were not yet established at this snapshot. Later R11 install/postcheck and 12-check acceptance passed; see nativeWordPressAcceptance and its public report.",
+        "approvedWritesCompleted": 1,
+        "savedToolCalls": 2,
+        "savedThinkingBytes": 684,
+        "savedToolStatuses": [
+          "completed",
+          "completed"
+        ],
+        "observerCreatedProjectFilesOrRanProjectCommands": false,
+        "serviceStart": {
+          "configurationValidated": true,
+          "approvedComposeStartExecutions": 1,
+          "timeoutMs": 300000,
+          "imagePullPolicy": "never",
+          "databaseHealthy": true,
+          "wordpressRunning": true,
+          "httpBind": "127.0.0.1:8096",
+          "savedCompletedToolCalls": 4,
+          "savedThinkingBytes": 1011,
+          "observerStartedOrInstalledProject": false,
+          "wordpressCoreInstallationVerified": false
+        },
+        "coreInstallationCheck": {
+          "executionsObserved": 1,
+          "exitCode": 1,
+          "installed": false,
+          "installationCommandExecuted": false,
+          "scope": "The approved R11 core is-installed query returned exit1; this is not an installed-site result or an installation action."
+        }
+      },
+      "scope": "R11 generic command-log output package. Native guided healthcheck repair and validated cached-service startup succeeded; DB healthy and WP running, core install/HTTP/login still pending at this snapshot.",
+      "retainedArchive": ".cache/general-agent-validation/delivery-r11.zip"
+    },
+    {
+      "builtAt": "2026-10-11T09:50:33.198969+00:00",
+      "archiveBytes": 216985153,
+      "archiveSha256": "57a3da1d7d6a59299c90d18bdebf2b2efad582342ba57c26b2545b8c09ee2662",
+      "asarSha256": "96a878e9f6c73c782ad148523cfb466d4bd880ca4f19fdee06039852be6e1a62",
+      "sourceCommit": "83b4572a1fee81bad0c3ae1aff38838a46625aa1",
+      "sourceCheckDurationMs": 122681.817083,
+      "validationLogs": {
+        "source": ".cache/general-agent-validation/check-r10-offline-sequential.log",
+        "typecheck": ".cache/general-agent-validation/check-r10-typecheck.log",
+        "buildAndPackage": ".cache/general-agent-validation/package-r10.log",
+        "packagedSmoke": ".cache/general-agent-validation/smoke-r10-offline.log"
+      },
+      "appRuntimeTests": {
+        "passed": 205,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "gooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+      "gooseManifest": {
+        "version": "1.53.0",
+        "target": "darwin-arm64",
+        "features": [
+          "rustls-tls",
+          "disable-update"
+        ],
+        "offline": true,
+        "mcpProtocolVersion": "2025-11-25",
+        "source": "vendor/goose",
+        "sha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055"
+      },
+      "nativePartialAcceptance": {
+        "packageRevision": "R10",
+        "bundleAsarSha256": "96a878e9f6c73c782ad148523cfb466d4bd880ca4f19fdee06039852be6e1a62",
+        "bundledGooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+        "nativeScreenshotExportPassed": true,
+        "scope": "Actual R10 guided native attempts ran three approved configuration checks; all failed on unchanged generated healthcheck syntax. Invalid repair denied; later exact-text edits failed matching and changed no file. No R10 edit, service start, or installation succeeded.",
+        "workingMouseExpansionPassed": true,
+        "workingExpansionRetainedAcrossUpdates": true,
+        "toolInputsAndResultsTogglePassed": true,
+        "authenticScreenshot": "docs/screenshots/free-local-agent-working-thinking-r10.png",
+        "approvedConfigurationCheck": {
+          "command": "docker compose --profile tools config --quiet",
+          "executed": true,
+          "executionsObserved": 3,
+          "passed": false,
+          "reason": "Generated healthcheck.test format requires CMD, CMD-SHELL, or NONE."
+        },
+        "savedToolCallsAfterDeniedRepair": 7,
+        "deniedInvalidEditApplied": false,
+        "composeUnchangedAfterDenial": true,
+        "laterRepairTurnSavedToolCalls": 6,
+        "laterExactTextEditsApplied": 0
+      },
+      "scope": "R10 visible screenshot-export and spelling-mitigation package. Genuine expanded thinking/tools captured; three config checks failed, invalid edit denied, exact-text corrections did not apply. No WordPress success."
+    },
+    {
+      "builtAt": "2026-10-11T09:10:04.435927+00:00",
+      "archiveBytes": 216982424,
+      "archiveSha256": "854215a074b127fe49417e0070af818406231707e24e04123637bcbc49f265b6",
+      "asarSha256": "17d153d1b5b4f22bd054efe6cd525fae8ff5ca3f3433baa610dace25ddfd6faa",
+      "sourceCommit": "ded1c3f83717cc6453bb77ecef7dab9cbdf2f4c9",
+      "sourceCheckDurationMs": 85285.023542,
+      "validationLogs": {
+        "source": ".cache/general-agent-validation/check-r9-offline-sequential.log",
+        "typecheck": ".cache/general-agent-validation/check-r8-typecheck-offline.log",
+        "build": ".cache/general-agent-validation/build-r9.log",
+        "packagedSmoke": ".cache/general-agent-validation/smoke-r9-offline.log"
+      },
+      "appRuntimeTests": {
+        "passed": 205,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "gooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+      "gooseManifest": {
+        "version": "1.53.0",
+        "target": "darwin-arm64",
+        "features": [
+          "rustls-tls",
+          "disable-update"
+        ],
+        "offline": true,
+        "mcpProtocolVersion": "2025-11-25",
+        "source": "vendor/goose",
+        "sha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055"
+      },
+      "nativePartialAcceptance": {
+        "packageRevision": "R9",
+        "bundleAsarSha256": "17d153d1b5b4f22bd054efe6cd525fae8ff5ca3f3433baa610dace25ddfd6faa",
+        "bundledGooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+        "scope": "R9 native correction snapshot: actual app completed one guided Compose correction through model tools and normal approval; that stage did not establish services or WordPress installation. Later R11 native installation and independent acceptance are recorded separately.",
+        "approvedWritesCompleted": 1,
+        "savedThinkingBytes": 2180,
+        "savedToolCalls": 5,
+        "savedToolStatuses": [
+          "failed",
+          "failed",
+          "completed",
+          "completed",
+          "completed"
+        ],
+        "savedInputsAndResultsPresent": true,
+        "verificationReadAfterWrite": true,
+        "nativeActivityCountObserved": 5,
+        "pendingActionsAtCompletedTurn": false,
+        "toolFailures": "Two invented command-log reads failed; no command was repeated or executed by those reads.",
+        "observerCreatedProjectFilesOrRanProjectCommands": false,
+        "savedTaskReopenedAndToolHistoryVisiblyExpanded": true,
+        "nativeCalibration": {
+          "tokensPerSecond": 12.1,
+          "backend": "metal",
+          "contextTokens": 8192,
+          "slowMode": true,
+          "availableMemoryApproxGb": 4.1,
+          "scope": "One short calibration; no sustained task-performance or peak-memory benchmark."
+        },
+        "subsequentDeniedCommand": {
+          "command": "docker compose --profile tools config --quiet",
+          "executed": false,
+          "newActionRecords": 0,
+          "scope": "Subsequent native attempt denied before execution; no automatic replay or service/install result."
+        },
+        "preservationCheck": {
+          "checkedAt": "2026-10-11T09:45:44.019594+00:00",
+          "regularSavedChats": 5,
+          "chatStoreUnchanged": true,
+          "undoRecordsCompared": 6,
+          "undoRecordsUnchanged": true,
+          "modelBytesUnchanged": true,
+          "modelBytes": 2740937888,
+          "previewInterruptedDownloadBytesUnchanged": true,
+          "previewInterruptedDownloadBytes": 156942952,
+          "scope": "Read-only size/hash/undo comparison; no new complete model checksum or regular-profile interactive upgrade is inferred."
+        }
+      },
+      "scope": "R9 fixed bundled MCP protocol package: native guided Compose correction and durable five-tool history passed; later configuration command denied before execution. No installed WordPress result.",
+      "retainedArchive": ".cache/general-agent-validation/delivery-r9.zip"
+    },
+    {
+      "builtAt": "2026-10-11T08:30:38.602111+00:00",
+      "archiveBytes": 216979366,
+      "archiveSha256": "d97b243df26f292cb4bf4b0c42ffd250a389a4366c668df6059c5102047677ab",
+      "asarSha256": "17d153d1b5b4f22bd054efe6cd525fae8ff5ca3f3433baa610dace25ddfd6faa",
+      "sourceCommit": "9c0b08278a8dddd8c4908081e5da166965e0ee7e",
+      "sourceCheckDurationMs": 82591.695833,
+      "validationLogs": {
+        "source": ".cache/general-agent-validation/check-r8-offline-sequential.log",
+        "typecheck": ".cache/general-agent-validation/check-r8-typecheck-offline.log",
+        "build": ".cache/general-agent-validation/build-r8.log",
+        "packagedSmoke": ".cache/general-agent-validation/smoke-r8-offline.log"
+      },
+      "appRuntimeTests": {
+        "passed": 204,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "gooseSha256": "51232628849f2a1ad6264378b90ac3120f09b4b50731c9690e738b4697c289e7",
+      "scope": "R8 retained-tool-history package. Two native attempts failed at cold MCP initialization before actions. This shares the R9 ASAR but uses the preceding Goose executable, so archive/backend hashes distinguish it."
+    },
+    {
+      "builtAt": "2026-10-11T08:00:29.006088+00:00",
+      "archiveBytes": 217062858,
+      "archiveSha256": "58100345e5c85920c0ccbf0c2978a9c38ac42e1cb1a479c3e042902d9127ca42",
+      "asarSha256": "2536ed0291c5ae5eb8b53a9a23383df30dce76f9c2c557fc81fb4bab78f2d16c",
+      "sourceCommit": "85e5e7580986024561713baf70c34a27914ce859",
+      "sourceCheckDurationMs": 10651.581958,
+      "validationLogs": {
+        "source": ".cache/general-agent-validation/check-native-folder-offline.log",
+        "packagedSmoke": ".cache/general-agent-validation/smoke-native-folder-offline.log",
+        "rendererAssetComparison": ".cache/general-agent-validation/native-folder-renderer-assets.json"
+      },
+      "scope": "R7 standalone-directory-panel package. Native Create folder, mouse/Space/Enter Working activation, and initial model/tool screenshots were captured on this exact ASAR.",
+      "appRuntimeTests": {
+        "passed": 198,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      }
+    },
+    {
+      "builtAt": "2026-10-11T07:39:34.159184+00:00",
+      "archiveBytes": 217062599,
+      "archiveSha256": "9afeee10ea049ca7a175cfc3676fc6e6daebc502d1a8c0db2f27f938317ef7a2",
+      "asarSha256": "93947053968fd1c631434f7ad533bdb2e60eccb0ca5b7a27646ab73ab7daa142",
+      "sourceCommit": "4d68a4fd4d506b678ebd5746bd57981f786a192a",
+      "sourceCheckDurationMs": 7279.73375,
+      "validationLogs": {
+        "source": ".cache/general-agent-validation/check-folder-final-offline.log",
+        "packagedSmoke": ".cache/general-agent-validation/smoke-folder-final-offline.log"
+      },
+      "scope": "Preceding file-filter-reset package. Native observations and any component checks keep this ASAR provenance; this is not the current delivery artifact.",
+      "appRuntimeTests": {
+        "passed": 198,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      }
+    }
+  ],
+  "gooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+  "gooseManifest": {
+    "version": "1.53.0",
+    "target": "darwin-arm64",
+    "features": [
+      "rustls-tls",
+      "disable-update"
+    ],
+    "offline": true,
+    "mcpProtocolVersion": "2025-11-25",
+    "source": "vendor/goose",
+    "sha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055"
+  },
+  "nativePartialAcceptance": {
+    "packageRevision": "R12",
+    "bundleAsarSha256": "cd7c1a487cb3d9b03236e1b364731e47c54a4e7def4e12a4b96913dfb67d60df",
+    "bundledGooseSha256": "3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055",
+    "status": "partial",
+    "scope": "Current R12 app completed dated uploads directory creation/writability check, cached digest inspection, and RUNNING.md handoff through normal approvals; independent read-only checks passed. Final native Chat/general file/control checks remain pending. R11 installed-site acceptance retains its own provenance.",
+    "nativeSavedToolCalls": 7,
+    "nativeThinkingBytes": 2984,
+    "handoffVerified": true,
+    "uploadsPermissionVerified": true,
+    "durableHistoryReopenVerified": true,
+    "mouseWorkingExpansionVerified": true,
+    "nativeFolderCreationVerified": true,
+    "nativeFolderCreation": {
+      "observedAt": "2026-10-11T11:27:02.914092+00:00",
+      "name": "general-file-test",
+      "nativeParentPickerConfirmed": true,
+      "directoryCreatedByApp": true,
+      "persistedWorkspaceSelectionMatches": true,
+      "observerCreatedDirectory": false,
+      "initialFileCount": 0
+    }
+  },
+  "packagedSmokeStatus": "passed",
+  "nativeWordPressAcceptance": {
+    "passed": true,
+    "revision": "R11",
+    "checkCount": 12,
+    "completedAt": "2026-10-11T10:53:55.352Z",
+    "publicReport": "docs/wordpress-native-acceptance.json",
+    "scope": "Guided native app tasks with normal approvals; exact R11 source/app/backend provenance in report. Final R12 native Chat/file/control checks remain pending.",
+    "uploadDirectoryWarningObserved": true,
+    "coreInstallExecutions": 1,
+    "nativePostInstallCheckExitCode": 0,
+    "installTurnFinalizedAt": "2026-10-11T10:58:35.439Z",
+    "installTurnSavedTools": 5,
+    "installTurnThinkingBytes": 1433,
+    "mediaUploadWorkflowVerified": false,
+    "uploadsPermissionVerifiedOnR12": true,
+    "handoffVerifiedOnR12": true
+  },
+  "latestProfilePreservation": {
+    "checkedAt": "2026-10-11T11:20:59.110447+00:00",
+    "scope": "Read-only final persisted regular profile/preview file preservation; no huge GGUF rehash or profile mutation.",
+    "regularChatStoreUnchanged": true,
+    "regularSavedChats": 5,
+    "undoRecordsCompared": 6,
+    "undoRecordsUnchanged": true,
+    "modelBytes": 2740937888,
+    "modelBytesUnchanged": true,
+    "modelRehashedInThisCheck": false,
+    "previewInterruptedDownloadBytes": 156942952,
+    "previewInterruptedDownloadUnchanged": true
+  },
+  "nativeGeneralFileAcceptance": {
+    "revision": "R12",
+    "status": "partial",
+    "scope": "One approved file creation succeeded. An incorrect additional-text edit was intentionally denied and left the original bytes unchanged. A fresh exact correction was approved and applied once; independent readback found Local agents can build tools. The final assistant readback state was not captured after the native approval surface stopped refreshing.",
+    "approvedCreationsApplied": 1,
+    "approvedEditsApplied": 1,
+    "incorrectEditDenied": true,
+    "deniedEditChangedFile": false,
+    "commandsExecuted": 0,
+    "savedToolCallsInFirstAttempt": 4,
+    "savedThinkingBytesInFirstAttempt": 980,
+    "finalFileSha256": "f6bdd21ecd9728d3da5d9d1a070dba34d204524ba6adf0dde015c44d14a884de",
+    "finalAssistantReadbackCaptured": false
+  }
+}

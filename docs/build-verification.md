@@ -1,6 +1,104 @@
 # Free Local Agent verification status
 
-## Current 0.4.0-alpha.2 Working/folder update — 2026-10-10
+## Current 0.4.0-alpha.3 general-agent update — 2026-10-11
+
+The native WordPress example **passed 12/12 independent checks** on the
+preceding R11 package after guided separate app tasks and normal approvals.
+Installed WP7.1.3, healthy DB, intended title, homepage HTTP200, actual login
+form HTTP200, and official image digests were verified without observer setup
+mutations. A later native R12 task repaired uploads permissions and created the
+verified handoff; read-only checks confirmed writable permissions as the web
+user. Browser media upload was not tested. Final R12 native Chat/file/control
+checks remain pending. Exact scope
+and provenance are in the [native acceptance record](wordpress-native-acceptance.json).
+
+The latest recorded alpha.3 revision passed strict TypeScript and **210/210
+app/runtime tests**, with no failures, skips, or cancellations, public
+networking denied, and loopback allowed. The run took **38060.4675 ms**.
+This includes **10 renderer-flow helper tests**. Its rebuilt macOS package
+passed offline native smoke. The ZIP is **216,988,256 bytes**, SHA-256
+`8dd30c4b8a201b7253d671240fb434cfcf1b8cce4ac1eaf150021ebdd1a56ff0`;
+the ASAR SHA-256 is
+`cd7c1a487cb3d9b03236e1b364731e47c54a4e7def4e12a4b96913dfb67d60df`.
+The [package record](general-agent-package.json) identifies this artifact,
+including retained Working tool history, standalone macOS workspace directory
+panels, cancellation during model
+verification, and actionable missing-log recovery. It is stored in
+`release/general-agent-delivery/`. It was built from local production-source
+commit `9274901`; its native folder-to-task acceptance is recorded separately.
+Its Goose executable SHA-256 is
+`3f4cbe2770ebf24a11248f82fa825f0ed969ab9d74912f8f6104dc067d840055`.
+The offline build pins bundled ACP tool initialization to MCP `2025-11-25`.
+A real nine-second delayed-tool-start regression passed, and packaged smoke
+started the actual Goose ACP tool extensions against a metadata-only local
+endpoint without sending a prompt or executing an action.
+
+Read-only compaction now derives its summary allowance from native-counted
+remaining capacity after the full protected request, rather than a fixed
+percentage of context. Protected instructions/current/pending/command/edit
+exchanges stay exact; summarization never executes or replays actions. Two
+new capacity tests passed in the current 210-test suite.
+
+The latest command result includes a durable UUID, an exact unique `log-xxxxxxxx`
+handle when available, and explicit completeness/paging metadata. Unknown,
+ambiguous, malformed, traversal, and other-chat references remain rejected;
+output reads never execute commands. Three additional regression tests passed
+within the current suite.
+
+The preceding R10 app added **File → Save screenshot…**. A native export saved
+the actual app viewport as PNG through its enabled Save dialog. Native
+spellcheck and automatic text-field correction/capitalization are disabled as
+an input-latency mitigation; the observed spell-server timeout does not prove
+the cause of earlier stale automation or screenshots.
+
+During an actual R10 model turn, Working stayed expanded while file reads and
+an approved configuration check updated; tool inputs/results toggled visibly.
+The command ran once and failed on the generated healthcheck’s invalid format.
+A matched native screenshot records that validation/repair stage before
+WordPress was installed.
+
+The preceding R11 app then completed one approved healthcheck edit correctly in
+a bounded guided task. Its saved exchange retained two completed tools and
+684 thinking bytes. The next native task validated Compose and started
+services once through normal approvals; independent read-only inspection found
+the DB healthy and WordPress running on loopback8096. Four completed tools and
+1,011 thinking bytes persisted. Core installation and HTTP/login acceptance
+were not yet established at that stage; the later native install and 12-check
+validation passed.
+
+The preceding renderer passed **14 separate synthetic Electron scenario groups** for
+first-model setup, stale-status protection, profile identity, Research
+controls, retained-model startup, expanded Working, scrolling, model/preflight
+recovery, queued-approval cancellation, and first-chunk disclosure transition.
+The command-log and folder-picker fixes through R7 left those tested renderer
+assets unchanged. R8 then changed the renderer to retain tool history; these
+14 scenario groups have not been rerun for the current renderer; R10 also
+changes text-field spellcheck attributes. Six new durable-history tests
+passed as part of the current 210-test suite.
+
+The preceding package passed real local chat and approved file
+create/edit/readback with public networking denied. A following revision, before
+the folder-picker correction, returned exactly `42` in a component check, but
+that run's subsequent file task was
+interrupted at an unresolved approval and its report was not finalized. These
+component checks do not establish the visible workflow. Initial native
+empty-profile onboarding and task-workspace screenshots are retained. The preceding R7
+package also created and selected a new workspace through its native parent
+picker. During a real Qwen task, mouse, Space, and Enter toggled Working, its
+expansion persisted across streamed thinking and tool updates, and an approved
+Docker version command completed. A fully installed WordPress site was not
+yet verified by that R7 prerequisite stage.
+The preceding R9 app subsequently completed one guided approved Compose
+correction and verified it with a file read. Its saved exchange retained
+2,180 thinking bytes and five named tool activities with inputs/results.
+That R9 correction did not establish service startup or WordPress installation.
+See the [general-agent validation record](general-agent-validation.md) for the
+current acceptance matrix and provenance. Six incomplete WordPress attempts
+include image download and inspection, denied unsupported commands/edits, and
+one completed healthcheck edit followed by repeated missing-log reads. Denied
+actions did not execute or replay. Changes remain local.
+
+## Earlier 0.4.0-alpha.2 Working/folder update — 2026-10-10
 
 Expandable model thinking and explicit workspace creation passed **141/141**
 app/runtime tests with public networking denied, **12/12** separate renderer

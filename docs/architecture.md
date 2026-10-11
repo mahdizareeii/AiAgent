@@ -1,6 +1,6 @@
 # Architecture and trust boundaries
 
-Free Local Agent 0.4.0-alpha.2 uses a custom Electron/React desktop, the Goose v1.53.0 agent
+Free Local Agent 0.4.0-alpha.3 uses a custom Electron/React desktop, the Goose v1.53.0 agent
 engine, a bundled llama.cpp server, and a native research/file sidecar. Goose is
 built from the vendored source with default features disabled and only
 `rustls-tls,disable-update`; online model metadata and telemetry features are not
@@ -33,6 +33,9 @@ the composer exposes mode, workspace, model, and tool controls. **Plugins** is a
 separate page for optional abilities. **Read-only research** is offered when the
 Research plugin is enabled, while legacy saved research tasks remain accessible
 with it disabled. This interface does not imply Codex-equivalent model quality.
+Research activation and web permission live in Plugins; the composer has no
+duplicate Research toggle. **Find files & text** in Tools is local workspace
+search and retains the existing `projectSearch` preference.
 
 ## Inference and model fit
 
@@ -51,6 +54,25 @@ Studio redistributable runtime DLLs, and Ubuntu packages declare required runtim
 libraries, including `libc6 >= 2.34` and `libstdc++6 >= 12` (GLIBCXX 3.4.30).
 These version floors match the audited executable and bundled native libraries.
 The app owns its loopback inference child and does not use Ollama.
+
+Desktop status carries the runtime state and error code, model-discovery errors,
+and storage profile identity with app-data and model-cache paths. Runtime readiness
+means the bundled engine initialized; it does not imply that model weights exist
+or that inference has loaded them. First launch with no weights is model onboarding,
+and engine initialization is shown as a preparation state. Real engine and cache
+inspection failures keep actionable errors. Status snapshots use the latest engine
+state after asynchronous discovery; the renderer accepts only its latest status
+request so older responses cannot overwrite newer readiness.
+
+Model verification precedes task persistence and turn/tool construction. Missing
+weights do not become an engine failure. Failed inspection refreshes status, and
+known integrity failures block the affected catalog row rather than marking
+unrelated models invalid. Curated rows offer a verified replacement download;
+imported rows recover through GGUF import. Successful verification clears that
+row's failure and stale recoverable model errors in an initialized runtime,
+without clearing genuine engine errors or restarting inference. Choosing a usable
+model enables sending in the current window. The renderer retains the draft and
+attachments after rejected preflight, and setup never replays a task or its actions.
 
 Hardware detection combines system memory, available memory, CPU/GPU information,
 and free storage. Working-memory estimates reserve room for the operating system
@@ -87,13 +109,25 @@ current tool and stage activity. Up to 64 KiB of supplied thoughts per reply are
 saved as a separate chat field, including partial interrupted replies. Only
 answer content enters subsequent conversation prompts and compaction. Models
 that provide no thought text show an explicit unavailable state; the app does
-not manufacture thinking text. Tool/stage activity is current-run UI state and
-is not restored when a chat is reopened.
+not manufacture thinking text. Named tool activity is saved with its assistant
+exchange, including supplied inputs/results and execution status, and restored
+when a chat is reopened. Records retain up to 256 calls and 16 KiB each for
+input/output, with truncation notices. Later updates keep the original name
+and input when omitted; unfinished calls become interrupted at turn completion.
+These bounded display records never drive execution or replay. Processing-stage
+progress remains transient UI state.
+The disclosure keeps its expansion through streaming updates and shows the active
+tool or approval state instead of a stale preparation stage. Conversation following
+pauses while Working is expanded or the reader scrolls away from the bottom.
+Tool disclosures expose their supplied inputs, outputs, and execution status;
+approvals remain separate main-process decisions.
 
 ## Workspace selection
 
 **Add folder** uses a native existing-directory picker. **Create folder** accepts
-a validated single folder name and opens a native parent-directory picker. The
+a validated single folder name and opens a native parent-directory picker. On
+macOS both pickers explicitly clear native file-type restrictions while keeping
+`openDirectory`, so their selection remains folder-only. The
 host creates one new child with nonrecursive `mkdir`, checks canonical paths and
 directory identities, saves the selection, and then grants access to that child.
 An existing file or directory is never overwritten. Cancelling leaves selection
@@ -105,10 +139,20 @@ Saved tasks retain their own folder; changing it requires a new task.
 
 A local gateway serializes model calls and asks the engine to count the templated
 input tokens. It reserves output capacity and a safety margin. Older completed
-exchanges can be summarized locally to make space; active instructions and current
-tool context must remain intact. If required context still does not fit, the task
-fails with a smaller-request/model-choice path. Allocation failures have a bounded
-lower-profile retry; this is not a guarantee that a large model can load.
+conversation and completed read-only activity can be summarized locally to make
+space, including earlier reads within the current turn. Eligible reads are an
+allowlist of app-owned file/PDF inspection, listing, search, and saved-command-log
+tools with uniquely paired, complete call/results. Unknown tools, ambiguous or
+partial batches, and the latest tool group remain exact. Summaries retain exact
+read-call IDs, arguments, and bounded source locations alongside lossy findings.
+
+System instructions, the current user request, tool schemas, all command/edit
+calls and results, and pending tool exchanges are retained exactly. Compaction
+does not execute tools or restart a turn. Its local summarization work is bounded;
+if the retained context still does not fit, the task reports a smaller-request
+path rather than silently removing action history. Allocation failures have a
+bounded lower-profile inference retry; this is not a guarantee that a large
+model can load.
 
 Attached text/PDF sources are inspected for hashes, then read using bounded
 continuation cursors, including long lines and long PDF pages. Each excerpt is
@@ -130,7 +174,7 @@ edit snapshots are independent durable app data, not a resumed Goose database.
 
 ## Tool preferences and action review
 
-The user chooses file reading, project search, file editing, and terminal in
+The user chooses file reading, **Find files & text**, file editing, and terminal in
 **Tools**. The **Plugins** page separately stores **Enable Research** and
 **Allow web research**. **Both research settings default to false.** Disabled tools
 are omitted from the
@@ -161,6 +205,13 @@ The shipped Research plugin is app-owned; this is not an arbitrary external
 plugin installer. Chat-only imports
 receive local-context instructions and never advertise tools they cannot call.
 
+General Agent instructions require prerequisite/version inspection, implementation,
+appropriate validation, and repair of observed failures using the offered tools
+and approvals. Empty workspaces are supported. The agent must report tool-backed
+outcomes and precise observed blockers, respect denied actions, and avoid replaying
+completed commands or edits. WordPress is a task-verification example, with no
+dedicated generator, tool, or policy branch.
+
 Saved state version 3 persists plugin and web preferences independently. Missing
 plugin settings in version 1/2 or unversioned legacy stores preserve prior explicit
 web consent by enabling Research during migration. Missing plugin settings in a
@@ -175,6 +226,19 @@ arguments and a diff or command. Denial leaves the action unexecuted; approval
 applies once. Unknown/consumed requests cannot grant later access. Writes are
 bounded to the selected project and have pre-edit snapshots. Saved coding chats
 restore their per-chat undo history.
+
+Each proposed command includes its execution time limit in the reviewed arguments.
+The default is `timeout_ms: 60000`; an explicit integer from 100 to 600000 ms
+permits longer dependency work, with a maximum of ten minutes. The native command
+bridge and Goose reviewed-action extension have a 1500-second request deadline
+so approval review and a permitted long command fit within the transport budget.
+Other native reviewed-action requests have a 900-second deadline; the separate
+read/research sidecar retains its own limits. These request deadlines do not
+extend the approved command's execution limit. Pending approval still expires
+after ten minutes. Disconnect, cancellation, timeout, or an unconfirmed action
+result stops the agent turn, records interruption where applicable, and never
+automatically repeats completed or partially executed work. Command logs remain
+available through paged read-only excerpts.
 
 **Terminal commands are not OS sandboxed.** An approved command runs as the user's
 account; its project working directory does not constrain access to other files,
@@ -210,6 +274,10 @@ Chats, model files, imported-model records, checkpoint excerpts/summaries, and e
 snapshots persist in the app's userData directory. The app adds no disk encryption.
 Users should grant only material they intend the local model to process and rely
 on operating-system account/storage protection for local data.
+The normal profile retains the legacy `Local Agent` application-data name across
+the public rename, preserving weights, chats, grants, and undo records. An explicit
+`--user-data-dir` resolves to an independent profile with visible storage identity.
+No automatic copying or merging occurs between regular and test profiles.
 
 ## Validation and distribution
 

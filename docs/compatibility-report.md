@@ -1,6 +1,113 @@
 # Free Local Agent compatibility report
 
-## Current 0.4.0-alpha.2 Working/folder update — 2026-10-10
+## Current 0.4.0-alpha.3 general-agent update — 2026-10-11
+
+A guided native R11 WordPress setup passed **12 independent acceptance
+checks** with Qwen3.5 4B: installed core, healthy DB, intended title, loopback
+homepage HTTP200, real loginform HTTP200, and official ARM64 image digests.
+It required bounded separate requests and corrections. This proves the tested
+workflow with supervision, not one-prompt autonomy. The initial install
+warned about upload-directory permissions. A later native R12 task repaired
+them and created the handoff; independent read-only checks confirmed writable
+permissions as the web user. Browser media upload was not tested. Final R12
+native Chat/file/control checks remain pending. The
+[sanitized native record](wordpress-native-acceptance.json) preserves exact
+package provenance and read-only verification scope.
+
+On this Apple M5 / 24 GiB macOS arm64 machine, the latest recorded alpha.3
+revision passed **210/210 app/runtime tests**, including **10 renderer-flow
+helper tests**, with no failures, skips, or cancellations, public networking
+denied, and loopback allowed. The run took **38060.4675 ms**. Its rebuilt macOS
+package passed offline native smoke. The ZIP is **216,988,256 bytes**, SHA-256
+`8dd30c4b8a201b7253d671240fb434cfcf1b8cce4ac1eaf150021ebdd1a56ff0`;
+the [package record](general-agent-package.json) records the matching ASAR hash.
+This artifact includes retained Working tool history, standalone macOS workspace
+directory panels, cancellation during
+model verification, and actionable missing-command-log guidance. The latest
+Goose build also pins ACP tool initialization to MCP `2025-11-25`, repairing
+the cold-start protocol retry observed before actions in R8. A real delayed
+startup regression and actual packaged ACP tool startup passed without
+model inference.
+
+R10 added real app viewport PNG export through **File → Save screenshot…** and a
+native Save dialog; an actual export passed. It disables native spellcheck and
+automatic correction/capitalization as an input-latency mitigation. Observed
+spell-server timeouts do not establish the cause of previous automation/capture
+failures.
+
+The preceding R10 native turn showed streamed thinking and named tool activity,
+retained Working expansion across updates, and visibly toggled tool inputs/results.
+An approved configuration check executed once and reported invalid generated
+healthcheck syntax. Its genuine screenshot records validation/repair in progress
+before the later R11 service startup and installation.
+
+R12 budgets read-only summaries against the complete native-counted request’s
+remaining capacity, retaining protected exchanges exactly. Two new capacity
+regressions passed; the current native task acceptance remains pending.
+
+R11 makes command results explicit about saved log identity, whether all output
+is shown, and the next byte offset. Returned short handles resolve only an
+exact unique log in the current chat; rejection and no-replay protections
+remain in force. Three new regression tests cover this generic output path.
+The preceding R11 app then completed a correct approved healthcheck edit, with
+two completed tools and 684 thinking bytes saved. A following native task
+validated Compose and started the cached services once; independent inspection
+found the DB healthy and WordPress running on loopback8096. Core installation
+and HTTP/login acceptance were not yet established at that stage; the later
+native install and 12-check validation passed.
+
+The preceding renderer passed **14 separate synthetic scenario groups**. The
+R8 renderer change retains tool history; those groups have not been rerun for
+the current renderer, which also changes spelling attributes in R10. Six
+new durable-history tests passed within the current 210-test suite. Native
+empty-profile onboarding and workspace captures are retained. The preceding R7
+package completed native folder creation and selected the new workspace.
+An R7 Qwen task visibly expanded Working using mouse, Space, and Enter,
+retained expansion across streaming/tool updates, and completed an approved
+Docker version command. That R7 prerequisite stage did not establish an
+installed site; desktop capture and interaction have been intermittent.
+
+The preceding package's real component Chat and approved file
+create/edit/readback passed with public networking denied. Its short calibration
+measured **37.902 tokens/sec**. Earlier component samples of **30.393** and
+**32.9375 tokens/sec** retain their original package provenance. The
+preceding missing-log-fix package returned exactly `42` and calibrated at
+**38.023 tokens/sec** before
+its next file task was interrupted at an unresolved approval. That run was not
+finalized and does not establish a passing file or WordPress task. All samples
+used Metal / 8K context / batch 256 / microbatch 64. Each is one short
+calibration, not a latency distribution or peak-memory benchmark.
+
+On 2026-10-11 the preceding missing-log-fix build selected an existing test
+workspace through the native picker and displayed a short **28.7 tokens/sec**
+calibration. The preceding file-filter-reset build retained its folder/model selection
+but requested recalibration. These are partial native observations, with no
+completed Agent turn, expanded Working, or new task screenshot.
+
+The preceding R8 app subsequently measured a short **7.7 tokens/sec** calibration
+with Metal, an **8192-token** context, and Slow mode enabled. The hardware
+refresh reported approximately **4.1 GB available memory** on this 24 GiB
+machine. This is one sample under active memory pressure, not a sustained task
+speed or a comparative benchmark. A native repair/install request was submitted
+at that stage; calibration did not establish its completion.
+
+The preceding R9 app completed a guided approved file correction and, after
+reopening the saved task, visibly expanded Thinking to show its five named tool
+records. Its new short calibration measured **12.1 tokens/sec** with Metal,
+8192-token context, Slow mode, and approximately 4.1 GB available memory. This
+remains a single calibration under active memory pressure, not task throughput.
+That R9 correction did not establish service startup or WordPress installation.
+
+Six incomplete WordPress component attempts are recorded. A continuation
+downloaded all three images, but unsupported edits and an incorrect inspection
+command were denied before execution. A later approved healthcheck edit was
+preserved, followed by repeated reads of a missing command log and cancellation.
+The tested 4B model needs smaller guided steps and independent validation; those
+component attempts did not establish an installed site. Windows/Linux native execution remains
+pending. See the [general-agent validation record](general-agent-validation.md)
+for current scope and gaps; earlier measurements below retain their versions.
+
+## Earlier 0.4.0-alpha.2 Working/folder update — 2026-10-10
 
 The macOS arm64 update passed **141 app/runtime tests**, **12 separate renderer
 scenario groups**, and the final offline packaged smoke. A native Qwen3.5 4B run

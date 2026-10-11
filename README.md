@@ -12,7 +12,7 @@ model server is required. Model weights are a separate download or local GGUF
 import. Once a compatible model is installed, chat and local file work can run
 offline.
 
-**Current version: 0.4.0-alpha.2.** macOS Apple Silicon is the tested platform.
+**Current version: 0.4.0-alpha.3.** macOS Apple Silicon is the tested platform.
 Windows and Linux packaging/CI is configured; native validation is still pending.
 
 ## What Free Local Agent does
@@ -42,7 +42,7 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 - **Choose a model for this computer.** Hardware detection and model cards explain
   memory fit, quantization, download size, licenses, and tool compatibility.
   Optional calibration checks tool calling and measures generation speed.
-- **Control the utilities.** **Tools** controls file reading, project search,
+- **Control the utilities.** **Tools** controls file reading, **Find files & text**,
   editing, and terminal commands. These local Agent tools work independently of
   the optional research plugin.
 - **Add research when needed.** Open **Plugins → Enable Research** for a bundled
@@ -54,6 +54,11 @@ Windows and Linux packaging/CI is configured; native validation is still pending
   saved tasks in a sidebar, the conversation in the center, and the composer at
   the bottom. Mode, workspace, model, and tool controls sit beside your message.
   The light/dark theme preference is remembered locally.
+- **Start without a model.** A new installation offers model download or import.
+  **Choose model** keeps your draft and attachments while you finish setup.
+  Engine preparation and genuine failures have separate status messages.
+  Isolated test profiles identify their separate storage instead of appearing
+  to have lost models or chats from your regular profile.
 
 | Mode | Use it for |
 | --- | --- |
@@ -63,20 +68,72 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 
 ## Workspace
 
+![Free Local Agent R10 showing expanded thinking and named tools during validation](docs/screenshots/free-local-agent-working-thinking-r10.png)
+
+*Actual preceding R10 app during a guided task. **Working** shows model-supplied
+thinking, completed file reads, and an approved configuration command with its
+failure status. Tool inputs/results are expandable, and Working stays open
+through updates. The generated healthcheck needs repair; this capture does not
+show an installed WordPress site.*
+
+![Free Local Agent R12 running a general file task with Working visible](docs/screenshots/free-local-agent-r12-working-thinking.png)
+
+*Actual R12 packaged app in the isolated validation profile. The general file
+task is running locally in `general-file-test`; the app shows the live Working
+state and activity count while the model reads and edits the file.*
+
+![Free Local Agent 0.4.0-alpha.3 with a newly created workspace selected](docs/screenshots/free-local-agent-created-workspace-r7.png)
+
+*Actual R7 packaged app after **Create folder** completed through its native
+parent picker. `wordpress-app-acceptance` is selected in the separate validation
+profile. Qwen3.5 4B is ready for calibration; no task is running in this capture.*
+
+![Expanded Working during an actual local-model task](docs/screenshots/free-local-agent-working-thinking-r7.png)
+
+*Actual Qwen3.5 4B task in the R7 app. **Working** is expanded while model
+thinking streams and a named tool activity is shown. Mouse, Space, and Enter
+activation were visibly checked; the disclosure stayed expanded across tool
+updates. This prerequisite stage does not establish an installed WordPress site.*
+
+<details>
+<summary>Earlier alpha.3 workspace and folder-dialog captures</summary>
+
+![Free Local Agent 0.4.0-alpha.3 workspace with task sidebar, isolated-profile banner, Qwen model selection, and composer](docs/screenshots/free-local-agent-workspace-alpha3.png)
+
+*Actual alpha.3 packaged workspace in a separate test profile, captured before
+the command-log and folder-picker repairs. Its renderer assets stayed unchanged
+through R7; R8 subsequently added durable tool history. Qwen3.5 4B
+is selected and the local engine is ready; this window still requests tool
+calibration and has no workspace folder selected. The capture shows the current
+interface, not a completed task or expanded Working.*
+
+![Free Local Agent 0.4.0-alpha.3 Create workspace folder dialog](docs/screenshots/free-local-agent-create-folder-alpha3.png)
+
+*Actual alpha.3 folder dialog before entering a name. It opens a native parent
+picker afterward. This capture verifies the displayed controls; completing
+native folder creation was not established by this earlier capture.*
+
+</details>
+
+<details>
+<summary>Earlier alpha.2 workspace capture</summary>
+
 ![Free Local Agent 0.4 workspace with Add folder, Create folder, task sidebar, and bottom composer](docs/screenshots/free-local-agent-workspace.png)
 
 *Actual 0.4.0-alpha.2 packaged macOS workspace, captured from a separate initial
 profile before selecting a model. Research starts off. This is a native screenshot,
 not a mocked conversation.*
 
+</details>
+
 ## Models and hardware
 
-![Free Local Agent 0.3 model setup showing Apple M5 hardware, local runtime status, model fit labels, and GGUF import](docs/screenshots/free-local-agent-models.png)
+![Free Local Agent 0.4.0-alpha.3 first-model setup with explicit isolated-profile storage, hardware assessment, and GGUF import](docs/screenshots/free-local-agent-first-model.png)
 
-*Actual 0.3 Models & setup screen from an isolated validation profile on an Apple M5
-with 24 GB RAM. The 3.8 GB
-available-memory reading was a snapshot while a separate model validation run
-was active; it is not the computer's total RAM or a fixed model requirement.*
+*Actual alpha.3 native onboarding from a separate test profile on an Apple M5
+with 24 GB RAM. The engine was still preparing when this frame was captured;
+available memory and provisional hardware/model-fit values are snapshots. This
+is an empty-model setup screen, not a completed inference or task check.*
 
 | Model | Quantization | Approximate download | Estimated working memory |
 | --- | --- | --- | --- |
@@ -108,7 +165,7 @@ still process attached files through the app's local reading stages.
 | Utility | Access and behavior |
 | --- | --- |
 | File and PDF reading | Reads files you attach or grant; works in every mode. Text PDFs only. |
-| Project search | Searches the selected workspace in Agent mode. Read-only searches need no per-action approval. |
+| Find files & text | Searches filenames and text in the selected workspace in Agent mode. Read-only searches need no per-action approval. |
 | File editing | Proposes workspace changes in Agent mode. Each edit, write, or new-file batch needs approval; saved file snapshots support undo. Creation batches cannot replace existing files. |
 | Terminal commands | Shows the proposed command in Agent mode and asks for approval each time. Commands run as your operating-system account. |
 | Web research | Available in Agent and Read-only research only with **Enable Research** and **Allow web research** turned on and a validated tool-capable model. Searches and public-page fetching use the internet. Queries go to DuckDuckGo; fetched URLs go to the source sites. |
@@ -129,7 +186,7 @@ source hashes and never automatically repeats an agent edit or command.
 
 ## Get started
 
-For a packaged macOS build, unzip `Free Local Agent-0.4.0-alpha.2-arm64-mac.zip`, move
+For a packaged macOS build, unzip `Free Local Agent-0.4.0-alpha.3-arm64-mac.zip`, move
 `Free Local Agent.app` to Applications, and open it. Apple Silicon and macOS 13.3 or newer are
 required. This alpha is unsigned and not notarized.
 
@@ -148,8 +205,14 @@ source builds, packaging, storage locations, and permission boundaries.
 Expand **Working** during a task to inspect its progress. Afterward, model
 thinking can be expanded again and restored when you reopen the conversation.
 Only model-supplied text is shown; the app does not invent reasoning. Thinking
-storage is bounded to 64 KiB per reply. Current tool/stage activity is not saved
-as conversation history and is not restored on reopening a task.
+storage is bounded to 64 KiB per reply. Named tool calls and their supplied
+inputs/results are also saved with the assistant exchange and restored when a
+task is reopened. The display retains up to 256 calls and 16 KiB each for input
+and output, with visible truncation notices. Processing-stage progress remains
+transient; saved activity never causes an action to run again.
+
+To save a real PNG of the app for feedback or documentation, choose
+**File → Save screenshot…** and select a location in the native Save dialog.
 
 For a task that depends on changing software:
 
@@ -168,15 +231,16 @@ not update model weights or install application updates. See the
 
 For example, in an empty Agent workspace:
 
-> Create a local WordPress project here. Inspect the available tools, create the
-> setup and a small custom theme, then run the checks you can. Tell me what still
-> needs installing before the site can start.
+> Build a small website for my project. Inspect the available tools, create the
+> files, run it locally, and verify the result. Report any concrete blockers.
 
 Approve the proposed file batch and any setup commands after reviewing them.
-Creating a scaffold produces project files; running WordPress also requires its
+Creating a scaffold produces project files; running a project also requires its
 runtime and dependencies. Those must already be installed or installed through
 approved commands, which may need the internet. See the
-[WordPress walkthrough](docs/setup-guide.md#creating-a-wordpress-project).
+[WordPress verification example](docs/setup-guide.md#creating-a-wordpress-project).
+WordPress is one example task; the agent has general file, command, and research
+tools rather than a dedicated WordPress workflow.
 
 ## How local is it?
 
@@ -194,49 +258,64 @@ is retained to preserve existing installations. The app adds no disk encryption.
 
 ## Validation and current limits
 
-The [0.4.0-alpha.2 Working and folder validation record](docs/working-folders-validation.md)
-tracks expandable model thinking and native workspace creation. The current
-package and update are local artifacts; this update has not been pushed or
-published as a GitHub release. The previous
-[0.4.0-alpha.1 workspace and plugin validation record](docs/workspace-plugin-validation.md)
-tracks the redesigned interface and independent research controls. The model
-setup image above is historical 0.3 evidence, not a capture of the new workspace.
+A **guided sequence of real native Agent tasks with Qwen3.5 4B** created,
+repaired, started, and installed a local WordPress project. Independent
+validation passed **12/12 checks**: valid configuration, healthy database,
+installed WordPress **7.1.3**, intended site title, homepage HTTP **200**, and the
+actual administration login form HTTP **200** on `127.0.0.1:8096`. PHP was
+**8.3.35**, MariaDB **11.4.13**, and WP-CLI **2.12.0**. Official ARM64 image
+digests and the read-only verification scope are in the
+[native acceptance record](docs/wordpress-native-acceptance.json).
 
-Earlier checks on a **24 GB Apple M5** with Qwen3.5 4B passed real local chat, native tool calling,
-token counting, and a Goose/MCP file-read smoke with public networking blocked.
-Separate short native and earlier Local Agent packaged-app calibrations measured
-**30.8–37.5 tokens/sec**. These measurements are not a broad model-quality or peak-memory
-benchmark. See the [measured compatibility report](docs/compatibility-report.md).
+WordPress is one general-agent acceptance example. The tested 4B model needed
+multiple bounded requests and corrections; this is not a one-prompt autonomy
+benchmark. The app requested normal approvals for edits and commands. The
+independent verifier inspected the result without setting up, starting, pulling,
+installing, or editing it.
 
-The 0.3-alpha.2 research update passed **115 app/runtime tests**, **75 research
-tests**, and the macOS packaged smoke. One real Qwen4B task fetched official
-WordPress requirements, created an approved research note, and read it back with
-matching evidence. Strict note quality failed its length constraint and
-overstated one server recommendation. See the
-[research validation record](docs/task-research-validation.md).
+![Installed WordPress homepage created through native Agent tasks](docs/screenshots/free-local-agent-wordpress-home.png)
 
-The earlier 0.3-alpha.1 automated and packaged checks passed. A real Qwen4B Agent task created
-five approved files, but its full WordPress scaffold failed validation. A separate
-two-file theme task passed one approved batch, real file readbacks, and static
-checks. No PHP or WordPress runtime was executed and no site was started.
-Separate short native calibrations measured **24.97** and **38.61 tokens/sec**;
-these are not complete-task or production-theme benchmarks. The initial model
-setup screenshot is partial GUI evidence; further GUI checks and captures remain
-pending because the macOS capture tool failed. The
-[update validation record](docs/agent-update-validation.md) tracks current tests,
-the real-model project-creation check, and packaged screenshots. The
-[verification report](docs/build-verification.md) separates current automated
-checks from historical 0.2 results, including the distinction between
-network-denied native tests and normal GUI checks.
+![Actual WordPress administration login page after installation](docs/screenshots/free-local-agent-wordpress-login.png)
 
-This alpha supports text, code, and text-based PDFs. OCR/scanned PDFs, vision,
-audio, CUDA-specific acceleration, browser/desktop automation, signed installers,
-and automatic updates are deferred. Windows/Linux native runs, broader catalog
-benchmarks, long-context peak memory, and the
-[task-quality rubric](docs/alpha-validation.md) remain pending. Summaries can omit
-details, and model answers or tool proposals can be wrong.
-Tool access and an action-oriented workflow do not establish Codex-equivalent
-model quality; larger coding tasks still need review and validation.
+The install emitted an upload-directory permission warning. A later R12 app
+task created the dated uploads directory as the web-server user, verified
+the cached image digests, and created `RUNNING.md`
+with stop/restart instructions. Independent read-only checks confirmed both
+uploads directories writable as the web-server user. Browser media upload was
+not tested. The final R12 app's ordinary Chat and final native-control checks
+remain pending. Its general file check applied the exact approved correction
+and independent readback found `Local agents can build tools.`; the final
+assistant readback state was not captured after the native approval surface
+stopped refreshing. See the [current validation record](docs/general-agent-validation.md).
+
+The final R12 app also created and selected a new empty workspace through its
+native folder picker. Earlier actual tests verified mouse/Enter/Space Working
+activation on R7; current R12 mouse expansion persisted across updates, and its
+seven saved tool records reopened visibly with model thinking. The screenshots carry their exact package provenance. Earlier offline
+component Chat/file checks and incomplete attempts retain their original hashes
+in the [component](docs/general-agent-components.json) and
+[task-attempt](docs/general-agent-task-attempts.json) records.
+
+The final alpha.3 source passed **210/210 app/runtime tests**, strict TypeScript,
+and offline packaged smoke, with public networking denied and loopback allowed
+for the tests. The current Apple Silicon ZIP is **216,988,256 bytes** in
+`release/general-agent-delivery/`; exact archive, app, and backend checksums are
+in the [delivery record](docs/general-agent-package.json). The earlier **14
+synthetic renderer scenarios** have not been rerun on the current renderer.
+Regular chats, six existing undo records, model size, and the separate preview's
+interrupted download remained unchanged in read-only preservation checks.
+Changes and installer artifacts remain local; nothing has been pushed or
+published as a GitHub release.
+
+This alpha supports text, code, and text PDFs. OCR/scanned PDFs, vision, audio,
+CUDA-specific acceleration, browser/desktop automation, signed installers, and
+automatic updates are deferred. Windows/Linux native runs, broader model
+benchmarks, peak-memory/long-context measurements, and the
+[task-quality rubric](docs/alpha-validation.md) remain pending. Short calibration
+samples are not sustained task-performance benchmarks. The
+[build verification](docs/build-verification.md) and
+[compatibility report](docs/compatibility-report.md) retain historical results
+and their practical limits.
 
 ## Source and licenses
 
