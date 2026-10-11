@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, shell, type OpenDialogOptions, type SaveDialogOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { constants, existsSync, mkdirSync } from 'node:fs';
 import { copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -42,6 +42,7 @@ let checkingTurnModel: ModelPreflight | undefined;
 let updatingCapabilities = false;
 let startupNotice: string | undefined;
 let storageBlocked = false;
+let savingScreenshot = false;
 const pickedRoots = new Set<string>();
 const pickedFiles = new Set<string>();
 const pending = new Map<string, { sessionId: string; resolve: (approved: boolean) => void }>();
@@ -487,19 +488,72 @@ function registerHandlers(): void {
   });
 }
 
+async function saveScreenshot(): Promise<void> {
+  if (savingScreenshot) return;
+  savingScreenshot = true;
+  const item = Menu.getApplicationMenu()?.getMenuItemById('save-app-screenshot');
+  if (item) item.enabled = false;
+  try {
+    const owner = window;
+    if (!owner || owner.isDestroyed() || owner.webContents.isDestroyed()) throw new Error('Open the app window before saving a screenshot.');
+    // Capture the real current page before the native dialog covers it. This
+    // exports app content only, without inspecting or changing renderer state.
+    const image = await owner.webContents.capturePage();
+    if (image.isEmpty()) throw new Error('The app returned an empty screenshot. Try again with its window visible.');
+    const png = image.toPNG();
+    if (!png.length) throw new Error('The app could not encode its screenshot.');
+    const activeSessionId = active?.sessionId;
+    const workspace = activeSessionId && state.sessions.find(session => session.id === activeSessionId)?.projectPath;
+    const filename = `free-local-agent-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    const options: SaveDialogOptions = { title: 'Save app screenshot', buttonLabel: 'Save screenshot',
+      defaultPath: path.join(workspace || state.projectPath || app.getPath('pictures'), filename),
+      filters: [{ name: 'PNG image', extensions: ['png'] }], properties: ['showOverwriteConfirmation', 'dontAddToRecent'] };
+    if (owner.isDestroyed()) throw new Error('The app window closed before the screenshot could be saved.');
+    // Standalone macOS panels avoid the disabled confirmation seen in attached
+    // native sheets on this Electron/macOS combination.
+    const result = process.platform === 'darwin' ? await dialog.showSaveDialog(options) : await dialog.showSaveDialog(owner, options);
+    if (!result.canceled && result.filePath) await writeFile(result.filePath, png, { mode: 0o600 });
+  } catch (error) {
+    const message = `Could not save screenshot: ${errorText(error)}`;
+    dialog.showErrorBox('Screenshot could not be saved', message);
+  } finally {
+    savingScreenshot = false;
+    if (item) item.enabled = true;
+  }
+}
+
+function installScreenshotMenu(): void {
+  // Extend Electron's existing menu so application, Edit, View and Window
+  // roles and their platform shortcuts remain intact.
+  const menu = Menu.getApplicationMenu() ?? Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+    { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+  ]);
+  if (menu.getMenuItemById('save-app-screenshot')) return;
+  const save = new MenuItem({ id: 'save-app-screenshot', label: 'Save screenshot…', click: () => { void saveScreenshot(); } });
+  const file = menu.items.find(item => item.role === 'fileMenu' || item.label.replace(/&/g, '') === 'File');
+  if (file?.submenu) { file.submenu.insert(0, save); file.submenu.insert(1, new MenuItem({ type: 'separator' })); }
+  else {
+    const submenu = Menu.buildFromTemplate([{ type: 'separator' }, { role: process.platform === 'darwin' ? 'close' : 'quit' }]);
+    submenu.insert(0, save);
+    menu.insert(process.platform === 'darwin' ? 1 : 0, new MenuItem({ label: 'File', submenu }));
+  }
+  Menu.setApplicationMenu(menu);
+}
+
 function createWindow(): void {
   window = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 660,
     title: 'Free Local Agent', backgroundColor: '#f7f7f5',
     icon: path.join(resourceDirectory(), app.isPackaged ? 'free-local-agent.png' : 'assets/branding/free-local-agent.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false,
-      contextIsolation: true, sandbox: true, webSecurity: true, webviewTag: false } });
+      contextIsolation: true, sandbox: true, webSecurity: true, webviewTag: false, spellcheck: false } });
   window.webContents.setWindowOpenHandler(({ url }) => {
     try { const target = new URL(url); if (['https:', 'http:'].includes(target.protocol) && !target.username && !target.password) void shell.openExternal(target.href); } catch {}
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  window.removeMenu();
+  installScreenshotMenu();
   window.webContents.once('did-finish-load', () => {
     if (startupNotice) { emit({ type: 'error', text: startupNotice }); startupNotice = undefined; }
   });
