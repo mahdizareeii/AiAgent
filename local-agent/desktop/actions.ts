@@ -314,7 +314,7 @@ export class LocalActions {
       if (signal?.aborted) throw cancelled();
       const names = planned.map(item => item.target.relative).join('\n');
       const allowance = Math.max(256, this.options.resultChars ?? 2000);
-      return result(`Created ${planned.length} project files. One undo restores this creation batch.\n${names.slice(0, allowance)}${names.length > allowance ? '\n[File list shortened; every path was included in approval.]' : ''}`);
+      return result(`Created ${planned.length} project files. One undo restores this creation batch. If file reading is enabled, verify the files with read_file using their saved paths. File edits do not create command logs.\n${names.slice(0, allowance)}${names.length > allowance ? '\n[File list shortened; every path was included in approval.]' : ''}`);
     } catch (error) {
       for (const item of [...applied].reverse()) {
         try {
@@ -366,7 +366,7 @@ export class LocalActions {
     await this.atomicWrite(target.absolute, content, before.mode, signal);
     snapshot.applied = true;
     await this.atomicWrite(path.join(this.options.historyDirectory, `${id}.json`), JSON.stringify(snapshot), 0o600);
-    return result(`${before.content === null ? 'Created' : 'Updated'} ${target.relative}. A snapshot is available for undo.`);
+    return result(`${before.content === null ? 'Created' : 'Updated'} ${target.relative}. A snapshot is available for undo. If file reading is enabled, verify with read_file using path ${JSON.stringify(target.relative)}. This file edit does not create a command log.`);
   }
 
   private async runCommand(id: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ActionResult> {

@@ -9,10 +9,11 @@ import Plugins from './Plugins';
 import WorkingDetails from './WorkingDetails';
 import CreateFolderDialog from './CreateFolderDialog';
 import { appendThinking } from '../thinking';
+import { emptyToolHistory, updateToolHistory } from '../tool-history';
 import { createStatusLoader, modelIsUsable, modelSetupMessage, runtimePresentation, shouldOpenModelSetup } from './status-flow';
 import { isNearConversationEnd, shouldFollowConversation, workingDetailsIndexes } from './conversation-flow';
 import { resolveTaskSession } from './task-flow';
-import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, Mode, PermissionRequest, StageProgress, ToolActivity, UtilityPreferences } from './types';
+import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, Mode, PermissionRequest, StageProgress, UtilityPreferences } from './types';
 
 const modes: { id: Mode; name: string; icon: 'code' | 'search' | 'spark'; description: string; examples: string[] }[] = [
   { id: 'coding', name: 'Agent', icon: 'code', description: 'Turn an idea into files, code, and a working project.', examples: ['Build a new project in this workspace', 'Build a simple website from my idea', 'Explore this project and fix a bug'] },
@@ -101,7 +102,8 @@ export default function App() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [selectingProject, setSelectingProject] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [tools, setTools] = useState<ToolActivity[]>([]);
+  const [toolHistory, setToolHistory] = useState(emptyToolHistory);
+  const { tools, truncated: toolsTruncated } = toolHistory;
   const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
   const [thinking, setThinking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -179,7 +181,7 @@ export default function App() {
         });
       } else if (event.type === 'tool') {
         setThinking(false);
-        setTools((current) => current.some((tool) => tool.id === event.id) ? current.map((tool) => tool.id === event.id ? { ...tool, ...event, title: event.title && event.title !== 'Tool' ? event.title : tool.title } : tool) : [...current, event]);
+        setToolHistory((current) => updateToolHistory(current, event));
       } else if (event.type === 'permission') {
         setPermissions((current) => current.some((request) => request.requestId === event.requestId) ? current : [...current, event]);
       } else if (event.type === 'permission_cancelled') {
@@ -233,7 +235,7 @@ export default function App() {
     if (busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current) return;
     setSessionId(null); sessionRef.current = null;
     followingOutputRef.current = true; setExpandedWorking(new Set());
-    setView('workspace'); setMode(nextMode); setMessages([]); setTools([]); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
+    setView('workspace'); setMode(nextMode); setMessages([]); setToolHistory(emptyToolHistory()); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
     inputRef.current?.focus();
   }
 
@@ -246,7 +248,7 @@ export default function App() {
       followingOutputRef.current = true; setExpandedWorking(new Set());
       setSessionId(loaded.id); sessionRef.current = loaded.id;
       setView('workspace');
-      setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setTools([]); setFiles([]); setDraft(''); setStage(loaded.stage ?? null);
+      setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setToolHistory(emptyToolHistory()); setFiles([]); setDraft(''); setStage(loaded.stage ?? null);
     } catch (reason) { setError(errorMessage(reason)); }
     finally { loadingSessionRef.current = false; setLoadingSession(false); }
   }
@@ -304,7 +306,7 @@ export default function App() {
     }
     followingOutputRef.current = true;
     stopRequestedRef.current = false;
-    setError(null); setNotice(null); setBusy(true); busyRef.current = true; setThinking(false); setTools([]); setStage({ stage: 'preparing', message: 'Preparing your local task' });
+    setError(null); setNotice(null); setBusy(true); busyRef.current = true; setThinking(false); setToolHistory(emptyToolHistory()); setStage({ stage: 'preparing', message: 'Preparing your local task' });
     let started = false;
     let failed = false;
     try {
@@ -401,8 +403,10 @@ export default function App() {
     const id = sessionRef.current;
     if (!id || !bridge || !ready || createFolderOpen || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || download || calibrating || importing || setupBusy) return;
     stopRequestedRef.current = false;
-    setError(null); setBusy(true); busyRef.current = true; setThinking(false); setPermissions([]); setTools([]);
-    setMessages(current => current.at(-1)?.role === 'user' ? [...current, { role: 'assistant', content: '' }] : current);
+    setError(null); setBusy(true); busyRef.current = true; setThinking(false); setPermissions([]); setToolHistory(emptyToolHistory());
+    // A resumed turn gets its own stable Working row; never stream over the
+    // interrupted reply's saved thinking or tool history.
+    setMessages(current => [...current, { role: 'assistant', content: '' }]);
     setStage({ stage: 'resuming', message: 'Resuming from the saved checkpoint' });
     try {
       await bridge.resume(id);
@@ -480,10 +484,10 @@ export default function App() {
           {!ready && <button className="setup-prompt" onClick={() => setSetupOpen(true)}><span className="status-dot" />Choose a local model to begin<Icon name="chevron" size={13} /></button>}
         </div> : <div className="message-list">
           {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-body">
-            {message.role === 'assistant' && visibleWorking.has(index) && <WorkingDetails thinking={message.thinking} active={busy && index === messages.length - 1} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={index === messages.length - 1 ? tools : undefined} expanded={expandedWorking.has(index)} onExpandedChange={(expanded) => workingExpanded(index, expanded)} />}
+            {message.role === 'assistant' && visibleWorking.has(index) && <WorkingDetails thinking={message.thinking} active={busy && index === messages.length - 1} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={busy && index === messages.length - 1 ? tools : message.tools ?? (index === messages.length - 1 ? tools : undefined)} toolsTruncated={busy && index === messages.length - 1 ? toolsTruncated : message.toolsTruncated} expanded={expandedWorking.has(index)} onExpandedChange={(expanded) => workingExpanded(index, expanded)} />}
             {message.content && <><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></>}
           </div></article>)}
-          {messages.at(-1)?.role !== 'assistant' && visibleWorking.has(messages.length) && <WorkingDetails active={busy} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={tools} expanded={expandedWorking.has(messages.length)} onExpandedChange={(expanded) => workingExpanded(messages.length, expanded)} />}
+          {messages.at(-1)?.role !== 'assistant' && visibleWorking.has(messages.length) && <WorkingDetails active={busy} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={tools} toolsTruncated={toolsTruncated} expanded={expandedWorking.has(messages.length)} onExpandedChange={(expanded) => workingExpanded(messages.length, expanded)} />}
         </div>}
         <div ref={endRef} />
       </div>

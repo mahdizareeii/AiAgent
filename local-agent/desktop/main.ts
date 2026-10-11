@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { LocalInferenceRuntime, probeHardware } from '../runtime/index.ts';
 import { GooseBackend } from './backend.ts';
 import { appendThinking } from './thinking.ts';
+import { emptyToolHistory, finishToolHistory, updateToolHistory } from './tool-history.ts';
 import { assertInferenceReady, desktopRuntimeStatus, discoverDesktopModels, resolveStorage, selectionAfterDownload } from './desktop-status.ts';
 import { assertAgentCapabilities, taskInstructions } from './agent-policy.ts';
 import { loadTaskResearchSkill } from './skills/task-research.ts';
@@ -232,6 +233,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
   let host: Awaited<ReturnType<typeof createActionHost>> | undefined;
   let answer = '';
   let thinking = '';
+  let toolHistory = emptyToolHistory();
   let gateway: Awaited<ReturnType<typeof createInferenceGateway>> | undefined;
   let stages: StagedWork | undefined;
   let userAdded = false;
@@ -293,7 +295,7 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
         if (event.type === 'message') {
           if (event.thinking) thinking = appendThinking(thinking, event.text);
           else answer += event.text;
-        }
+        } else if (event.type === 'tool') toolHistory = updateToolHistory(toolHistory, event);
         emit({ ...event, sessionId: session.id });
       } });
     turn.backend = backend;
@@ -310,7 +312,9 @@ async function send(options: { sessionId: string; text: string; files?: Attachme
     host?.server.closeAllConnections(); host?.server.close();
     for (const item of pending.values()) if (item.sessionId === session.id) item.resolve(false);
     try {
-      if (answer || thinking) session.messages.push({ role: 'assistant', content: answer, ...(thinking ? { thinking } : {}) });
+      toolHistory = finishToolHistory(toolHistory);
+      if (answer || thinking || toolHistory.tools.length) session.messages.push({ role: 'assistant', content: answer, ...(thinking ? { thinking } : {}),
+        ...(toolHistory.tools.length ? { tools: toolHistory.tools } : {}), ...(toolHistory.truncated ? { toolsTruncated: true } : {}) });
       if (userAdded || options.resume) {
         if (session.title === 'New chat') session.title = options.text.trim().slice(0, 60);
         session.updatedAt = new Date().toISOString();

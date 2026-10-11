@@ -2,13 +2,14 @@ import Icon from './Icons';
 import { workingStatus } from './conversation-flow';
 import type { StageProgress, ToolActivity } from './types';
 
-export default function WorkingDetails({ thinking, active, thinkingActive, waitingApproval, stage, tools = [], expanded, onExpandedChange }: {
+export default function WorkingDetails({ thinking, active, thinkingActive, waitingApproval, stage, tools = [], toolsTruncated, expanded, onExpandedChange }: {
   thinking?: string;
   active: boolean;
   thinkingActive?: boolean;
   waitingApproval?: boolean;
   stage?: StageProgress | null;
   tools?: ToolActivity[];
+  toolsTruncated?: boolean;
   expanded: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }) {
@@ -31,6 +32,7 @@ export default function WorkingDetails({ thinking, active, thinkingActive, waiti
         {tool.input !== undefined && <><h3>Input</h3><pre>{typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}</pre></>}
         {tool.output !== undefined && <><h3>Result</h3><pre>{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre></>}
       </details>)}</div>}
+      {toolsTruncated && <p className="thinking-unavailable">Working retains the first 256 tool activities for this reply. Further activity details were not retained here.</p>}
     </div>
   </details>;
 }

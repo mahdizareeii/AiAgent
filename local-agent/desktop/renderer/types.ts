@@ -97,6 +97,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;
+  tools?: ToolActivity[];
+  toolsTruncated?: boolean;
 }
 
 export interface AgentSession {

@@ -12,7 +12,7 @@ export function shouldFollowConversation(following: boolean, expandedActivity: n
 export function workingDetailsIndexes(messages: ChatMessage[], active: boolean, hasTools: boolean) {
   const visible = new Set<number>();
   messages.forEach((message, index) => {
-    if (message.role === 'assistant' && (message.thinking || (index === messages.length - 1 && (active || hasTools)))) visible.add(index);
+    if (message.role === 'assistant' && (message.thinking || message.tools?.length || message.toolsTruncated || (index === messages.length - 1 && (active || hasTools)))) visible.add(index);
   });
   if (messages.at(-1)?.role !== 'assistant' && (active || hasTools)) visible.add(messages.length);
   return visible;

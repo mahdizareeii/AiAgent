@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { appendThinking } from './thinking.ts';
+import { restoreToolHistory } from './tool-history.ts';
 import type { Attachment, ChatMessage, Mode, PluginPreferences, UtilityPreferences } from './renderer/types.ts';
 export const DEFAULT_UTILITIES: UtilityPreferences = { fileReading: true, projectSearch: true, fileEditing: true, terminal: true, webResearch: false };
 export const utilitySchema = z.object({ fileReading: z.boolean(), projectSearch: z.boolean(), fileEditing: z.boolean(), terminal: z.boolean(), webResearch: z.boolean() }).strict();
@@ -13,8 +14,14 @@ export function migrateState(value: unknown): SavedState {
     projectPath: z.string().optional(), mode: z.enum(['coding', 'research', 'assistant']), utilities: utilitySchema.optional(), plugins: pluginSchema.optional(), slowMode: z.boolean().optional(),
     sessions: z.array(z.object({ id: z.string().uuid(), title: z.string(), updatedAt: z.string(), mode: z.enum(['coding', 'research', 'assistant']), projectPath: z.string().optional(),
       messages: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string(),
-        thinking: z.string().transform(text => appendThinking('', text)).optional() }).transform(message =>
-        message.role === 'assistant' ? message : { role: message.role, content: message.content })), files: z.array(z.object({ name: z.string(), path: z.string() })) })).max(1000) });
+        thinking: z.string().transform(text => appendThinking('', text)).optional(),
+        tools: z.array(z.object({ id: z.string(), title: z.string(), status: z.string(), input: z.unknown().optional(), output: z.unknown().optional() })).optional(),
+        toolsTruncated: z.boolean().optional() }).transform(message => {
+        if (message.role !== 'assistant') return { role: message.role, content: message.content };
+        if (!message.tools) return message;
+        const history = restoreToolHistory(message.tools, message.toolsTruncated);
+        return { ...message, tools: history.tools, ...(history.truncated ? { toolsTruncated: true } : {}) };
+      })), files: z.array(z.object({ name: z.string(), path: z.string() })) })).max(1000) });
   const parsed = schema.parse(value);
   // Legacy catalog identifiers deliberately stay stable. External executable
   // paths are omitted, and the old model store is never touched by migration.
