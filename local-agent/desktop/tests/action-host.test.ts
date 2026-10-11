@@ -406,6 +406,16 @@ test('MCP advertises timeout bounds and stops interrupted commands without retry
     assert.equal(invalid.isError, true); assert.equal(permissions.length, 0);
     const accepted = await client.callTool({ name: 'run_command', arguments: { command: 'exit 0', timeout_ms: 600000 } });
     assert.equal(accepted.isError, undefined); assert.equal(permissions[0].arguments.timeout_ms, 600000);
+    const acceptedMetadata = JSON.parse((accepted.content as Array<{ text: string }>)[0].text.split('\n')[0]);
+    assert.match(acceptedMetadata.log_id, /^log-[a-f0-9]{8}$/);
+    assert.equal(acceptedMetadata.output_complete, true);
+    assert.equal(acceptedMetadata.next_offset, null);
+    const completeLog = await client.callTool({ name: 'read_command_output', arguments: { id: acceptedMetadata.log_id } });
+    assert.equal(completeLog.isError, undefined, 'The actual MCP schema must accept the app-returned short handle.');
+    assert.equal(JSON.parse((completeLog.content as Array<{ text: string }>)[0].text).durable_id, acceptedMetadata.durable_id);
+    const malformedLog = await client.callTool({ name: 'read_command_output', arguments: { id: `${acceptedMetadata.log_id}extra` } });
+    assert.equal(malformedLog.isError, true);
+    assert.equal(permissions.length, 1, 'Log lookup never adds command approval or execution.');
     const command = process.platform === 'win32' ? 'echo EXECUTED>>count.txt & ping -n 30 127.0.0.1 >nul' : "printf 'EXECUTED\\n' >> count.txt; sleep 30";
     const interrupted = await client.callTool({ name: 'run_command', arguments: { command, timeout_ms: 100 } });
     assert.equal(interrupted.isError, true);
@@ -419,6 +429,10 @@ test('MCP advertises timeout bounds and stops interrupted commands without retry
     assert.equal(repeated.isError, true); assert.equal(permissions.length, 2);
     const saved = await client.callTool({ name: 'read_command_output', arguments: { id: logId } });
     assert.equal(saved.isError, undefined);
+    const interruptedMetadata = JSON.parse(content[0].text.split('\n')[0]);
+    const savedByHandle = await client.callTool({ name: 'read_command_output', arguments: { id: interruptedMetadata.log_id } });
+    assert.equal(savedByHandle.isError, undefined);
+    assert.equal(JSON.parse((savedByHandle.content as Array<{ text: string }>)[0].text).durable_id, logId);
     assert.equal((await readFile(path.join(run.projectPath, 'count.txt'), 'utf8')).trim(), 'EXECUTED');
   } finally { await client.close(); await transport.close(); await run.cleanup(); }
 });

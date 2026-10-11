@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -25,6 +25,10 @@ function commandLogId(text: string): string {
   const id = /Saved command log: ([a-f0-9-]{36})/.exec(text)?.[1];
   assert.ok(id, 'Every executed command must return its durable log identity.');
   return id;
+}
+
+function commandLogMetadata(text: string): { log_id: string; durable_id: string; output_complete: boolean; next_offset: number | null } {
+  return JSON.parse(text.split('\n')[0]);
 }
 
 test('a denied write or command performs no mutation', async () => {
@@ -384,13 +388,23 @@ test('paged UTF-8 command output is complete and reading it never reruns executi
     const original = '😀سلامabc'.repeat(1500);
     const output = await run.actions.execute('run_command', { command: nodeCommand("require('fs').appendFileSync('execution-count.txt','x');process.stdout.write('😀سلامabc'.repeat(1500))") });
     assert.equal(output.isError, undefined);
-    const id = commandLogId(output.content[0].text);
-    let offset: number | null = 0;
-    const excerpts: string[] = [];
+    const durableId = commandLogId(output.content[0].text);
+    const metadata = commandLogMetadata(output.content[0].text);
+    assert.equal(metadata.log_id, `log-${durableId.slice(0, 8)}`);
+    assert.equal(metadata.durable_id, durableId);
+    assert.equal(metadata.output_complete, false);
+    assert.ok(metadata.next_offset! > 0 && metadata.next_offset! <= 501);
+    const initial = Buffer.from(original).subarray(0, metadata.next_offset!).toString('utf8');
+    assert.ok(output.content[0].text.includes(initial));
+    assert.ok(!output.content[0].text.includes('\ufffd'), 'The initial excerpt must end at a complete UTF-8 character.');
+    let offset: number | null = metadata.next_offset;
+    const excerpts: string[] = [initial];
     while (offset !== null) {
-      const response = await run.actions.execute('read_command_output', { id, offset });
+      const response = await run.actions.execute('read_command_output', { id: metadata.log_id, offset });
       assert.equal(response.isError, undefined);
-      const excerpt = JSON.parse(response.content[0].text) as { offset: number; text: string; next_offset: number | null; size: number };
+      const excerpt = JSON.parse(response.content[0].text) as { id: string; durable_id: string; offset: number; text: string; next_offset: number | null; size: number };
+      assert.equal(excerpt.id, metadata.log_id);
+      assert.equal(excerpt.durable_id, durableId);
       assert.equal(excerpt.offset, offset);
       assert.ok(Buffer.byteLength(excerpt.text) <= 501);
       assert.ok(!excerpt.text.includes('\ufffd'), 'UTF-8 characters cannot be lost at pagination boundaries.');
@@ -401,6 +415,78 @@ test('paged UTF-8 command output is complete and reading it never reruns executi
     assert.equal(excerpts.join(''), original);
     assert.equal(approvals, 1);
     assert.equal(await readFile(path.join(run.projectPath, 'execution-count.txt'), 'utf8'), 'x');
+  } finally { await run.cleanup(); }
+});
+
+test('complete command output exposes a short durable log reference without requesting another read', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const output = await run.actions.execute('run_command', { command: nodeCommand("require('fs').appendFileSync('count.txt','x');process.stdout.write('complete output')") });
+    assert.equal(output.isError, undefined);
+    const metadata = commandLogMetadata(output.content[0].text);
+    assert.deepEqual(metadata, { log_id: `log-${metadata.durable_id.slice(0, 8)}`, durable_id: commandLogId(output.content[0].text), output_complete: true, next_offset: null });
+    assert.match(output.content[0].text, /complete output/);
+    assert.match(output.content[0].text, /no log read is needed/);
+    assert.doesNotMatch(output.content[0].text, /Read remaining output|Use read_command_output/);
+    const reopened = new LocalActions({ projectPath: run.projectPath, historyDirectory: run.historyDirectory,
+      onPermission: async () => { approvals++; return false; } });
+    for (const id of [metadata.log_id, metadata.durable_id]) {
+      const saved = await reopened.execute('read_command_output', { id });
+      assert.equal(saved.isError, undefined);
+      assert.equal(JSON.parse(saved.content[0].text).text, 'complete output');
+    }
+    assert.equal(approvals, 1);
+    assert.equal(await readFile(path.join(run.projectPath, 'count.txt'), 'utf8'), 'x');
+  } finally { await run.cleanup(); }
+});
+
+test('short command-log references reject unknown, foreign-chat, edit, malformed, and traversal identities', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const foreignLogs = path.join(run.directory, 'another-chat', 'command-logs');
+    await mkdir(foreignLogs, { recursive: true });
+    await writeFile(path.join(foreignLogs, 'a1b2c3d4-0000-4000-8000-000000000000.log'), 'foreign chat output');
+    const edited = await run.actions.execute('write_file', { path: 'file.txt', content: 'kept' });
+    assert.equal(edited.isError, undefined);
+    const editId = (await readdir(run.historyDirectory)).find(name => name.endsWith('.json'))!.slice(0, -5);
+    for (const id of ['log-a1b2c3d4', `log-${editId.slice(0, 8)}`]) {
+      const missing = await run.actions.execute('read_command_output', { id });
+      assert.equal(missing.errorCode, 'COMMAND_LOG_NOT_FOUND');
+      assert.ok(!JSON.stringify(missing).includes('foreign chat output'));
+    }
+    for (const id of ['log-a1b2c3d', 'log-a1b2c3d4extra', '../another-chat/command-logs/a1b2c3d4-0000-4000-8000-000000000000.log', 'log-../../']) {
+      assert.equal((await run.actions.execute('read_command_output', { id })).errorCode, 'INVALID_ARGUMENT');
+    }
+    assert.equal(approvals, 1);
+    assert.equal(await readFile(path.join(run.projectPath, 'file.txt'), 'utf8'), 'kept');
+  } finally { await run.cleanup(); }
+});
+
+test('colliding short log handles require exact UUIDs and never choose or rerun a command', async () => {
+  let approvals = 0;
+  let run: Awaited<ReturnType<typeof setup>>;
+  run = await setup(async () => { approvals++; return true; }, { onTool: event => {
+    if (event.status !== 'running' || event.title !== 'Run command') return;
+    const logs = path.join(run.historyDirectory, 'command-logs');
+    mkdirSync(logs, { recursive: true });
+    const tail = event.id.slice(8) === '-0000-4000-8000-000000000000' ? '-0000-4000-8000-000000000001' : '-0000-4000-8000-000000000000';
+    writeFileSync(path.join(logs, `${event.id.slice(0, 8)}${tail}.log`), 'other saved command');
+  } });
+  try {
+    const output = await run.actions.execute('run_command', { command: nodeCommand("require('fs').appendFileSync('count.txt','x');process.stdout.write('original output')") });
+    assert.equal(output.isError, undefined);
+    const metadata = commandLogMetadata(output.content[0].text);
+    assert.equal(metadata.log_id, metadata.durable_id, 'A collision must return the full durable identity.');
+    const ambiguous = await run.actions.execute('read_command_output', { id: `log-${metadata.durable_id.slice(0, 8)}` });
+    assert.equal(ambiguous.errorCode, 'COMMAND_LOG_AMBIGUOUS');
+    assert.match(ambiguous.content[0].text, /Use the exact durable UUID/);
+    const exact = await run.actions.execute('read_command_output', { id: metadata.durable_id });
+    assert.equal(exact.isError, undefined);
+    assert.equal(JSON.parse(exact.content[0].text).text, 'original output');
+    assert.equal(approvals, 1);
+    assert.equal(await readFile(path.join(run.projectPath, 'count.txt'), 'utf8'), 'x');
   } finally { await run.cleanup(); }
 });
 

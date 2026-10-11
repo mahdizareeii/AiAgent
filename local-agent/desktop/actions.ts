@@ -9,6 +9,8 @@ const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_CREATE_FILES = 20;
 const MAX_CREATE_BYTES = 512 * 1024;
 const PRIVATE_KEY = /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/;
+const COMMAND_LOG_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const COMMAND_LOG_HANDLE = /^log-([a-f0-9]{8})$/;
 
 export interface ActionPermission {
   requestId: string;
@@ -33,6 +35,8 @@ export interface ActionResult {
   /** Host-owned error identity; never inferred from model or command text. */
   errorCode?: string;
 }
+
+interface CommandOutcome extends ActionResult { outputBytes: number; previewBytes: number; }
 
 export interface LocalActionsOptions {
   projectPath: string;
@@ -103,7 +107,7 @@ export const ACTION_TOOL_SCHEMAS = [
   { name: 'edit_file', description: 'Propose one exact text replacement in a project file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
   { name: 'write_file', description: 'Propose creating or replacing a project text file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
   { name: 'create_files', description: 'Propose 1–20 new project text files in one reviewed batch. Parent folders are created automatically; existing files cannot be replaced. Total content <=512 KiB. One approval shows every file and grouped undo is available.', inputSchema: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } } }, required: ['files'], additionalProperties: false } },
-  { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command, working directory and time limit. timeout_ms defaults to 60000; explicitly select up to 600000 for dependency setup. Interrupted commands preserve partial work and are never automatically repeated. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', ...commandTimeoutLimits, description: 'Approved execution time limit in milliseconds, 100–600000; default 60000. Longer dependency setup requires an explicit value.' } }, required: ['command'], additionalProperties: false } },
+  { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command, working directory and time limit. timeout_ms defaults to 60000; explicitly select up to 600000 for dependency setup. Result metadata gives log_id, output_complete and next_offset; when output_complete is true, use the shown output without another log read. Interrupted commands preserve partial work and are never automatically repeated. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', ...commandTimeoutLimits, description: 'Approved execution time limit in milliseconds, 100–600000; default 60000. Longer dependency setup requires an explicit value.' } }, required: ['command'], additionalProperties: false } },
 ] as const;
 
 /**
@@ -398,14 +402,28 @@ export class LocalActions {
       await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout,
         state: signal?.aborted || ['COMMAND_TIMEOUT', 'COMMAND_INTERRUPTED'].includes(outcome.errorCode ?? '') ? 'interrupted' : outcome.isError ? 'failed' : 'completed',
         ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}), finishedAt: new Date().toISOString() }), 0o600);
-      const content = outcome.content.map(item => ({ ...item, text: `${item.text}\n\nSaved command log: ${id}. Use read_command_output with this id and offset 0 to read more. Commands are never replayed by task resume.` }));
+      const { outputBytes, previewBytes, ...actionOutcome } = outcome;
+      const handle = `log-${id.slice(0, 8)}`;
+      let logId = id;
+      // A short handle is a locator, never a fuzzy match. A rare prefix
+      // collision falls back to the durable UUID rather than selecting a log.
+      try {
+        const matches = await this.matchingCommandLogs(id.slice(0, 8));
+        if (matches.length === 1 && matches[0] === id) logId = handle;
+      } catch { /* The durable identity remains valid. */ }
+      const outputComplete = outputBytes === previewBytes;
+      const nextOffset = outputComplete ? null : previewBytes;
+      const metadata = JSON.stringify({ log_id: logId, durable_id: id, output_complete: outputComplete, next_offset: nextOffset });
+      const guidance = outputComplete ? 'All saved output is shown above; no log read is needed.'
+        : `Read remaining output with read_command_output using id ${JSON.stringify(logId)} and offset ${nextOffset}.`;
+      const content = outcome.content.map(item => ({ ...item, text: `${metadata}\n${item.text}\n\nSaved command log: ${id}. ${guidance} Commands are never replayed by task resume.` }));
       if (outcome.errorCode === 'COMMAND_TIMEOUT') content.push({ type: 'text', text: commandTimeoutText });
       else if (outcome.errorCode === 'COMMAND_INTERRUPTED') content.push({ type: 'text', text: interruptedTurnText });
-      return { ...outcome, content };
+      return { ...actionOutcome, content };
     } finally { await log.close(); }
   }
 
-  private commandResult(child: ChildProcess, timeoutMs: number, signal?: AbortSignal, saveChunk?: (chunk: Buffer) => Promise<void>): Promise<ActionResult> {
+  private commandResult(child: ChildProcess, timeoutMs: number, signal?: AbortSignal, saveChunk?: (chunk: Buffer) => Promise<void>): Promise<CommandOutcome> {
     return new Promise((resolve) => {
       const chunks: Buffer[] = [];
       let outputBytes = 0;
@@ -458,28 +476,51 @@ export class LocalActions {
         if (finished) return; finished = true;
         clearTimeout(timeout);
         signal?.removeEventListener('abort', onAbort);
-        const output = Buffer.concat(chunks).toString('utf8');
+        const preview = Buffer.concat(chunks);
+        let end = preview.length;
+        if (outputBytes > end) {
+          while (end > 0 && (preview[end - 1] & 0xc0) === 0x80) end--;
+          if (end > 0 && preview[end - 1] >= 0xc0) end--;
+        }
+        const output = preview.subarray(0, end).toString('utf8');
         await writes;
         await terminationCleanup;
         if (killTimer) clearTimeout(killTimer);
         resolve({ ...result(`${message}${output ? `\n\n${output}` : ''}${outputBytes > previewBytes ? '\n[Excerpt only; the full output is in the saved command log.]' : ''}`, failed),
-          ...(stoppedCode ? { errorCode: stoppedCode } : {}) });
+          ...(stoppedCode ? { errorCode: stoppedCode } : {}), outputBytes, previewBytes: end });
       };
       child.once('error', (error) => finish(`The command could not start: ${error.message}`, true));
       child.once('close', (code, exitSignal) => finish(stopped ?? `Command exited with ${exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`}.`, Boolean(stopped) || code !== 0));
     });
   }
 
+  private async matchingCommandLogs(prefix: string): Promise<string[]> {
+    const entries = await readdir(path.join(this.options.historyDirectory, 'command-logs'), { withFileTypes: true });
+    return entries.filter(entry => entry.isFile() && entry.name.endsWith('.log') && entry.name.startsWith(`${prefix}-`)
+      && COMMAND_LOG_UUID.test(entry.name.slice(0, -4))).map(entry => entry.name.slice(0, -4));
+  }
+
   private async readCommandOutput(args: Record<string, unknown>): Promise<ActionResult> {
     if (this.options.utilities?.terminal === false) throw new ActionError('DISABLED_TOOL', 'Command logs are disabled with terminal utilities.');
-    const id = textArgument(args, 'id');
-    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new ActionError('INVALID_ARGUMENT', 'Use the exact saved command log UUID returned by run_command. Do not invent an id; use read_file to verify edited files.');
+    const reference = textArgument(args, 'id');
+    const handle = COMMAND_LOG_HANDLE.exec(reference);
+    if (!handle && !COMMAND_LOG_UUID.test(reference)) throw new ActionError('INVALID_ARGUMENT', 'Use the exact saved command log UUID returned by run_command, or its returned log-xxxxxxxx handle. Do not invent an id; use read_file to verify edited files.');
+    let id = reference;
+    const missing = () => new ActionError('COMMAND_LOG_NOT_FOUND', 'No saved command log exists for this id. Do not retry the same id. Use only a log id returned by run_command; use read_file to verify edited files.');
+    if (handle) {
+      let matches: string[];
+      try { matches = await this.matchingCommandLogs(handle[1]); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw missing(); throw error; }
+      if (!matches.length) throw missing();
+      if (matches.length !== 1) throw new ActionError('COMMAND_LOG_AMBIGUOUS', 'This short log handle matches more than one saved command log. Use the exact durable UUID returned with the command; no output was read.');
+      id = matches[0];
+    }
     const offset = args.offset ?? 0;
     if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new ActionError('INVALID_ARGUMENT', 'offset must be a non-negative byte position.');
     let file: Awaited<ReturnType<typeof open>>;
     try { file = await open(path.join(this.options.historyDirectory, 'command-logs', `${id}.log`), 'r'); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new ActionError('COMMAND_LOG_NOT_FOUND', 'No saved command log exists for this id. Do not retry the same id. Use only a log id returned by run_command; use read_file to verify edited files.');
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw missing();
       throw error;
     }
     try {
@@ -491,7 +532,7 @@ export class LocalActions {
         while (end > 0 && (buffer[end - 1] & 0xc0) === 0x80) end--;
         if (end > 0 && buffer[end - 1] >= 0xc0) end--;
       }
-      return result(JSON.stringify({ id, offset, text: buffer.subarray(0, end).toString('utf8'), next_offset: offset + end < size ? offset + end : null, size }));
+      return result(JSON.stringify({ id: reference, durable_id: id, offset, text: buffer.subarray(0, end).toString('utf8'), next_offset: offset + end < size ? offset + end : null, size }));
     } finally { await file.close(); }
   }
 
