@@ -4,7 +4,8 @@ Date: **2026-10-12**. Version: **0.4.0-alpha.4**. **R7 packaging, 315 offline
 automated tests, TypeScript, packaged smoke, 94 Python source tests and 8 frozen
 protocol tests passed. R7 CLI repair, exact-file work, retained-file readback and
 ordinary Chat passed their recorded checks; Chat/preferences survived reopening.
-Empty/regular-profile checks remain pending.** Native
+Empty-profile UI and regular-profile visible checks remain unverified while the
+Mac is locked; the regular app process has been reopened.** Native
 Qwen calibration measured 28.9 tokens/sec on Metal with 8K context, and Working
 mouse/Enter/Space expansion was visibly checked during a running CLI repair.
 That app-applied repair passed **4/4 independent input checks**, with its final
@@ -16,6 +17,10 @@ its exit; returning to Automatic restored Qwen Metal inference. Delivery
 remains local. This draft preserves payload identities, failures and genuine
 captures separately; it does not establish general model competence or complete
 project autonomy.
+
+The implementation and screenshots were committed **locally** as `ea8cd31`;
+no push was performed. Later documentation corrections retain the unchanged
+R7 ZIP/ASAR identity below.
 
 ## Final R7 package identity
 
@@ -29,6 +34,39 @@ delivery. The read-only native observer's
 `.cache/general-agent-validation/native-alpha4r7-evidence.json` reports the same
 ASAR identity and `observerPerformedActions=false`. Its persisted-state evidence
 does not substitute for visible native task acceptance.
+
+## Regular profile process and read-only preservation
+
+The final delivery app is reopened through its exact executable **without a
+user-data override**. The read-only audit found one unique regular main process,
+and helper flags consistently identify
+`~/Library/Application Support/Local Agent` as its actual profile. Its ASAR hash
+matches final R7 `f01867ce…90b7`. This establishes the reopened process/profile
+identity; the locked Mac still prevents visible confirmation of that window.
+
+Compared with the captured baseline, the retained regular `chats.json` is
+**byte-identical**, with **5 chats**, their captured messages/attachments/project
+paths/settings unchanged, and **6 unchanged undo records**. The full retained
+Qwen GGUF is **2,740,937,888 bytes** and independently matches its catalog SHA-256
+`00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
+The persisted store remains **version 3**; no save-triggered version-4 rewrite
+has occurred. Live in-memory migration/defaults were not queried or visibly
+verified, so missing v4 preference fields are not treated as zero values.
+
+The separate preview's persisted chats/settings are also byte-identical to their
+baseline. Its partial Qwen download remains **156,942,952 bytes**, with current
+full-file SHA-256
+`6f23f0e409cfcf089b25c473645a41f909d56f47aae28f5a11c1b2237e39e424`.
+The baseline did not contain that partial file's hash, so this establishes its
+retained size and current identity, not a before/after hash comparison. **The
+preview's unsent draft is unverified:** the baseline contains no draft text,
+and no live preview process/UI was observed. Persisted-store preservation must
+not be described as proof that a transient draft was retained.
+
+Provenance is retained in
+`.cache/general-agent-validation/alpha4-r7-independent-preservation-before-regular.json`
+and `alpha4r7-final-regular-profile-audit.json`. These were read-only audits;
+they performed no app interaction, profile edits or process signals.
 
 <details>
 <summary>Retained R4–R6 package identities</summary>
@@ -119,6 +157,13 @@ The final R7 full-suite offline result uses `sandbox-exec` with the retained
 R7 run's 20.8325-second result was not wrapped by that OS policy and is not used
 as the final offline evidence. The enforced rerun changed no source or app
 payload; final ZIP/ASAR identities above remain unchanged.
+
+**Scope separation:** the real-model native Qwen tasks/Chat, Gemma trials and
+visible interactions ran with normal system networking available. Their local
+execution evidence does not establish a real-model native UI run under enforced
+public-network denial. That denial was enforced for the final contract suite
+and packaged smoke; the smoke loaded no model. The attempted denied-network
+native launcher below failed before UI and leaves that acceptance unverified.
 
 ## Qwen3.5 4B — R7 Node CLI repair independently passed
 
@@ -487,6 +532,7 @@ check.
 | Retained note readback | Passed visibly | Final R7 `226b63da…`; one read, no new mutation/command/approval; exact requested sentence/hash. |
 | Ordinary Chat exact `42` and reopen | Passed visibly, saved and restored | Final R7 `c541fac4…`; zero tools/approvals; graceful quit/relaunch restored `42`, Chat mode and 125% text scale without replay. |
 | Gemma experimental loading and return to Qwen | Verified safety stop, probes not reached; Qwen fallback ready | Final R7; owned CPU-only process independently observed, watchdog stop visible, Metal/Qwen readiness retained after Automatic. |
+| Regular profile process and retained data | Process reopen and read-only preservation passed; UI unverified | Final R7 unique no-override process uses legacy regular store; 5 chats/6 undo unchanged and full Qwen digest verified. v4/live migration not visually established. |
 | Task activity mouse collapse / Enter expand | Passed visibly | Final R4. Thinking and tool tree disappeared and reappeared. |
 | Space collapse / Space expand | Passed visibly | Final R4. Nested `read_file` remained expanded with exact text and SHA evidence. |
 | Approved creation/edit and final file readback | Passed for the actual operations | Final R4 separate task `d48b2462…`; four ordered tools, two approvals, exact final hash and nonempty answer. Period-boundary limitation described above. |
@@ -582,18 +628,28 @@ guided task results and package hashes. They are not alpha.4 project acceptance.
 
 ## Pending checks and practical limits
 
-Two final R7 visible delivery checks remain pending:
+Two final R7 visible delivery checks remain unverified:
 
-- **Empty profile onboarding:** a genuinely fresh profile was launched after
-  the validation app quit with exit 0, but visible inspection awaits the Mac
-  being unlocked. Launch alone does not establish the onboarding result.
-- **Regular profile reopen:** visibly confirm the final app uses the retained
-  regular store and preserves models/chats/settings/undo, after the same native
-  lock constraint is resolved.
+- **Empty profile onboarding:** the normal app launched in a genuinely fresh
+  profile with zero downloaded models, but visible inspection was prevented by
+  the locked Mac. Only that verified idle app-owned process was closed afterward;
+  it had no engine or task children. Launch alone does not establish the UI result.
+- **Regular profile reopen:** the final delivery app was launched **without a
+  user-data override**, reopening the verified unique regular process/store.
+  Read-only preservation passed as recorded above. Visible chats/settings/model
+  readiness and migration confirmation remain prevented by the same Mac lock.
 
 The isolated Chat/preference reopen, final R7 task results and authentic captures
 passed as recorded above. The Mac lock is an automation constraint, not evidence
 of an app display or model-setup defect.
+
+An additional native empty-profile launch under the denied-public-network policy
+exited **133** before a usable UI. Electron's nested GPU/network-service sandbox
+initialization returned **`Operation not permitted`**, followed by GPU-service
+failure. The retained log is
+`.cache/general-agent-validation/alpha4r7-empty-offline-app.log`. This is a
+**test-harness incompatibility / unverified offline UI check**, not a missing-model
+or Gemma failure. No Electron or OS protections were disabled to bypass it.
 
 Gemma Chat/tool/task quality remains **unverified** because loading stopped
 before probes. Its completed integrity verification and measured safety stop

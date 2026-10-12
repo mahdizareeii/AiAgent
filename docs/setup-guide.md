@@ -15,7 +15,11 @@ input checks and shows its completed answer/readback. Fresh file and ordinary
 Chat checks also passed: exact approved create/read/edit/read, read-only retained
 file text, and visible `42` with zero tools/approvals. Reopening restored that
 Chat, its mode and 125% text setting. Empty/regular-profile verification remains
-pending.
+visually unverified while the Mac is locked; the regular app process is reopened.
+Read-only checks preserved its 5 chats, 6 undo records and verified Qwen weights;
+the persisted store remains v3 until a save, so live v4 migration is unverified.
+The preview's persisted data/partial-download size is retained; its unsent draft
+is not established by those file checks.
 The verified Gemma download reached an explicit final R7
 experimental load, which the app stopped at its sampled resident-memory budget
 before Chat or tool probes. The preceding R4 failed the Qwen validation and Node
@@ -23,6 +27,12 @@ CLI task, including an outcome-classification defect. See the
 [draft report](alpha4-validation.md) for artifact identity, retained failures,
 narrower passes, and pending empty/regular-profile checks. Screenshots and records retain
 their original payload scope.
+
+The native real-model UI tests ran with normal networking available. The final
+contract suite and packaged smoke separately enforced public-network denial.
+An attempted native denied-network launcher failed before UI during Electron's
+nested sandbox initialization; it did not establish empty-model onboarding or
+offline real-model UI acceptance, and no protections were disabled.
 
 ## First launch
 

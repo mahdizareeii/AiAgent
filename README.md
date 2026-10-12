@@ -23,8 +23,12 @@ measured **28.9 tokens/sec** on Metal with 8K context.
 
 Gemma 4 26B downloaded and passed integrity verification, but its R7 disk-mode
 trial stopped during loading at the sampled memory budget, before Chat/tools.
-Returning to Automatic restored Qwen Metal inference. **Only empty-profile
-onboarding and regular-profile reopening remain visible delivery checks.** See
+Returning to Automatic restored Qwen Metal inference. **Empty-profile onboarding
+and the reopened regular app's visible state remain unverified while the Mac is
+locked.** Read-only checks confirmed 5 regular chats, 6 undo records and the
+verified Qwen model remain intact. The preview's unsent draft remains unverified.
+Native model tests used normal networking; offline contract tests/smoke
+have separate scope. See
 the [draft evidence report](docs/alpha4-validation.md) for hashes, genuine
 screenshots, retained failures and each check's scope. Windows/Linux native
 execution and broader model quality remain unverified.
