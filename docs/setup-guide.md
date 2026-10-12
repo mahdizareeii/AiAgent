@@ -1,14 +1,34 @@
 # Free Local Agent setup and developer guide
 
-Free Local Agent **0.4.0-alpha.3** runs local models through a bundled llama.cpp engine. The
+Free Local Agent **0.4.0-alpha.4** runs local models through a bundled llama.cpp engine. The
 packaged app includes the native inference engine, offline Goose backend, and
 research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
 platform support.
 
+This guide describes the alpha.4 R7 macOS ARM64 package. It passed 315 automated
+checks under macOS-enforced public-network denial, TypeScript, offline packaged
+smoke, 94 Python source tests, and 8 frozen
+sidecar protocol tests. Native Qwen calibration measured 28.9 tokens/sec on
+Metal with 8K context. Its app-applied Node CLI repair passed four independent
+input checks and shows its completed answer/readback. Fresh file and ordinary
+Chat checks also passed: exact approved create/read/edit/read, read-only retained
+file text, and visible `42` with zero tools/approvals. Reopening restored that
+Chat, its mode and 125% text setting. Empty/regular-profile verification remains
+pending.
+The verified Gemma download reached an explicit final R7
+experimental load, which the app stopped at its sampled resident-memory budget
+before Chat or tool probes. The preceding R4 failed the Qwen validation and Node
+CLI task, including an outcome-classification defect. See the
+[draft report](alpha4-validation.md) for artifact identity, retained failures,
+narrower passes, and pending empty/regular-profile checks. Screenshots and records retain
+their original payload scope.
+
 ## First launch
 
-On macOS Apple Silicon, unzip `Free Local Agent-0.4.0-alpha.3-arm64-mac.zip`, move `Free Local Agent.app` into
+For an available local macOS Apple Silicon package, check the payload in the
+[validation report](alpha4-validation.md), then unzip
+`release/alpha4-delivery/Free Local Agent-0.4.0-alpha.4-arm64-mac.zip`, move `Free Local Agent.app` into
 Applications, and open it; the runtime is included and model weights are downloaded
 or imported separately.
 
@@ -21,9 +41,11 @@ or imported separately.
    are required; unsupported files or variants can fail validation. An imported
    model starts in chat-only mode. Agent tools are enabled only after the runtime
    confirms native tool support and a local calibration passes.
-3. Optionally **Check tools & speed**. This checks native tool calling and measures
-   generation speed, not complete agent-task quality. Enable **Allow slow mode** only if you
-   accept slower CPU/offload operation for a model classified as slow.
+3. Optionally **Measure speed & tool format**. This checks native tool calling and
+   measures generation speed. **Validate model for tasks** is a separate small
+   Agent workflow with normal approvals; neither check guarantees general task
+   quality. Keep **Automatic** memory mode initially, or choose **Low memory**
+   for smaller context/batches. Experimental disk requires an explicit trial.
 4. Start **New task**. New tasks default to **Agent** mode. Before starting,
    use **Add folder** in the sidebar to choose an existing workspace, or
    **Create folder** to name a new folder and choose its parent in the native
@@ -33,6 +55,8 @@ or imported separately.
    research after you enable both Research and web access in **Plugins**. Use
    **Chat** for conversation and attached-file reading. A chat-only model can
    process attached files through local read stages, but cannot run Agent tasks.
+   Choose **Careful Agent** or **Standard Agent** before creating the task;
+   Careful is the initial new-task default, while migrated tasks retain Standard.
 5. Review proposed edits/commands and **Approve once** or **Deny**. **Stop** cancels
    the task. **Resume task** appears for a paused read-only checkpoint. An
    interrupted agent turn needs a new request; Resume does not replay its actions.
@@ -44,6 +68,10 @@ sidebar. Use the moon/sun toggle at the bottom of the sidebar to switch light/da
 themes; the preference is saved locally. **Read-only research** appears in the mode
 selector when its plugin is enabled. Saved research tasks can still be opened
 with the plugin disabled, without reactivating it.
+
+Sidebar **Text size** sets a locally remembered 90–125% text scale, defaulting to
+100%. At 100%, conversation text is 15 px, navigation 13 px, and thinking/code
+14 px. Text scales without zooming the entire workspace.
 
 ## Model setup and recovery
 
@@ -65,6 +93,96 @@ Actual engine failures retain their error code and **Retry runtime** action.
 **Model library unavailable** means the cache could not be inspected; check its
 displayed storage path and permissions, then use **Retry model library**. These
 states are distinct from having no downloaded models.
+
+## Memory modes and experimental trials
+
+Choose the mode in **Models & hardware → Memory mode** while no task or model
+operation is running. Changing the mode unloads the model and invalidates an
+experimental trial. It never restarts a previous task.
+
+| Mode | Behavior and limits |
+| --- | --- |
+| Automatic | Starts with bounded 8K context, batch 512, and microbatch 128, with supported GPU/CPU profiles. **Allow slow mode** permits a slower supported profile when weights fit. Allocation recovery can reduce batches/context; it never restarts an agent turn. |
+| Low memory | Starts with 4K context, batch 128, and microbatch 32, with smaller bounded recovery profiles. Supported slow fits are permitted, but model weights must still fit usable memory. |
+| Experimental disk | Explicit macOS ARM64-only CPU trial with mapped weights, 4K context, batch 128, and microbatch 32. A load and inference probe must pass for the exact model/profile before tasks can use it. A new model selection never silently starts this trial. |
+
+To try Experimental disk:
+
+1. Download or import a valid local model. Integrity or unsupported-format errors
+   remain hard blocks; experimental mode does not bypass them.
+2. Choose **Experimental disk**, then **Try Experimental disk mode** on its card. The original
+   **Recommended**, **Slow mode**, or **Insufficient memory** estimate stays visible.
+3. Review the loading/probing state and metrics. **Mapped weights** and **Lazy
+   eligible** come from engine logs and are distinct from measured **Resident now**.
+   Available memory, memory pressure, and resident limit are shown separately.
+   Unavailable measurements say **Unknown**, rather than zero.
+4. A passed Chat probe permits local inference for that matching loaded
+   model/profile. Agent tools also require the native tool-format probe; a failed
+   tool probe leaves the model Chat-only. Neither probe proves sustained speed,
+   agent reliability, or request completion.
+   **Cancel trial** interrupts loading/probing or unloads a passed trial. Failure
+   leaves an actionable reason and permits a new explicit Try; no task is replayed.
+
+Experimental protection samples the owned process and macOS memory statistics.
+It stops on a sampled resident-budget breach, critical memory pressure, sustained
+low available memory, or unavailable monitoring. Sampling can miss short peaks;
+this is not an OS-enforced memory cap and cannot prevent every memory-pressure
+event. The implementation currently requires macOS Apple Silicon monitoring.
+Windows/Linux experimental trials are unsupported. Returning to **Automatic**
+retains the separately detected Metal/Vulkan accelerator information; the
+experimental trial itself remains CPU-only. Stopped trial values are identified
+as last-sampled measurements and distinguish unknown measurements from zero.
+The UI currently labels binary-size values as GB; this guide reports them in GiB.
+
+On the 24 GiB Apple M5, the app downloaded and independently verified the
+pinned Gemma 4 26B A4B artifact. The final R7 trial stopped experimental loading
+when the app's rounded last resident sample and threshold both displayed
+**6.86 GiB**. Last available memory was **7.62 GiB**, with normal pressure.
+Independent samples confirmed the CPU-only 4K process and its exit. Mapped/lazy
+sizes and absolute peak residency remain unknown; no Chat, tool, or task probe
+was reached.
+That outcome applies to the available memory during this trial, not every 24 GiB
+computer. R7's separate Qwen task/Chat evidence does not make this Gemma trial
+pass; see the
+[record and genuine capture](alpha4-validation.md).
+
+Mapped weights still exist on disk and can be read into RAM. Lazy eligibility
+depends on actual tensor layout and can be zero. Disk paging can be extremely
+slow. Smaller requests and staged document reads do not shrink model weights.
+There is no guarantee that an oversized model becomes usable, or that a free
+local model delivers frontier-model quality.
+
+## Validating a model for tasks
+
+**Measure speed & tool format** reports a short local calibration; it is separate
+from **Validate model for tasks**. Use task validation with an installed,
+tool-capable model and enabled local file-reading/editing utilities. An
+experimental model needs its successful explicit trial first.
+
+The button checks ordinary Chat and native tool format, then prepares a scratch
+workspace under the app's data directory. The interface selects that scratch
+Agent task before sending its request. It asks the model to create
+`model-check.txt`, read it, make an exact edit, read the final content, and provide
+a nonempty final answer. Each creation/edit still requires normal **Approve
+once** or **Deny**. This check uses file tools; it does not require terminal
+commands or web research. **Stop** can cancel preparation or the running task.
+
+The recorded result includes Chat, tool-format, exact-edit, exact final-byte
+readback, final-answer, and file-only checks. Records retain the model digest,
+template hash, pinned runtime, execution-profile identity, and elapsed time.
+The UI presents a passed result as current only when the installed model digest,
+runtime version, and execution profile match and every recorded check passed.
+Older or mismatched records remain visible as historical results. A simple
+validation pass is not a guarantee for larger projects or other tasks. The
+final R4 Qwen3.5 4B run failed the exact sequence after two model arguments used
+literal backslash-plus-`n` instead of the file's LF. The app saved a nonempty
+blocked answer and preserved the original approved creation. A separate R4
+creation/read/edit/read task passed its actual operations and readback, with a
+period-boundary limitation. Final R7's separate exact-file sequence, general CLI
+repair and Chat/reopen passed their recorded checks; they do not reclassify the
+failed built-in validation. See the [model-specific report](alpha4-validation.md).
+Broader model quality remains unverified; the remaining visible delivery checks
+are empty-profile onboarding and regular-profile reopening.
 
 ## Workspace folders
 
@@ -117,13 +235,62 @@ original evidence.
 This update and its package are kept local and have not been pushed or published
 as a GitHub release.
 
+## Standard and Careful Agent
+
+Choose **Standard Agent** or **Careful Agent** in the composer before starting a
+new Agent task. The choice stays with its saved task; start **New task** to change
+it. Careful is the initial new-task default; choosing an approach also saves the
+default for subsequent new tasks. Migrated tasks without an explicit choice
+retain Standard. Chat and Read-only research keep their existing mode boundaries.
+
+Standard uses the direct agent workflow with up to 25 agent turns. Careful is
+instructed to follow **Plan → Implement → Verify → Repair → Final**, with up to
+40 turns and at most three repair cycles after observed failed checks. The host
+enforces the repair budget for reviewed actions. Both workflows retain a one-hour
+active execution budget after model preparation. Approval waits pause that clock;
+the separate ten-minute approval expiry and each approved command's time limit
+still apply. More time or steps do not make an inaccurate model reliable.
+
+## Approval recovery and task outcomes
+
+The local host owns pending approvals and their settlement. The interface uses
+host snapshots and revisioned events at startup/reconnect, on focus, after a
+permission response error, and every five seconds while an approval is pending.
+It also binds a restored renderer to the active task and reads its current state.
+A missed or late event cannot restore a settled request or dismiss a newer
+request; settlement affects only its matching request and turn. Reconnection
+never sends an approval, resumes an agent, or repeats an edit or command.
+
+Review the diff or exact command and working directory before **Approve once**.
+**Deny** stops further edits/commands in that turn. A cancelled or expired approval
+does not authorize the action. Saved command logs and Undo remain available after
+the turn stops. Undo restores only applicable file snapshots; it cannot reverse
+terminal side effects. Inspect interrupted work before sending a new request.
+
+Each saved assistant exchange can include an outcome and **Passed**, **Failed**,
+or **Unverified** operation checks. Expand **Evidence** to read the recorded
+details and tool identity. **Recorded checks passed** means the displayed checks
+passed; it does not establish that the complete user request was fulfilled. A
+successful write to the wrong file, for example, remains a successful operation
+receipt rather than proof of a correct task. **Task completed; review checks**
+similarly describes a finished turn. Review unverified requirements and actual
+files, runtime behavior, or command results before accepting the task result.
+
+If the model ends after tool work without an answer, the host can request one
+bounded closing response using recorded evidence with no tools. If that cannot
+produce an answer, the app saves an explicit incomplete/blocked notice. This
+closing step does not restart the agent or replay completed actions.
+
 ## Longer tasks and command limits
 
 The app counts the full templated request, including instructions, tools,
 conversation, tool results, and reserved output. It can summarize older completed
 conversation and completed local read-only exchanges within a turn. The current
-request, pending tools, and command/edit calls and results remain exact. Source
-references are retained so the agent can reread files or saved command output.
+request and latest/pending tool exchanges remain exact. Older completed actions
+can become deterministic receipts only when their exact arguments and output
+match independently recorded host evidence. IDs, file hashes, error/denial state
+and saved command-log references remain; raw activity stays in Working/local
+records. Source references let the agent reread files or saved command output.
 Summaries are lossy and do not make model weights smaller. If the exact retained
 context cannot fit, use a smaller request; the app does not restart the task or
 replay its actions to recover context.
@@ -220,8 +387,10 @@ See the [native acceptance record](wordpress-native-acceptance.json) and
 [current validation report](general-agent-validation.md) for exact package
 provenance, the install's upload-directory warning, and final R12 check scope.
 
-1. Select a model that has passed **Check tools & speed**. A chat-only model
-   cannot create project files or run commands.
+1. Select a model with native tool support; use **Measure speed & tool format**
+   and optionally **Validate model for tasks**. A chat-only model cannot create
+   project files or run commands. A simple validation pass does not establish
+   WordPress or complete-project competence.
 2. Choose **Agent**, then use sidebar **Add folder** for an existing empty
    workspace, or **Create folder** to name a new workspace and choose its parent
    folder. Start **New task** if you want to change an existing task's workspace.
@@ -261,8 +430,9 @@ action denials, and an interrupted task never
 automatically repeats an approved command or edit. If tools, an approval, a
 dependency, or networking block completion, the result should identify that
 observed blocker and the work already performed. The
-[update validation record](agent-update-validation.md) separates tested behavior
-from checks that are still pending.
+[current validation record](alpha4-validation.md) separates passed checks,
+retained historical failures, and the remaining profile checks. The
+[earlier update record](agent-update-validation.md) retains its own payload scope.
 
 The inference process is app-owned and bound to loopback. It runs in offline mode,
 without the engine's web UI or agent tools. The app does not use an existing

@@ -26,7 +26,7 @@ function desktopModel(row: AvailableModel): LocalModel {
     downloadGB: (row.estimatedDownloadBytes ?? row.sizeBytes) / 1e9, description: row.description,
     installed: row.installed, blockedReason: row.blockedReason ?? undefined, verificationError: row.verificationError, fit: row.fit, fitReason: row.fitReason,
     license: row.license, quantization: row.quantization, workingMemoryGB: row.workingMemoryGB, memoryEstimate: row.memoryEstimate,
-    toolCapable: row.toolCapable, measuredTokensPerSecond: row.measuredTokensPerSecond, sourceUrl: row.sourceUrl };
+    toolCapable: row.toolCapable, measuredTokensPerSecond: row.measuredTokensPerSecond, sourceUrl: row.sourceUrl, digest: row.digest ?? undefined };
 }
 
 /** A discovery failure must not look like a successfully discovered empty library. */

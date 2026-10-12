@@ -27,7 +27,7 @@ MAX_VISITED = 10_000
 SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
 SECRET_NAMES = {".env", ".aws", ".ssh", ".gnupg", ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.json", "secrets.json", "id_rsa", "id_ed25519"}
 SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".kdbx"}
-TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".swift", ".kt", ".php", ".phtml", ".html", ".css", ".scss", ".json", ".toml", ".yaml", ".yml", ".xml", ".sql", ".sh", ".zsh", ".bash", ".csv", ".tsv", ".ini", ".cfg", ".conf", ".log", ".tex", ".vue", ".svelte"}
+TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".swift", ".kt", ".php", ".phtml", ".html", ".css", ".scss", ".json", ".toml", ".yaml", ".yml", ".xml", ".sql", ".sh", ".zsh", ".bash", ".csv", ".tsv", ".ini", ".cfg", ".conf", ".log", ".tex", ".vue", ".svelte"}
 TEXT_NAMES = {"Dockerfile", "Makefile", "LICENSE", "NOTICE", ".gitignore", ".editorconfig"}
 
 
@@ -289,18 +289,16 @@ class Grants:
                 stream.seek(offset)
             else:
                 stream.seek(0)
-                if stream.read(3) != b"\xef\xbb\xbf":
-                    stream.seek(0)
                 skipped = 1
                 while skipped < start_line and (part := stream.readline(64 * 1024)):
                     _check_cancel(cancel_event)
                     skipped += int(part.endswith(b"\n"))
             first_line, first_column = line, column
+            first_byte = stream.tell()
             output, used, completed = [], 0, 0
             while stream.tell() < inspected["size"] and completed < max_lines:
                 _check_cancel(cancel_event)
-                prefix = f"{line}: "
-                available = budget - used - len(prefix) - int(bool(output))
+                available = budget - used
                 if available < 1:
                     break
                 offset = stream.tell()
@@ -316,15 +314,15 @@ class Grants:
                         raise ToolError("unsupported_encoding", "The selected file must be UTF-8 text.") from exc
                     raw = raw[:exc.start]
                     decoded = raw.decode("utf-8")
-                newline = decoded.endswith("\n")
-                content = decoded[:-1].removesuffix("\r") if newline else decoded
-                selected = content[:available]
-                fully_consumed = len(selected) == len(content)
+                # The excerpt is exact source text, not a display with numbered
+                # lines. Preserve BOM, CRLF, trailing newlines and literal "1: ".
+                selected = decoded[:available]
+                fully_consumed = len(selected) == len(decoded)
                 consumed = len(raw) if fully_consumed else len(selected.encode("utf-8"))
                 stream.seek(offset + consumed)
-                output.append(prefix + selected)
-                used += len(prefix) + len(selected) + int(len(output) > 1)
-                if newline and fully_consumed:
+                output.append(selected)
+                used += len(selected)
+                if selected.endswith("\n"):
                     line, column = line + 1, 1
                     completed += 1
                 else:
@@ -338,7 +336,9 @@ class Grants:
             eof = stream.tell() >= inspected["size"]
             next_cursor = None if eof else _encode_cursor("text", inspected["sha256"], offset=stream.tell(), line=line, column=column)
             return {"ok": True, "path": str(canonical), **inspected, "start_line": first_line,
-                    "start_column": first_column, "text": "\n".join(output), "eof": eof,
+                    "start_column": first_column, "end_line": line, "end_column": column,
+                    "start_byte": first_byte, "end_byte": stream.tell(), "encoding": "utf-8",
+                    "text": "".join(output), "eof": eof,
                     "next_cursor": next_cursor, "truncated": not eof}
 
     def walk(self, requested: str, max_files: int, cancel_event: threading.Event | None = None) -> tuple[list[Path], bool]:

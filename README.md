@@ -12,14 +12,33 @@ model server is required. Model weights are a separate download or local GGUF
 import. Once a compatible model is installed, chat and local file work can run
 offline.
 
-**Current version: 0.4.0-alpha.3.** macOS Apple Silicon is the tested platform.
-Windows and Linux packaging/CI is configured; native validation is still pending.
+**Current version: 0.4.0-alpha.4, R7.** The macOS ARM64 package passed
+**315/315 automated checks with public networking denied by macOS**, TypeScript,
+offline packaged smoke, **94 Python
+source tests**, and **8 frozen-sidecar protocol tests**. Native Qwen tests passed
+CLI repair with four input cases, exact-file work, retained-file readback, and
+Chat `42` without tools or approvals. Chat mode and 125% text size survived
+reopening. Working expansion was checked by mouse, Enter and Space; calibration
+measured **28.9 tokens/sec** on Metal with 8K context.
+
+Gemma 4 26B downloaded and passed integrity verification, but its R7 disk-mode
+trial stopped during loading at the sampled memory budget, before Chat/tools.
+Returning to Automatic restored Qwen Metal inference. **Only empty-profile
+onboarding and regular-profile reopening remain visible delivery checks.** See
+the [draft evidence report](docs/alpha4-validation.md) for hashes, genuine
+screenshots, retained failures and each check's scope. Windows/Linux native
+execution and broader model quality remain unverified.
 
 ## What Free Local Agent does
 
 - **Build in Agent mode.** New tasks start in Agent mode. Choose or create a
   workspace, then ask the model to inspect files, build a project, fix code, or
   run checks using the enabled tools. It reports what its tools actually did.
+- **Choose Standard or Careful Agent.** The initial new-task default is **Careful
+  Agent**, which is instructed to plan, implement, verify, repair observed failures,
+  and finish with results or blockers. **Standard Agent** uses the direct workflow.
+  Tasks migrated from earlier versions retain Standard behavior. Neither choice
+  guarantees that a model will complete a request correctly.
 - **Chat locally.** Agent, Read-only research, and Chat modes use the same locally
   stored conversations. Responses come from the model running on your machine;
   tool-capable models stream replies, while chat-only imports return completed replies.
@@ -41,7 +60,9 @@ Windows and Linux packaging/CI is configured; native validation is still pending
   cancellation, and local read checkpoints help manage longer tasks.
 - **Choose a model for this computer.** Hardware detection and model cards explain
   memory fit, quantization, download size, licenses, and tool compatibility.
-  Optional calibration checks tool calling and measures generation speed.
+  Speed/tool-format calibration and **Validate model for tasks** are separate
+  checks. Memory controls offer Automatic, Low memory, and an explicit Experimental
+  disk trial on macOS Apple Silicon.
 - **Control the utilities.** **Tools** controls file reading, **Find files & text**,
   editing, and terminal commands. These local Agent tools work independently of
   the optional research plugin.
@@ -54,6 +75,9 @@ Windows and Linux packaging/CI is configured; native validation is still pending
   saved tasks in a sidebar, the conversation in the center, and the composer at
   the bottom. Mode, workspace, model, and tool controls sit beside your message.
   The light/dark theme preference is remembered locally.
+  Conversation text starts at 15 px, navigation at 13 px, and thinking/code at
+  14 px. Sidebar **Text size** remembers a local preference from 90% to 125%,
+  with 100% as the default.
 - **Start without a model.** A new installation offers model download or import.
   **Choose model** keeps your draft and attachments while you finish setup.
   Engine preparation and genuine failures have separate status messages.
@@ -67,6 +91,56 @@ Windows and Linux packaging/CI is configured; native validation is still pending
 | Chat | Conversation, writing, and attached-file reading. Project changes and commands require an Agent task. |
 
 ## Workspace
+
+![Free Local Agent alpha.4 R7 Working expanded during a real CLI repair](docs/screenshots/free-local-agent-alpha4-working-r7.png)
+
+*Actual final R7 app, ASAR `f01867ce…90b7`, using Qwen3.5 4B in its isolated
+validation profile. Working displays real model thinking and retained activities
+during a general coding task; mouse, Enter and Space expansion were checked.*
+
+![Free Local Agent alpha.4 R7 completed CLI repair with verified final source](docs/screenshots/free-local-agent-alpha4-cli-r7.png)
+
+*Actual final R7 answer and recorded checks after one approved edit and one
+approved verification command. Independent numeric, empty, malformed and
+nonnumeric input checks passed. The final source hash matches the approved edit
+and readback; this is evidence for this task, not a universal quality guarantee.*
+
+![Free Local Agent alpha.4 R7 ordinary Chat at 125 percent text scale](docs/screenshots/free-local-agent-alpha4-chat-r7.png)
+
+*Actual final R7 Chat answered only `42`, with zero tool calls or approvals.
+The 125% text-size control demonstrates the larger text layout. After a graceful
+quit/relaunch, the saved `42`, Chat mode and 125% setting were visibly restored.*
+
+![Free Local Agent alpha.4 R7 stopped Gemma experimental trial](docs/screenshots/free-local-agent-alpha4-gemma-trial-r7.png)
+
+*Actual final R7 app, ASAR `f01867ce…90b7`. Gemma loading stopped at the sampled
+memory budget: app last resident/limit 6.86 GiB, last available 7.62 GiB. Independent
+samples confirmed the CPU-only process and its exit. Mapping/lazy sizes and the
+absolute peak were unknown; Chat/tools never ran. The UI labels binary values GB;
+the report uses GiB. This is a safety-stop result, not successful model execution.*
+
+<details>
+<summary>Earlier task and workspace captures</summary>
+
+![Earlier R6 Gemma loading stop](docs/screenshots/free-local-agent-alpha4-gemma-trial.png)
+
+*Historical R6 ASAR `56a291ad…dfd3`: app resident sample 5.31 GiB against a
+4.75 GiB budget, warning pressure; Chat/tools not reached. This earlier trial
+retains its separate measurements and provenance in the validation report.*
+
+![Free Local Agent alpha.4 R4 native task with expanded thinking](docs/screenshots/free-local-agent-alpha4-file-task.png)
+
+*Actual final R4 app, ASAR `0968fd66…101e`, in its isolated validation profile.
+The separate Qwen file task retained four ordered tool activities and completed
+an approved creation/edit/readback sequence. The unquoted creation text lost a
+period; this is narrower operation evidence, not full semantic task acceptance.*
+
+![Free Local Agent alpha.4 R4 final answer and operation evidence](docs/screenshots/free-local-agent-alpha4-final-answer.png)
+
+*Actual final R4 answer/outcome view, exported through the app's File menu.
+**Recorded checks passed** describes four operation checks; the UI asks the user
+to review request fulfillment. See the [draft report](docs/alpha4-validation.md)
+for the failed built-in model validation and remaining acceptance checks.*
 
 ![Free Local Agent R10 showing expanded thinking and named tools during validation](docs/screenshots/free-local-agent-working-thinking-r10.png)
 
@@ -94,6 +168,8 @@ profile. Qwen3.5 4B is ready for calibration; no task is running in this capture
 thinking streams and a named tool activity is shown. Mouse, Space, and Enter
 activation were visibly checked; the disclosure stayed expanded across tool
 updates. This prerequisite stage does not establish an installed WordPress site.*
+
+</details>
 
 <details>
 <summary>Earlier alpha.3 workspace and folder-dialog captures</summary>
@@ -151,14 +227,45 @@ the app also reserves room for the operating system and considers available
 memory and accelerator placement.
 
 Model cards classify fit as **Recommended**, **Slow mode**, or **Insufficient
-memory**. Slow mode can use CPU or partial GPU offload and a smaller context.
+memory**. **Automatic** uses supported CPU/GPU profiles; **Allow slow mode**
+permits slower profiles when the weights fit. **Low memory** starts with a 4K
+context and smaller batches, and permits supported slow profiles.
 Staged processing reduces the context needed for large documents and long chats;
-the model weights must still fit usable memory. A smaller active parameter count
-in an expert model does not eliminate its stored weights.
+in these modes, the model weights must still fit usable memory. A smaller active
+parameter count in an expert model does not eliminate its stored weights.
+
+**Experimental disk** is an opt-in, macOS ARM64-only CPU trial using mapped
+weights, a 4K context, and smaller batches. Choose the mode, then **Try Experimental disk mode**;
+selection alone never starts a trial. The app verifies the model and runs a load
+and Chat probe before permitting inference; Agent also requires a native tool
+probe. A failed tool probe leaves a successfully Chat-probed model Chat-only.
+**Cancel trial** unloads the trial
+model. Changing memory mode invalidates the trial. Original memory-fit labels
+remain estimates, including **Insufficient memory**.
+
+Trial metrics distinguish engine-reported mapped/lazy-eligible sizes from sampled
+resident memory, available memory, and pressure; unmeasured values say **Unknown**.
+The monitor can stop the owned inference process after a sampled resident-budget
+or critical-pressure failure. This is sampled protection, not an operating-system
+memory cap. Disk paging can be very slow, and unsupported tensor layouts may have
+no lazy-eligible weights. It does not guarantee that a huge model can run on a
+small computer or that a free local model matches frontier-model quality.
 
 Imported models start with chat capabilities. Agent tools require a supported
 architecture/template and passing native tool calibration. A chat-only model can
 still process attached files through the app's local reading stages.
+
+**Validate model for tasks** checks ordinary chat and native tool format, then
+opens a small scratch Agent task with normal approvals for creation, exact edit,
+and readback. Its recorded checks also require exact final bytes and a nonempty
+final answer. Validation is specific to the model digest, runtime, and execution
+profile; a passed load probe or speed measurement does not establish task quality.
+The final R4 Qwen3.5 4B built-in validation failed on two exact-edit argument
+mismatches; its blocked answer and unchanged file are preserved in the
+[model-specific report](docs/alpha4-validation.md). Passing a separate simpler
+task does not reclassify that result. Gemma's integrity passed, but its R7
+loading safety stop left Chat/tool/task checks unverified. Broader task quality
+remains unverified.
 
 ## Your tools, your approval
 
@@ -184,16 +291,33 @@ permissions and are not OS-sandboxed. Undo restores file snapshots and cannot
 reverse terminal-command side effects. Resume verifies read checkpoints against
 source hashes and never automatically repeats an agent edit or command.
 
+Alpha.4 keeps approval state authoritative in the local host. Settled, denied,
+cancelled, and expired requests are reconciled when the workspace reconnects,
+regains focus, or encounters a response error, and periodically while approval is
+pending. A stale message cannot restore a settled request or dismiss a newer one.
+Reconnecting only reads current state; it never approves or replays an action.
+Denial stops subsequent edits and commands for that turn. Send a new request to
+continue after inspecting the recorded result.
+
+Saved task outcomes show **Passed**, **Failed**, and **Unverified** checks with
+their recorded operation evidence. **Recorded checks passed** means those checks
+passed; it does not prove that the whole request was fulfilled. Review the files,
+command results, and any unverified requirements.
+
 ## Get started
 
-For a packaged macOS build, unzip `Free Local Agent-0.4.0-alpha.3-arm64-mac.zip`, move
+For an available local macOS build, check its identity in the
+[validation report](docs/alpha4-validation.md), then unzip
+`release/alpha4-delivery/Free Local Agent-0.4.0-alpha.4-arm64-mac.zip`, move
 `Free Local Agent.app` to Applications, and open it. Apple Silicon and macOS 13.3 or newer are
 required. This alpha is unsigned and not notarized.
 
 1. Open **Models & hardware** and review your detected hardware.
 2. Download a model that fits, or **Import GGUF** from a local file.
-3. Select the model; optionally run **Check tools & speed**.
-4. Start **New task**, keep **Agent** selected, and choose a workspace before
+3. Select the model; optionally **Measure speed & tool format** or **Validate
+   model for tasks**. Experimental disk requires its separate explicit trial.
+4. Start **New task**, keep **Agent** selected, choose Standard or Careful,
+   and choose a workspace before
    starting: use sidebar **Add folder**, or **Create folder** followed by its
    parent-folder picker. Describe what to build. Use **Chat** for conversation
    and attachments; enable Research in **Plugins** for its read-only mode.
@@ -258,7 +382,20 @@ is retained to preserve existing installations. The app adds no disk encryption.
 
 ## Validation and current limits
 
-A **guided sequence of real native Agent tasks with Qwen3.5 4B** created,
+Alpha.4's approval reconciliation, task outcomes, Careful workflow, memory modes,
+and model-validation controls are implemented. R7 passed **315/315 automated
+checks**, TypeScript, offline packaged smoke, 94 Python source tests and 8 frozen
+protocol tests. Final R7 CLI repair, exact-file work, retained-file readback and
+ordinary Chat passed their recorded checks; Chat/preferences survived reopening.
+Empty/regular-profile verification remains pending. Reader/gateway/context fixes, model failures,
+narrower file success, captures, and artifact hashes are separated in the
+[alpha.4 draft report](docs/alpha4-validation.md). Gemma's R7 loading stop has
+app-owned readings and independent owned-process samples/exit observation;
+mapped/lazy sizes and absolute peak remain unknown, and inference/task quality
+was not measured. The following results describe
+earlier alpha.3 packages, not alpha.4 acceptance.
+
+A **guided sequence of real native alpha.3 Agent tasks with Qwen3.5 4B** created,
 repaired, started, and installed a local WordPress project. Independent
 validation passed **12/12 checks**: valid configuration, healthy database,
 installed WordPress **7.1.3**, intended site title, homepage HTTP **200**, and the
@@ -282,11 +419,14 @@ task created the dated uploads directory as the web-server user, verified
 the cached image digests, and created `RUNNING.md`
 with stop/restart instructions. Independent read-only checks confirmed both
 uploads directories writable as the web-server user. Browser media upload was
-not tested. The final R12 app's ordinary Chat and final native-control checks
-remain pending. Its general file check applied the exact approved correction
+not tested. Ordinary Chat and final control checks were not established for
+that historical R12 payload; current R7 Chat/reopen passed above. Its general
+file check applied the exact approved correction
 and independent readback found `Local agents can build tools.`; the final
 assistant readback state was not captured after the native approval surface
-stopped refreshing. See the [current validation record](docs/general-agent-validation.md).
+stopped refreshing. Final R7 closed that retained-file task with a fresh read-only
+answer. See the [historical alpha.3 record](docs/general-agent-validation.md)
+and [current alpha.4 evidence](docs/alpha4-validation.md).
 
 The final R12 app also created and selected a new empty workspace through its
 native folder picker. Earlier actual tests verified mouse/Enter/Space Working
@@ -297,8 +437,9 @@ in the [component](docs/general-agent-components.json) and
 [task-attempt](docs/general-agent-task-attempts.json) records.
 
 The final alpha.3 source passed **210/210 app/runtime tests**, strict TypeScript,
-and offline packaged smoke, with public networking denied and loopback allowed
-for the tests. The current Apple Silicon ZIP is **216,988,256 bytes** in
+and offline packaged smoke. Those historical checks retain their own scope;
+the current R7 full-suite OS-enforced offline result is recorded above. The
+recorded alpha.3 Apple Silicon ZIP is **216,988,256 bytes** in
 `release/general-agent-delivery/`; exact archive, app, and backend checksums are
 in the [delivery record](docs/general-agent-package.json). The earlier **14
 synthetic renderer scenarios** have not been rerun on the current renderer.

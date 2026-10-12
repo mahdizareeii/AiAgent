@@ -7,7 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test,type TestContext} from 'node:test';
 import {createServer} from 'node:http';
-import {LocalInferenceRuntime,MODEL_CATALOG,isAllocationFailure,type CuratedModel,type HardwareInfo} from '../index.ts';
+import {LocalInferenceRuntime,MODEL_CATALOG,isAllocationFailure,EXPERIMENTAL_PROFILE_SIGNATURE,ENGINE_COMMIT,inferenceProfileSignature,type CuratedModel,type HardwareInfo,type RuntimeOptions,type ResourceMeasurements} from '../index.ts';
 import {classifyModel,GIB,parseDevices,parseMacAvailableMemory} from '../hardware.ts';
 import {readGGUFMetadata} from '../gguf.ts';
 
@@ -23,11 +23,11 @@ const bytes=ggufFixture();
 const spec:CuratedModel={id:'fixture:4b',title:'Fixture',description:'Test model',estimatedDownloadBytes:bytes.length,minimumMemoryGB:8,workingMemoryGB:4,license:'Apache-2.0',sourceUrl:'https://huggingface.co/example/model',quantization:'Q4',repository:'example/model',revision:'a'.repeat(40),filename:'fixture.gguf',sha256:createHash('sha256').update(bytes).digest('hex'),architecture:'llama',toolCapable:true};
 const hardware:HardwareInfo={platform:'darwin',architecture:'arm64',cpuModel:'Fixture',cpuCores:8,totalMemoryBytes:24*GIB,availableMemoryBytes:20*GIB,freeDiskBytes:100*GIB,gpus:[{name:'Metal fixture',backend:'metal',totalMemoryBytes:20*GIB,freeMemoryBytes:20*GIB,unifiedMemory:true}]};
 const fake=fileURLToPath(new URL('./fake-engine.cjs',import.meta.url));
-async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch,options:{installedModel?:boolean}={}){
+async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch,options:{installedModel?:boolean;runtimeSettings?:Partial<RuntimeOptions>}={}){
   const directory=await mkdtemp(path.join(tmpdir(),'local-agent-runtime-'));t.after(()=>rm(directory,{recursive:true,force:true}));if(options.installedModel!==false){await mkdir(path.join(directory,'models'));await writeFile(path.join(directory,'models',spec.filename),bytes);}
   const launches:string[][]=[];
   const runtime=new LocalInferenceRuntime({dataDirectory:directory,executablePath:process.execPath,catalog:[spec],hardware:detectedHardware,startupTimeoutMs:3000,stopTimeoutMs:500,fetch:fetchImplementation,
-    env:{...process.env,OPENAI_API_KEY:'secret',LLAMA_ARG_TOOLS:'all',LLAMA_ARG_RPC:'remote:5000'},
+    env:{...process.env,OPENAI_API_KEY:'secret',LLAMA_ARG_TOOLS:'all',LLAMA_ARG_RPC:'remote:5000'},...options.runtimeSettings,
     spawn:(command,args,options)=>{launches.push(args);return spawn(process.execPath,[fake,...args],{...options,env:{...options.env,...extraEnv}});}});
   t.after(()=>runtime.stop());return {runtime,directory,launches};
 }
@@ -261,4 +261,176 @@ test('memory fit respects unified Metal budget, active application pressure, OS 
 
 test('malformed GGUF array bounds fail before allocating attacker-chosen sizes',async t=>{
   const {directory}=await fixture(t);const file=path.join(directory,'invalid.gguf');await writeFile(file,Buffer.concat([Buffer.from('GGUF'),u32(3),u64(1),u64(1),str('bad'),u32(9),u32(8),u64(100_000_000)]));await assert.rejects(readGGUFMetadata(file),{code:'INVALID_GGUF'});
+});
+
+const resource=(residentBytes=64*1024**2,availableMemoryBytes=20*GIB,pressure:ResourceMeasurements['pressure']='normal'):ResourceMeasurements=>({sampledAt:new Date().toISOString(),residentBytes,availableMemoryBytes,pressure});
+async function waitFor(predicate:()=>boolean,timeoutMs=2500):Promise<void>{const deadline=Date.now()+timeoutMs;while(!predicate()){if(Date.now()>deadline)throw new Error('Timed out waiting for runtime state.');await new Promise(resolve=>setTimeout(resolve,10));}}
+
+test('Low memory starts with bounded 4K batches while retaining ordinary fit classification',async t=>{
+  const {runtime}=await fixture(t);await runtime.start();const before=(await runtime.listModels())[0].fit;
+  await runtime.setMemoryMode('low-memory');const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.memoryMode,'low-memory');
+  assert.equal(prepared.contextTokens,4096);assert.equal(runtime.getStatus().profile?.batchTokens,128);assert.equal(runtime.getStatus().profile?.microBatchTokens,32);
+  assert.equal((await runtime.listModels())[0].fit,before);const flags=(await runtime.requestJson<{flags:string[]}>('/env')).flags;
+  assert.equal(flags[flags.indexOf('--fit')+1],'on');assert(!flags.includes('--lazy-mode'));
+});
+
+test('Experimental disk requires an explicit successful digest/profile probe and never changes normal fit labels',async t=>{
+  const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
+  const fit=(await runtime.listModels())[0].fit;await runtime.setMemoryMode('experimental-disk');
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'EXPERIMENTAL_TRIAL_REQUIRED'});assert.equal(launches.filter(args=>args.includes('--model')).length,0);
+  const prepared=await runtime.startExperimentalTrial(spec.id);assert.equal(prepared.probePassed,true);assert.equal(prepared.toolCapable,true);assert.equal(prepared.profileSignature,EXPERIMENTAL_PROFILE_SIGNATURE);
+  assert.equal(runtime.getStatus().experimentalTrial?.digest,spec.sha256);assert.equal(runtime.getStatus().experimentalTrial?.state,'passed');assert.equal((await runtime.listModels())[0].fit,fit);
+  const flags=(await runtime.requestJson<{flags:string[]}>('/env')).flags;
+  for(const [flag,value] of [['--fit','off'],['--load-mode','mmap'],['--lazy-mode','on'],['--device','none'],['--n-gpu-layers','0'],['--cache-type-k','f16'],['--cache-type-v','f16'],['--ctx-size','4096'],['--batch-size','128'],['--ubatch-size','32'],['--parallel','1']])assert.equal(flags[flags.indexOf(flag)+1],value);
+  assert(flags.includes('--no-op-offload'));assert.equal(runtime.getStatus().experimentalTrial?.mappedBytes,128*1024**2);assert.equal(runtime.getStatus().experimentalTrial?.lazyEligibleBytes,16*1024**2);
+  assert.equal((await runtime.prepareModel(spec.id)).baseUrl,prepared.baseUrl);assert.equal(launches.filter(args=>args.includes('--model')).length,1);
+  await assert.rejects(runtime.restartLowerProfile(),{code:'EXPERIMENTAL_RECOVERY_DISABLED'});
+});
+
+test('a prior app-owned model is unloaded before the experimental budget is measured',async t=>{
+  let active=0,measured=false;const {runtime}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:async pid=>{if(pid===null){assert.equal(active,0);measured=true;}return resource();}}});
+  runtime.on('status',status=>{active=status.baseUrl?1:0;});await runtime.start();await runtime.prepareModel(spec.id);assert.equal(active,1);
+  await runtime.startExperimentalTrial(spec.id);assert(measured);assert.equal(runtime.getStatus().experimentalTrial?.resourceBudgetBytes,19*GIB);
+});
+
+test('experimental tool-format failure retains a successfully probed Chat-only model',async t=>{
+  const {runtime}=await fixture(t,{FAKE_CALIBRATE_FAIL:'1'},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});
+  await runtime.start();const prepared=await runtime.startExperimentalTrial(spec.id);assert.equal(prepared.probePassed,true);assert.equal(prepared.toolCapable,false);assert.deepEqual(prepared.capabilities,['completion']);
+  assert.equal(runtime.getStatus().experimentalTrial?.toolProbePassed,false);assert.equal(runtime.getStatus().experimentalTrial?.state,'passed');
+});
+
+test('failed experimental Chat probe does not allow subsequent model or Agent preparation',async t=>{
+  const {runtime}=await fixture(t,{FAKE_CHAT_PROBE_FAIL:'1'},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
+  await assert.rejects(runtime.startExperimentalTrial(spec.id),{code:'EXPERIMENTAL_CHAT_PROBE_FAILED'});assert.equal(runtime.getStatus().baseUrl,null);assert.equal(runtime.getStatus().experimentalTrial?.probePassed,false);
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'EXPERIMENTAL_TRIAL_REQUIRED'});
+});
+
+test('experimental platform, headroom, and initial monitoring failures stop before launching weights',async t=>{
+  const cases=[
+    {hardware:{...hardware,platform:'linux' as const},probe:async()=>resource(),code:'EXPERIMENTAL_PLATFORM_UNSUPPORTED'},
+    {hardware,probe:async()=>resource(0,2*GIB),code:'EXPERIMENTAL_WORKSPACE_INSUFFICIENT'},
+    {hardware,probe:async()=>{throw new Error('missing measurements');},code:'EXPERIMENTAL_TRIAL_FAILED'},
+    {hardware,probe:async()=>resource(0,20*GIB,'critical'),code:'EXPERIMENTAL_WORKSPACE_INSUFFICIENT'},
+  ];
+  for(const entry of cases){const {runtime,launches}=await fixture(t,{},entry.hardware,undefined,{runtimeSettings:{resourceProbe:entry.probe}});await runtime.start();await assert.rejects(runtime.startExperimentalTrial(spec.id),{code:entry.code});assert.equal(launches.filter(args=>args.includes('--model')).length,0);assert.equal(runtime.getStatus().baseUrl,null);}
+});
+
+test('experimental watchdog stops on resident limit, pressure, sustained low availability, or unavailable measurements without restarting',async t=>{
+  for(const failure of ['resident','pressure','available','missing'] as const){let unsafe=false;const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceIntervalMs:20,resourceProbe:async()=>{if(!unsafe)return resource();if(failure==='missing')throw new Error('probe failed');return failure==='resident'?resource(20*GIB):failure==='pressure'?resource(0,20*GIB,'critical'):resource(0,128*1024**2);}}});
+    await runtime.start();await runtime.startExperimentalTrial(spec.id);unsafe=true;await waitFor(()=>runtime.getStatus().experimentalTrial?.state==='failed'&&runtime.getStatus().baseUrl===null);
+    assert.equal(runtime.getStatus().experimentalTrial?.probePassed,false);assert.equal(runtime.getStatus().loadedModel,null);assert.equal(launches.filter(args=>args.includes('--model')).length,1);
+    assert.equal(runtime.getStatus().error?.code,{resident:'EXPERIMENTAL_RESIDENT_LIMIT',pressure:'EXPERIMENTAL_MEMORY_PRESSURE',available:'EXPERIMENTAL_AVAILABLE_MEMORY',missing:'RESOURCE_MONITOR_UNAVAILABLE'}[failure]);
+  }
+});
+
+test('experimental loading and shared probe deadlines are bounded without allocation retries',async t=>{
+  const loading=await fixture(t,{FAKE_HEALTH_DELAY:'1'},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource(),experimentalLoadTimeoutMs:80}});await loading.runtime.start();
+  await assert.rejects(loading.runtime.startExperimentalTrial(spec.id),{code:'EXPERIMENTAL_LOAD_TIMEOUT'});assert.equal(loading.launches.filter(args=>args.includes('--model')).length,1);
+  const probe=await fixture(t,{FAKE_CALIBRATION_DELAY:'1'},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource(),experimentalCalibrationTimeoutMs:80}});await probe.runtime.start();
+  await assert.rejects(probe.runtime.startExperimentalTrial(spec.id),{code:'EXPERIMENTAL_CALIBRATION_TIMEOUT'});assert.equal(probe.runtime.getStatus().baseUrl,null);assert.equal(probe.launches.filter(args=>args.includes('--model')).length,1);
+});
+
+test('explicit experimental cancellation invalidates its probe and permits returning to the retained normal model',async t=>{
+  const {runtime,directory}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();await runtime.startExperimentalTrial(spec.id);
+  await runtime.cancelExperimentalTrial();assert.equal(runtime.getStatus().experimentalTrial?.state,'cancelled');assert.equal(runtime.getStatus().baseUrl,null);
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'EXPERIMENTAL_TRIAL_REQUIRED'});assert.deepEqual(await readFile(path.join(directory,'models',spec.filename)),bytes);
+  await runtime.setMemoryMode('automatic');await runtime.prepareModel(spec.id);assert.equal(runtime.getStatus().profile?.contextTokens,8192);
+});
+
+test('experimental cancellation during loading settles once and cleans the private key',async t=>{
+  const {runtime,directory,launches}=await fixture(t,{FAKE_HEALTH_DELAY:'1'},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
+  const trial=runtime.startExperimentalTrial(spec.id),rejected=assert.rejects(trial,{name:'AbortError'});await waitFor(()=>Boolean(runtime.getStatus().baseUrl));
+  await runtime.cancelExperimentalTrial();await rejected;assert.equal(runtime.getStatus().experimentalTrial?.state,'cancelled');assert.equal(launches.filter(args=>args.includes('--model')).length,1);
+  assert.deepEqual((await readdir(directory)).filter(file=>file.startsWith('.inference-key-')),[]);
+});
+
+test('experimental cancellation is effective immediately before engine/model preparation',async t=>{
+  const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
+  const trial=runtime.startExperimentalTrial(spec.id),rejected=assert.rejects(trial,{name:'AbortError'});await runtime.cancelExperimentalTrial();await rejected;
+  assert.equal(runtime.getStatus().experimentalTrial?.state,'cancelled');assert.equal(launches.filter(args=>args.includes('--model')).length,0);assert.equal(runtime.getStatus().baseUrl,null);
+});
+
+test('a stalled resource monitor and stale or future samples fail closed before loading',async t=>{
+  for(const probe of [async()=>new Promise<ResourceMeasurements>(()=>{}),async()=>({...resource(),sampledAt:new Date(Date.now()-30000).toISOString()}),async()=>({...resource(),sampledAt:new Date(Date.now()+30000).toISOString()})]){
+    const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:probe}});await runtime.start();
+    await assert.rejects(runtime.startExperimentalTrial(spec.id),{code:'RESOURCE_MONITOR_UNAVAILABLE'});assert.equal(launches.filter(args=>args.includes('--model')).length,0);
+  }
+});
+
+test('initial experimental loading deadline also bounds a stalled properties request',async t=>{
+  const nativeFetch=fetch;const fetcher:typeof fetch=async(input,init)=>{
+    if(String(input).endsWith('/props'))return new Promise<Response>((_resolve,reject)=>{init?.signal?.addEventListener('abort',()=>reject(init.signal?.reason),{once:true});});
+    return nativeFetch(input,init);
+  };
+  const {runtime,launches}=await fixture(t,{},hardware,fetcher,{runtimeSettings:{resourceProbe:async()=>resource(),experimentalLoadTimeoutMs:350}});await runtime.start();
+  await assert.rejects(runtime.startExperimentalTrial(spec.id),{code:'EXPERIMENTAL_LOAD_TIMEOUT'});assert.equal(launches.filter(args=>args.includes('--model')).length,1);assert.equal(runtime.getStatus().baseUrl,null);
+});
+
+test('an experimental startup failure preserves a genuine missing-engine error state',async t=>{
+  const {directory}=await fixture(t);const runtime=new LocalInferenceRuntime({dataDirectory:directory,resourcesDirectory:path.join(directory,'missing-runtime'),catalog:[spec],hardware,resourceProbe:async()=>resource()});t.after(()=>runtime.stop());
+  await assert.rejects(runtime.startExperimentalTrial(spec.id),{code:'ENGINE_NOT_AVAILABLE'});assert.equal(runtime.getStatus().state,'error');assert.equal(runtime.getStatus().error?.code,'ENGINE_NOT_AVAILABLE');assert.equal(runtime.getStatus().experimentalTrial?.state,'failed');
+});
+
+test('experimental model selection keeps insufficient fit labels without treating estimates as hard integrity blocks',async t=>{
+  const oversized={...spec,workingMemoryGB:40};const {runtime,directory,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[oversized]}});await runtime.start();
+  const automatic=(await runtime.listModels())[0];assert.equal(automatic.fit,'insufficient');assert.equal(automatic.blockedReason,automatic.fitReason);
+  await runtime.setMemoryMode('experimental-disk');const experimental=(await runtime.listModels())[0];assert.equal(experimental.fit,'insufficient');assert.equal(experimental.fitReason,automatic.fitReason);assert.equal(experimental.blockedReason,null);
+  assert.equal(experimental.digest,spec.sha256);assert.equal(experimental.installed,true);assert.deepEqual(launches,[['--version']],'Selection/listing must not launch an experimental trial.');
+  const corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;await writeFile(path.join(directory,'models',spec.filename),corrupt);await assert.rejects(runtime.inspectModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});
+  const blocked=(await runtime.listModels())[0];assert.equal(blocked.fit,'insufficient');assert.equal(blocked.blockedReason,blocked.verificationError);assert.match(blocked.blockedReason!,/SHA-256/);assert.equal(blocked.digest,null);
+  await assert.rejects(runtime.prepareModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});assert.deepEqual(launches,[['--version']]);
+});
+
+test('experimental mode cannot grant tools to an unvalidated import or accept corrupt imported weights',async t=>{
+  const {runtime,directory}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
+  const source=path.join(directory,'custom-model.gguf');await writeFile(source,ggufFixture('llama','Unvalidated architecture'));const imported=await runtime.importModel(source);
+  const prepared=await runtime.startExperimentalTrial(imported.model);assert.equal(prepared.probePassed,true);assert.equal(prepared.toolCapable,false);assert.deepEqual(prepared.capabilities,['completion']);assert.equal(runtime.getStatus().experimentalTrial?.toolProbePassed,false);
+  const invalid=path.join(directory,'corrupt-import.gguf');await writeFile(invalid,Buffer.alloc(64,0x61));await assert.rejects(runtime.importModel(invalid),{code:'INVALID_GGUF'});
+  assert.equal((await runtime.listModels()).find(model=>model.id===imported.model)?.toolCapable,false);assert.equal(await readFile(invalid,'utf8'),'a'.repeat(64));
+});
+
+test('all memory modes expose the same stable effective profile identity in status, prepared model and successful trials',async t=>{
+  const nativeFetch=fetch;const fetcher:typeof fetch=async(input,init)=>{const response=await nativeFetch(input,init);if(String(input).endsWith('/props')&&response.ok){const props=await response.json();props.default_generation_settings.n_ctx=2048;return Response.json(props);}return response;};
+  const {runtime}=await fixture(t,{},hardware,fetcher,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();assert.equal(runtime.getStatus().profileSignature,null);
+  const automatic=await runtime.prepareModel(spec.id);assert.equal(automatic.profileSignature,runtime.getStatus().profileSignature);
+  const descriptor=JSON.parse(automatic.profileSignature!);assert.equal(descriptor.engineCommit,ENGINE_COMMIT);assert.equal(descriptor.memoryMode,'automatic');assert.equal(descriptor.contextTokens,2048);assert.equal(descriptor.outputTokens,512);assert.equal(descriptor.batchTokens,512);assert.equal(descriptor.microBatchTokens,128);
+  assert.equal(automatic.profileSignature,inferenceProfileSignature(runtime.getStatus().profile!,'automatic'));assert.equal((await runtime.prepareModel(spec.id)).profileSignature,automatic.profileSignature);
+  await runtime.setMemoryMode('low-memory');assert.equal(runtime.getStatus().profileSignature,null);const low=await runtime.prepareModel(spec.id);assert.equal(low.profileSignature,runtime.getStatus().profileSignature);assert.notEqual(low.profileSignature,automatic.profileSignature);assert.equal(JSON.parse(low.profileSignature!).batchTokens,128);
+  const lower=await runtime.restartLowerProfile();assert.equal(lower.profileSignature,runtime.getStatus().profileSignature);assert.notEqual(lower.profileSignature,low.profileSignature);assert.equal(JSON.parse(lower.profileSignature!).batchTokens,64);
+  const experimental=await runtime.startExperimentalTrial(spec.id);assert.equal(experimental.profileSignature,runtime.getStatus().profileSignature);assert.equal(runtime.getStatus().experimentalTrial?.profileSignature,experimental.profileSignature);assert.notEqual(experimental.profileSignature,EXPERIMENTAL_PROFILE_SIGNATURE,'A confirmed smaller native context must alter the requested experimental identity.');
+  assert.equal(JSON.parse(experimental.profileSignature!).contextTokens,2048);assert.equal(JSON.parse(experimental.profileSignature!).backend,'cpu');assert.equal(JSON.parse(experimental.profileSignature!).memoryMode,'experimental-disk');assert.equal((await runtime.prepareModel(spec.id)).profileSignature,experimental.profileSignature);
+  await runtime.stop();assert.equal(runtime.getStatus().profileSignature,null);
+});
+
+test('manual calibration synchronizes only the tool probe of the same successful experimental digest/profile',async t=>{
+  let validToolFormat=false;const nativeFetch=fetch;
+  const fetcher:typeof fetch=async(input,init)=>{
+    if(String(input).endsWith('/v1/chat/completions')&&JSON.parse(String(init?.body)).tools&&validToolFormat)return Response.json({choices:[{message:{tool_calls:[{function:{name:'local_probe',arguments:'{"word":"OK"}'}}]}}],timings:{predicted_per_second:42}});
+    return nativeFetch(input,init);
+  };
+  const {runtime}=await fixture(t,{FAKE_CALIBRATE_FAIL:'1'},hardware,fetcher,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
+  const chatOnly=await runtime.startExperimentalTrial(spec.id);assert.equal(chatOnly.toolCapable,false);const trial=runtime.getStatus().experimentalTrial!;assert.equal(trial.toolProbePassed,false);
+  validToolFormat=true;const calibrated=await runtime.calibrateModel(spec.id);assert.equal(calibrated.toolCapable,true);assert.deepEqual(calibrated.capabilities,['completion','tools']);
+  assert.deepEqual(runtime.getStatus().experimentalTrial,{...trial,toolProbePassed:true},'Calibration must not change Chat probe, identity, state, timing, metrics or task validation.');
+  validToolFormat=false;await assert.rejects(runtime.calibrateModel(spec.id),{code:'MODEL_CALIBRATION_FAILED'});const failed=await runtime.prepareModel(spec.id);assert.equal(failed.toolCapable,false);assert.deepEqual(failed.capabilities,['completion']);
+  assert.deepEqual(runtime.getStatus().experimentalTrial,trial,'A failed tool probe retains the successful Chat-only trial without promoting it.');
+  await runtime.cancelExperimentalTrial();const cancelled=runtime.getStatus().experimentalTrial;
+  validToolFormat=true;await assert.rejects(runtime.calibrateModel(spec.id),{code:'EXPERIMENTAL_TRIAL_REQUIRED'});assert.deepEqual(runtime.getStatus().experimentalTrial,cancelled,'Calibration cannot revive a cancelled trial.');
+});
+
+test('experimental RAM refresh preserves validated Metal devices for the return to Automatic inference',async t=>{
+  const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{resourceProbe:async()=>resource(),refreshHardware:async()=>({...hardware,availableMemoryBytes:18*GIB,freeDiskBytes:90*GIB,gpus:[]})}});await runtime.start();
+  const originalGPUs=runtime.getStatus().hardware!.gpus;const originalFit=(await runtime.listModels())[0].fit;
+  await runtime.startExperimentalTrial(spec.id);assert.equal(runtime.getStatus().profile?.backend,'cpu');assert.deepEqual(runtime.getStatus().hardware?.gpus,originalGPUs);assert.equal(runtime.getStatus().hardware?.freeDiskBytes,90*GIB);assert.equal((await runtime.listModels())[0].fit,originalFit);
+  const experimentalFlags=launches.filter(args=>args.includes('--model')).at(-1)!;assert.equal(experimentalFlags[experimentalFlags.indexOf('--n-gpu-layers')+1],'0');assert.equal(experimentalFlags[experimentalFlags.indexOf('--device')+1],'none');assert.equal(runtime.getStatus().experimentalTrial?.resourceBudgetBytes,19*GIB,'Preserved unified GPU descriptors cannot add another memory budget.');
+  await runtime.setMemoryMode('automatic');const restored=await runtime.prepareModel(spec.id);assert.equal(runtime.getStatus().profile?.backend,'metal');assert.deepEqual(runtime.getStatus().hardware?.gpus,originalGPUs);assert.equal(JSON.parse(restored.profileSignature!).backend,'metal');
+  const automaticFlags=launches.filter(args=>args.includes('--model')).at(-1)!;assert(!automaticFlags.includes('--device'));assert(!automaticFlags.includes('--n-gpu-layers'));assert.equal(automaticFlags[automaticFlags.indexOf('--fit')+1],'on');
+});
+
+test('execution request timeout is configurable to one hour while control APIs retain short limits',async t=>{
+  const nativeFetch=fetch;let captured:AbortSignal|undefined;
+  const {runtime}=await fixture(t,{},hardware,async(input,init)=>{if(String(input).endsWith('/v1/chat/completions')&&JSON.parse(String(init?.body)).messages?.[0]?.content==='deadline probe'){captured=init?.signal??undefined;return new Promise((_resolve,reject)=>{captured?.addEventListener('abort',()=>reject(captured?.reason),{once:true});});}return nativeFetch(input,init);});
+  await runtime.start();await runtime.prepareModel(spec.id);runtime.setExecutionRequestTimeout(1000);
+  await assert.rejects(runtime.requestStream('/v1/chat/completions',{messages:[{role:'user',content:'deadline probe'}]}),{name:'TimeoutError'});assert(captured?.aborted);
+  runtime.setExecutionRequestTimeout(3600000);assert.throws(()=>runtime.setExecutionRequestTimeout(3600001),{code:'INVALID_REQUEST_DEADLINE'});assert.equal((await runtime.requestJson<{total_slots:number}>('/props')).total_slots,1);
 });

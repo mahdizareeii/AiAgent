@@ -4,13 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { BudgetedInference } from './inference-gateway.ts';
-import type { StageProgress, UtilityPreferences } from './renderer/types.ts';
+import type { StageProgress, UtilityPreferences, TaskOutcome } from './renderer/types.ts';
 
 interface Source { path: string; sha256: string; size: number; kind: 'text' | 'pdf'; cursor?: string | null; done?: boolean }
 export interface Checkpoint { version: 1; request: string; modelDigest: string; sources: Source[]; summaries: string[]; textOffset: number;
-  phase: 'reading' | 'reducing' | 'ready' | 'agent' | 'finished'; context?: string; completed: number; stage: StageProgress }
+  phase: 'reading' | 'reducing' | 'ready' | 'agent' | 'finished'; context?: string; completed: number; stage: StageProgress;
+  outcome?: { status: TaskOutcome['status']; finishReason: string } }
 export class StagedWork {
   private client?: Client; private transport?: StdioClientTransport;
+  private cancelRead?: () => void;
   private options: { directory: string; executable: string; roots: string[]; files: string[];
     utilities: UtilityPreferences; inference: BudgetedInference; signal: AbortSignal; onStage: (stage: StageProgress) => void };
   constructor(options: StagedWork['options']) { this.options = options; }
@@ -34,13 +36,30 @@ export class StagedWork {
     value.phase = phase; value.stage = { stage: phase === 'agent' ? 'Agent working' : 'Completed', resumable: false, message: phase === 'agent' ? 'Actions require approval. Interrupted agent actions are never replayed by resume.' : 'Task completed.' };
     await this.save(value);
   }
+  async finishOutcome(status: TaskOutcome['status'], finishReason: string) {
+    const value = await this.readCheckpoint(); if (!value) return;
+    if (['reading', 'reducing', 'ready'].includes(value.phase) && status !== 'completed') {
+      value.outcome = { status, finishReason };
+      value.stage = { ...value.stage, resumable: true, message: finishReason };
+      await this.save(value); return;
+    }
+    // Only read stages resume automatically. A terminal agent outcome remains closed.
+    value.phase = 'finished'; value.outcome = { status, finishReason };
+    value.stage = { stage: status === 'completed' ? 'Completed' : 'Task ended', resumable: false, message: finishReason };
+    await this.save(value);
+  }
   private async connect() {
+    this.options.signal.throwIfAborted();
     this.transport = new StdioClientTransport({ command: this.options.executable, args: [], env: {
       PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', TEMP: process.env.TEMP ?? '', TMPDIR: process.env.TMPDIR ?? '',
       LOCAL_AGENT_MODE: 'assistant', LOCAL_AGENT_GRANTED_ROOTS: JSON.stringify(this.options.roots), LOCAL_AGENT_GRANTED_FILES: JSON.stringify(this.options.files),
       LOCAL_AGENT_UTILITIES: JSON.stringify({ ...this.options.utilities, projectSearch: false, webResearch: false }), LOCAL_AGENT_TOOL_RESULT_CHARS: '3000' } });
-    this.client = new Client({ name: 'local-agent-stages', version: '0.2.0' }); await this.client.connect(this.transport);
-    this.options.signal.addEventListener('abort', () => { void this.client?.close(); }, { once: true });
+    this.client = new Client({ name: 'local-agent-stages', version: '0.4.0-alpha.4' });
+    this.cancelRead = () => { void this.client?.close().catch(() => {}); void this.transport?.close().catch(() => {}); };
+    this.options.signal.addEventListener('abort', this.cancelRead, { once: true });
+    this.options.signal.throwIfAborted();
+    await this.client.connect(this.transport);
+    this.options.signal.throwIfAborted();
   }
   private async tool(name: string, args: Record<string, unknown>): Promise<any> {
     if (this.options.signal.aborted) throw new Error('Response stopped.');
@@ -112,6 +131,6 @@ export class StagedWork {
       checkpoint.context = summaries.join('\n'); checkpoint.phase = 'ready';
       checkpoint.stage = { stage: 'Sources ready', completed: checkpoint.completed, resumable: true, message: 'Source summaries are local and may omit details; original files remain available through paged reads.' }; await this.save(checkpoint);
       return checkpoint.context;
-    } finally { await this.client?.close().catch(() => {}); }
+    } finally { if (this.cancelRead) this.options.signal.removeEventListener('abort', this.cancelRead); await this.client?.close().catch(() => {}); }
   }
 }

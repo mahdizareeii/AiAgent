@@ -16,7 +16,7 @@ const invoke = (tool: string, args: object, signal: AbortSignal) =>
 // The SDK's stdio transport does not close itself on EOF. Cancel pending local
 // requests when its parent disappears, including an approval still being read.
 process.stdin.once('end', () => { bridgeController.abort(); void server.close(); });
-if (utilities.fileEditing) server.registerTool('edit_file', { description: 'Propose a precise text replacement inside the selected project. The desktop asks the user to review and approve before writing.',
+if (utilities.fileEditing) server.registerTool('edit_file', { description: 'Propose one exact text replacement inside the selected project. Copy old_text exactly from read_file.text; preserve BOM, whitespace, CRLF and trailing newlines. Line/column metadata is separate, not text. Never strip or add line-number prefixes. Two identical failed edits against unchanged content stop this turn. Desktop approval is required before writing. Results report changed/unchanged and a verified SHA-256; verify with read_file rather than repeating a completed edit.',
   inputSchema: { path: z.string(), old_text: z.string(), new_text: z.string() },
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false } }, (args, extra) => invoke('edit_file', args, extra.signal));
 if (utilities.fileEditing) server.registerTool('write_file', { description: 'Propose writing a text file inside the selected project. The desktop shows before/after content and asks for approval.',

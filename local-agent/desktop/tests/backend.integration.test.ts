@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
@@ -11,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import { GooseBackend, backendEnvironment, type BackendOptions } from '../backend.ts';
 import { loadTaskResearchSkill } from '../skills/task-research.ts';
+import { taskInstructions } from '../agent-policy.ts';
 import { LocalActions, type ActionPermission } from '../actions.ts';
 import { createActionHost } from '../action-host.ts';
 import { DEFAULT_PLUGINS, effectiveUtilities } from '../state.ts';
@@ -29,6 +31,13 @@ const model = 'local-agent-integration-fixture';
 const plainReply = 'LOCAL_AGENT_PLAIN_OK';
 const readPrompt = 'READ_LOCAL_FIXTURE';
 const thoughtPrompt = 'SHOW_LOCAL_THOUGHT_FIXTURE';
+const maxTokensPrompt = 'OUTPUT_LIMIT_FIXTURE';
+const hangPrompt = 'WAIT_FOR_CANCELLATION_FIXTURE';
+const failedEditPrompt = 'FAIL_IDENTICAL_EDIT_FIXTURE';
+const timedCommandPrompt = 'TIMEOUT_COMMAND_FIXTURE';
+const failedLogReadPrompt = 'MISUSE_CREATION_ID_FOR_LOG_FIXTURE';
+const unsupportedReadPrompt = 'READ_UNSUPPORTED_LOCAL_FIXTURE';
+const errorSourceReadPrompt = 'READ_ERROR_JSON_SOURCE_FIXTURE';
 const thoughtText = 'Inspect the selected folder first.\nسلام 🌍\nThen report the verified result.';
 const fixtureText = 'offline fixture text from the granted document — سلام 😀';
 const citation = '[offline fixture source](https://example.org/local-agent-fixture)';
@@ -122,6 +131,34 @@ function toolNames(request: ChatRequest): string[] {
   return (request.tools ?? []).map(tool => tool.function.name).sort();
 }
 
+function mutationReceipt(events: AgentEvent[], operation: string, filePath?: string): Record<string, unknown> {
+  for (const event of events) {
+    if (event.type !== 'tool' || event.status !== 'completed' || !event.output || typeof event.output !== 'object' || Array.isArray(event.output)) continue;
+    const receipt = event.output as Record<string, unknown>;
+    if (receipt.operation === operation && (filePath === undefined || receipt.path === filePath)) return receipt;
+  }
+  assert.fail(`A completed ACP tool must expose the host-verified ${operation} receipt${filePath ? ` for ${filePath}` : ''}.`);
+}
+
+function receiptActionId(value: unknown, depth = 0): string | undefined {
+  if (depth > 8 || value === null || value === undefined) return;
+  if (typeof value === 'string') {
+    for (const candidate of [value, value.split('\n')[0]]) {
+      try { const id = receiptActionId(JSON.parse(candidate), depth + 1); if (id) return id; } catch {}
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) { const id = receiptActionId(entry, depth + 1); if (id) return id; }
+    return;
+  }
+  if (typeof value === 'object') {
+    const receipt = value as Record<string, unknown>;
+    if (receipt.operation === 'create_files' && typeof receipt.action_id === 'string' && /^[a-f0-9-]{36}$/.test(receipt.action_id)) return receipt.action_id;
+    for (const entry of Object.values(receipt)) { const id = receiptActionId(entry, depth + 1); if (id) return id; }
+  }
+}
+
 function defaults(mode: Mode): UtilityPreferences {
   return { fileReading: true, projectSearch: mode === 'coding', fileEditing: mode === 'coding', terminal: mode === 'coding', webResearch: false };
 }
@@ -148,7 +185,8 @@ function assertToolSet(request: ChatRequest, utilities: UtilityPreferences): voi
 
 async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, approveScaffold?: boolean,
   plugins: PluginPreferences = DEFAULT_PLUGINS,
-  skillsDirectory = path.join(repository, 'local-agent', 'desktop', 'skills')) {
+  skillsDirectory = path.join(repository, 'local-agent', 'desktop', 'skills'),
+  backendOverrides: Partial<Pick<BackendOptions, 'taskEffort' | 'signal' | 'appPolicyProvided'>> = {}) {
   assert.deepEqual(missingResources(mode), [], 'Native integration resources must be prepared when LOCAL_AGENT_REQUIRE_INTEGRATION=1.');
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-backend-integration-')));
   const project = path.join(directory, 'project');
@@ -196,9 +234,56 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
         const wantsRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(readPrompt));
         const wantsThoughts = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(thoughtPrompt));
         const wantsScaffold = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(scaffoldPrompt));
+        const wantsFailedEdit = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(failedEditPrompt));
+        const wantsMaxTokens = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(maxTokensPrompt));
+        const wantsHang = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(hangPrompt));
+        const wantsTimedCommand = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(timedCommandPrompt));
+        const wantsFailedLogRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(failedLogReadPrompt));
+        const wantsUnsupportedRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(unsupportedReadPrompt));
+        const wantsErrorSourceRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(errorSourceReadPrompt));
         const readResult = messages.find(message => message.role === 'tool' && JSON.stringify(message.content).includes(fixtureText));
         // Goose may make auxiliary title-generation requests without agent tools.
         if (!chat.tools?.length) sendStream(response, { content: 'Read selected document' });
+        else if (wantsHang) { /* The controlled local provider remains pending until task cancellation. */ }
+        else if (wantsMaxTokens) sendStream(response, { content: 'unfinished fixture answer' }, 'length');
+        else if (wantsUnsupportedRead || wantsErrorSourceRead) {
+          if (messages.some(message => message.role === 'tool')) sendStream(response, { content: 'LOCAL_AGENT_RECEIPT_CHECK_FINISHED' });
+          else {
+            const readTool = chat.tools.find(tool => /(?:^|__)read_file$/.test(tool.function.name));
+            if (!readTool) sendStream(response, { content: 'READ_TOOL_MISSING' });
+            else sendFragmentedToolStream(response, readTool.function.name, JSON.stringify({
+              path: path.join(project, wantsUnsupportedRead ? 'unsupported-image.png' : 'error-json-source.txt'),
+            }), 'receipt-status-read');
+          }
+        }
+        else if (wantsFailedLogRead) {
+          const toolMessages = messages.filter(message => message.role === 'tool');
+          if (!toolMessages.length) {
+            const createTool = chat.tools.find(tool => /(?:^|__)create_files$/.test(tool.function.name));
+            if (!createTool) sendStream(response, { content: 'CREATE_TOOL_MISSING' });
+            else sendFragmentedToolStream(response, createTool.function.name,
+              JSON.stringify({ files: [{ path: 'verified-once.txt', content: 'created once\n' }] }), 'create-before-invalid-log-read');
+          } else {
+            const id = toolMessages.map(message => receiptActionId(message.content)).find(Boolean);
+            const logTool = chat.tools.find(tool => /(?:^|__)read_command_output$/.test(tool.function.name));
+            if (!id || !logTool) sendStream(response, { content: 'CREATION_RECEIPT_OR_LOG_TOOL_MISSING' });
+            else sendFragmentedToolStream(response, logTool.function.name, JSON.stringify({ id, offset: 0 }), `misused-action-log-${toolMessages.length}`);
+          }
+        }
+        else if (wantsTimedCommand) {
+          const commandTool = chat.tools.find(tool => /(?:^|__)run_command$/.test(tool.function.name));
+          if (!commandTool) sendStream(response, { content: 'COMMAND_TOOL_MISSING' });
+          else sendFragmentedToolStream(response, commandTool.function.name, JSON.stringify({
+            command: process.platform === 'win32' ? 'ping -n 5 127.0.0.1 >nul' : 'sleep 5', timeout_ms: 100,
+          }), 'bounded-command');
+        }
+        else if (wantsFailedEdit) {
+          const failures = messages.filter(message => message.role === 'tool').length;
+          const editTool = chat.tools.find(tool => /(?:^|__)edit_file$/.test(tool.function.name));
+          if (!editTool) sendStream(response, { content: 'EDIT_TOOL_MISSING' });
+          else sendFragmentedToolStream(response, editTool.function.name,
+            JSON.stringify({ path: path.basename(selectedFile), old_text: `1: ${fixtureText}`, new_text: 'must not be written' }), `failed-edit-${failures}`);
+        }
         else if (wantsScaffold) {
           const results = messages.filter(message => message.role === 'tool').map(message => JSON.stringify(message.content));
           const batch = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(`BATCH_${scaffoldPrompt}`));
@@ -236,6 +321,7 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
       apiKey, outputTokens, utilities: configuredUtilities, plugins, contextTokens: 8192,
       grantedRoots: mode === 'coding' ? [project] : [], grantedFiles: [selectedFile],
       skillsDirectory, currentDate: '2026-10-10',
+      ...backendOverrides,
       actionUrl: host?.url ?? (mode === 'coding' ? `${baseUrl}/${actionToken}` : undefined),
       onEvent: event => events.push(event) };
     backend = new GooseBackend(options);
@@ -332,12 +418,134 @@ test('real Goose streams local-model thoughts separately from its final answer t
   { skip: skipReason('assistant'), timeout: 120_000 }, async () => {
     const run = await fixture('assistant');
     try {
-      await run.backend.prompt(thoughtPrompt);
+      const completion = await run.backend.prompt(thoughtPrompt);
+      assert.equal(completion.stopReason, 'end_turn');
       const messages = run.events.filter(event => event.type === 'message');
       assert.equal(messages.filter(event => event.thinking).map(event => event.text).join(''), thoughtText);
       assert.equal(messages.filter(event => !event.thinking).map(event => event.text).join(''), plainReply);
       assert.equal(run.events.some(event => event.type === 'tool'), false);
       assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose reports the actual ACP output-token stop reason without replaying the turn',
+  { skip: skipReason('assistant'), timeout: 120_000 }, async () => {
+    const run = await fixture('assistant');
+    try {
+      const completion = await run.backend.prompt(maxTokensPrompt);
+      assert.equal(completion.stopReason, 'max_tokens');
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 1);
+      assert.equal(run.events.some(event => event.type === 'tool'), false);
+      assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose owned unsupported-file receipt displays a failed tool despite ACP transport completion',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { fileEditing: false, terminal: false });
+    try {
+      await writeFile(path.join(run.project, 'unsupported-image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      assert.equal((await run.backend.prompt(unsupportedReadPrompt)).stopReason, 'end_turn');
+      const call = run.events.find(event => event.type === 'tool' && /^local[ _]files[ _]and[ _]research:/i.test(event.title));
+      assert.ok(call && call.type === 'tool', 'The app must identify the owned tool before processing its output.');
+      const result = run.events.find(event => event.type === 'tool' && event.id === call.id && event.output);
+      assert.ok(result && result.type === 'tool');
+      assert.equal(result.status, 'failed');
+      assert.equal((result.output as Record<string, unknown>).ok, false);
+      assert.equal((result.output as Record<string, unknown>).error, 'unsupported_file');
+      assert.equal(run.events.filter(event => event.type === 'message').filter(event => !event.thinking).map(event => event.text).join(''), 'LOCAL_AGENT_RECEIPT_CHECK_FINISHED');
+      assert.equal(run.permissions.length, 0);
+      assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose successful owned file read keeps completed status for source containing identical error JSON',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { fileEditing: false, terminal: false });
+    try {
+      const source = JSON.stringify({ ok: false, error: 'unsupported_file', isError: true, message: 'This is file content.' });
+      await writeFile(path.join(run.project, 'error-json-source.txt'), source);
+      assert.equal((await run.backend.prompt(errorSourceReadPrompt)).stopReason, 'end_turn');
+      const call = run.events.find(event => event.type === 'tool' && /^local[ _]files[ _]and[ _]research:/i.test(event.title));
+      assert.ok(call && call.type === 'tool');
+      const result = run.events.find(event => event.type === 'tool' && event.id === call.id && event.output);
+      assert.ok(result && result.type === 'tool');
+      assert.equal(result.status, 'completed');
+      assert.equal((result.output as Record<string, unknown>).ok, true);
+      assert.equal((result.output as Record<string, unknown>).text, source);
+      assert.equal(run.events.some(event => event.type === 'tool' && event.status === 'failed'), false);
+      assert.equal(run.permissions.length, 0);
+      assert.equal(run.actions(), 0);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose respects cancellation while the local provider is pending and preserves its reason',
+  { skip: skipReason('assistant'), timeout: 120_000 }, async () => {
+    const controller = new AbortController();
+    const run = await fixture('assistant', {}, undefined, DEFAULT_PLUGINS, undefined, { taskEffort: 'careful', signal: controller.signal });
+    try {
+      const pending = run.backend.prompt(hangPrompt);
+      const rejected = assert.rejects(pending, /Active task budget expired/);
+      const until = Date.now() + 10_000;
+      while (!run.chats.some(chat => chat.tools?.length) && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 25));
+      assert.ok(run.chats.some(chat => chat.tools?.length), 'The task must actually reach a pending inference request.');
+      controller.abort(new Error('Active task budget expired.'));
+      await rejected;
+      assert.equal(run.actions(), 0);
+      assert.equal(run.events.some(event => event.type === 'tool'), false);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose stops after two identical exact-text edit failures without another approval or mutation',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { terminal: false }, true);
+    try {
+      await assert.rejects(run.backend.prompt(failedEditPrompt), /Two identical edits failed against unchanged file content/);
+      assert.equal(await readFile(run.selectedFile, 'utf8'), `${fixtureText}\n`);
+      assert.equal(run.permissions.length, 0, 'Nonmatching edits must not request permission.');
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 2, 'No model retry may follow the second failure.');
+      assert.equal(await run.localActions.undo(), 0);
+      assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'failed' && JSON.stringify(event.output).includes('REPEATED_EDIT_FAILED')));
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose stops on a structured approved-command timeout and never repeats execution',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', {}, true);
+    try {
+      await assert.rejects(run.backend.prompt(timedCommandPrompt), /stopped after an interrupted action request/);
+      assert.equal(run.permissions.length, 1);
+      assert.equal(run.permissions[0].arguments.timeout_ms, 100);
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 1);
+      assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'failed' && JSON.stringify(event.output).includes('COMMAND_TIMEOUT')));
+      assert.equal(await readFile(run.selectedFile, 'utf8'), `${fixtureText}\n`);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose stops after two reads of a creation receipt UUID without replaying the completed scaffold',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', {}, true);
+    try {
+      await assert.rejects(run.backend.prompt(failedLogReadPrompt), /Two identical command-log reads failed without any change in available logs/);
+      assert.equal(run.permissions.length, 1, 'Only the original file creation may request permission.');
+      assert.equal(await readFile(path.join(run.project, 'verified-once.txt'), 'utf8'), 'created once\n');
+      const receipt = mutationReceipt(run.events, 'create_files');
+      const reads = run.events.filter(event => event.type === 'tool' && event.status === 'pending' && event.title.includes('read command output'));
+      assert.equal(reads.length, 2);
+      for (const event of reads) {
+        assert.equal(event.type, 'tool');
+        if (event.type === 'tool') assert.equal((event.input as Record<string, unknown>).id, receipt.action_id, 'The wrong log ID must come from the actual mutation receipt.');
+      }
+      assert.equal(run.chats.filter(chat => chat.tools?.length).length, 3, 'Creation and two failing log reads must be the complete provider loop.');
+      assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'failed' && JSON.stringify(event.output).includes('REPEATED_LOG_READ_FAILED')));
+      assert.equal(await run.localActions.undo(), 1);
+      await assert.rejects(readFile(path.join(run.project, 'verified-once.txt')), { code: 'ENOENT' });
       assert.deepEqual(run.errors, []);
     } finally { await run.cleanup(); }
   });
@@ -414,9 +622,15 @@ test('real Goose scaffolds project files through MCP and per-file approval, with
         assert.equal(run.permissions[index].arguments.path, file.path);
         assert.equal(run.permissions[index].arguments.content, file.content);
         assert.match(run.permissions[index].preview!, /--- \/dev\/null/);
+        const receipt = mutationReceipt(run.events, 'write_file', file.path);
+        assert.equal(receipt.ok, true);
+        assert.equal(receipt.status, 'changed');
+        assert.equal(receipt.changed, true);
+        assert.equal(receipt.sha256, createHash('sha256').update(file.content, 'utf8').digest('hex'));
+        assert.equal(receipt.bytes, Buffer.byteLength(file.content, 'utf8'));
+        assert.match(String(receipt.action_id), /^[a-f0-9-]{36}$/);
       }
       assert.equal(run.chats.filter(chat => chat.tools?.length).length, 3, 'Two actual tool results must return to Goose before completion.');
-      assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'completed' && JSON.stringify(event.output).includes('Created docker-compose.yml.')));
       assert.match(run.events.filter(event => event.type === 'message').map(event => event.text).join(''), /SCAFFOLD_CREATED_FROM_TOOL_RESULTS/);
       for (const _file of scaffold) assert.equal(await run.localActions.undo(), 1);
       for (const file of scaffold) await assert.rejects(readFile(path.join(run.project, file.path)), { code: 'ENOENT' });
@@ -445,6 +659,13 @@ test('real Goose creates a reviewed multi-file scaffold batch with grouped undo'
       await run.backend.prompt(`BATCH_${scaffoldPrompt}: create the WordPress fixture as one reviewed file group.`);
       assert.equal(run.permissions.length, 1);
       assert.deepEqual(run.permissions[0].arguments.files, scaffold);
+      const receipt = mutationReceipt(run.events, 'create_files');
+      assert.equal(receipt.ok, true);
+      assert.equal(receipt.status, 'changed');
+      assert.equal(receipt.changed, true);
+      assert.deepEqual(receipt.files, scaffold.map(file => ({ path: file.path, changed: true,
+        sha256: createHash('sha256').update(file.content, 'utf8').digest('hex'), bytes: Buffer.byteLength(file.content, 'utf8') })));
+      assert.match(String(receipt.action_id), /^[a-f0-9-]{36}$/);
       for (const file of scaffold) {
         assert.equal(await readFile(path.join(run.project, file.path), 'utf8'), file.content);
         assert.ok(run.permissions[0].preview!.includes(`+++ ${file.path}`));
@@ -488,6 +709,32 @@ test('real Goose coding mode advertises reviewed actions without built-in shell 
       for (const request of agentRequests) assertToolSet(request, run.utilities);
       assert.equal(run.events.filter(event => event.type === 'message').map(event => event.text).join(''), plainReply);
       assert.equal(run.actions(), 0, 'The test must never execute a host action or shell command.');
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose app-owned Careful policy stays single across a native file-tool round trip',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', {}, undefined, DEFAULT_PLUGINS,
+      path.join(repository, 'local-agent', 'desktop', 'skills'), { taskEffort: 'careful', appPolicyProvided: true });
+    try {
+      const policy = taskInstructions('coding', run.utilities, true, DEFAULT_PLUGINS, 'careful');
+      await run.backend.prompt(`${policy}\nCURRENT USER REQUEST:\n${readPrompt}: read the selected document and report its text.`);
+      const agentRequests = run.chats.filter(request => request.tools?.length);
+      assert.ok(agentRequests.length >= 2, 'The actual native sidecar must return a file read to Goose.');
+      for (const request of agentRequests) {
+        assertToolSet(request, run.utilities);
+        const userPrompt = request.messages?.filter(message => message.role === 'user').map(message => JSON.stringify(message.content)).join('\n') ?? '';
+        assert.ok(userPrompt.includes(JSON.stringify(policy).slice(1, -1)), 'The complete app policy survives ACP unchanged.');
+        assert.equal(userPrompt.split('Careful task:').length, 2, 'The backend must not duplicate Careful rules.');
+        assert.equal(userPrompt.split('Copy old_text exactly').length, 2, 'The backend must not duplicate exact-edit rules.');
+        assert.match(userPrompt, /Selected project:.*File-tool paths are relative/);
+        assert.match(userPrompt, /Output limit: 1024 tokens/);
+        assert.doesNotMatch(userPrompt, /OPTIONAL PLUGIN|Task research/);
+      }
+      assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'completed' && JSON.stringify(event.output).includes(fixtureText)));
+      assert.match(run.events.filter(event => event.type === 'message').filter(event => !event.thinking).map(event => event.text).join(''), /LOCAL_AGENT_READ_OK/);
+      assert.equal(run.actions(), 0, 'Policy dedup must not add any host action.');
       assert.deepEqual(run.errors, []);
     } finally { await run.cleanup(); }
   });

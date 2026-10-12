@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { ACTION_TOOL_SCHEMAS, LocalActions, type ActionPermission, type LocalActionsOptions } from '../actions.ts';
+import { ACTION_TOOL_SCHEMAS, LocalActions, repeatedCommandReadFailureText, type ActionPermission, type LocalActionsOptions } from '../actions.ts';
 import { commandTimeoutLimits, commandTimeoutText } from '../action-protocol.ts';
 
 async function setup(onPermission: (permission: ActionPermission) => Promise<boolean> = async () => true,
@@ -146,6 +147,149 @@ test('UTF-8 byte order marks survive exact replacements and undo', async () => {
     assert.equal(await readFile(path.join(run.projectPath, 'bom.txt'), 'utf8'), '\ufeffafter\n');
     assert.equal(await run.actions.undo(), 1);
     assert.equal(await readFile(path.join(run.projectPath, 'bom.txt'), 'utf8'), '\ufeffbefore\n');
+  } finally { await run.cleanup(); }
+});
+
+test('exact edits preserve literal prefixes, CRLF, Unicode and trailing newlines with verified evidence', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const initial = '\ufeff1: literal prefix\r\nسلام 🌍 projects.\r\n\r\n';
+    const final = '\ufeff1: literal prefix\r\nسلام 🌍 tools.\r\n\r\n';
+    const created = await run.actions.execute('write_file', { path: 'exact.txt', content: initial });
+    assert.equal(created.structuredContent?.changed, true);
+    const edited = await run.actions.execute('edit_file', { path: 'exact.txt', old_text: 'projects.', new_text: 'tools.' });
+    assert.equal(edited.isError, undefined);
+    assert.deepEqual(await readFile(path.join(run.projectPath, 'exact.txt')), Buffer.from(final));
+    const digest = createHash('sha256').update(Buffer.from(final)).digest('hex');
+    assert.equal(edited.structuredContent?.sha256, digest);
+    assert.equal(edited.structuredContent?.status, 'changed');
+    assert.equal(edited.structuredContent?.bytes, Buffer.byteLength(final));
+    assert.deepEqual(JSON.parse(edited.content[0].text.split('\n')[0]), edited.structuredContent);
+    const unchanged = await run.actions.execute('write_file', { path: 'exact.txt', content: final });
+    assert.equal(unchanged.structuredContent?.changed, false);
+    assert.equal(unchanged.structuredContent?.status, 'unchanged');
+    assert.equal(unchanged.structuredContent?.sha256, digest);
+    assert.equal(approvals, 2, 'An already-correct file requires no mutation or approval.');
+    assert.equal((await readdir(run.historyDirectory)).filter(name => name.endsWith('.json')).length, 2);
+  } finally { await run.cleanup(); }
+});
+
+test('two identical failed edits stop further mutations without stripping prefixes or bypassing approval', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    await writeFile(path.join(run.projectPath, 'exact.txt'), 'already correct\n');
+    const args = { path: 'exact.txt', old_text: '1: already correct', new_text: 'changed' };
+    const first = await run.actions.execute('edit_file', args);
+    assert.equal(first.errorCode, 'TEXT_NOT_FOUND');
+    assert.equal(first.structuredContent?.attempts, 1);
+    const second = await run.actions.execute('edit_file', args);
+    assert.equal(second.errorCode, 'REPEATED_EDIT_FAILED');
+    assert.equal(second.structuredContent?.attempts, 2);
+    assert.equal(second.structuredContent?.changed, false);
+    for (const [tool, input] of [
+      ['edit_file', { path: 'exact.txt', old_text: 'already correct', new_text: 'changed' }],
+      ['write_file', { path: 'exact.txt', content: 'changed' }],
+      ['create_files', { files: [{ path: 'bypass.txt', content: 'changed' }] }],
+      ['run_command', { command: 'echo changed > bypass.txt' }],
+    ] as const) assert.equal((await run.actions.execute(tool, input)).errorCode, 'EDIT_LOOP_STOPPED');
+    assert.equal(await readFile(path.join(run.projectPath, 'exact.txt'), 'utf8'), 'already correct\n');
+    assert.deepEqual(await readdir(run.projectPath), ['exact.txt']);
+    assert.equal(approvals, 0);
+    await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+    assert.equal(await run.actions.undo(), 0, 'The user-owned undo path remains available after an edit-loop stop.');
+  } finally { await run.cleanup(); }
+});
+
+test('failed edit tracking keys the actual file digest and permits a corrected action before two identical failures', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    await writeFile(path.join(run.projectPath, 'exact.txt'), 'original\n');
+    const args = { path: 'exact.txt', old_text: 'missing', new_text: 'changed' };
+    assert.equal((await run.actions.execute('edit_file', args)).errorCode, 'TEXT_NOT_FOUND');
+    await writeFile(path.join(run.projectPath, 'exact.txt'), 'externally changed\n');
+    assert.equal((await run.actions.execute('edit_file', args)).errorCode, 'TEXT_NOT_FOUND', 'Changed input is a new attempt, not a repeated failure.');
+    const corrected = await run.actions.execute('edit_file', { path: 'exact.txt', old_text: 'externally changed', new_text: 'verified' });
+    assert.equal(corrected.isError, undefined);
+    assert.equal(await readFile(path.join(run.projectPath, 'exact.txt'), 'utf8'), 'verified\n');
+    assert.equal(approvals, 1);
+  } finally { await run.cleanup(); }
+});
+
+test('manual undo can restore completed changes after a later edit-loop stop', async () => {
+  const run = await setup();
+  try {
+    await writeFile(path.join(run.projectPath, 'exact.txt'), 'before');
+    await run.actions.execute('write_file', { path: 'exact.txt', content: 'completed' });
+    const args = { path: 'exact.txt', old_text: 'missing', new_text: 'no' };
+    await run.actions.execute('edit_file', args);
+    assert.equal((await run.actions.execute('edit_file', args)).errorCode, 'REPEATED_EDIT_FAILED');
+    assert.equal(await run.actions.undo(), 1);
+    assert.equal(await readFile(path.join(run.projectPath, 'exact.txt'), 'utf8'), 'before');
+  } finally { await run.cleanup(); }
+});
+
+test('exact replacements allow newline-only matches and reject empty matches or lossy Unicode', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    await writeFile(path.join(run.projectPath, 'exact.txt'), 'text\n');
+    const edited = await run.actions.execute('edit_file', { path: 'exact.txt', old_text: '\n', new_text: '\r\n' });
+    assert.equal(edited.isError, undefined);
+    assert.equal(await readFile(path.join(run.projectPath, 'exact.txt'), 'utf8'), 'text\r\n');
+    assert.equal((await run.actions.execute('edit_file', { path: 'exact.txt', old_text: '', new_text: 'insert' })).errorCode, 'INVALID_ARGUMENT');
+    assert.equal((await run.actions.execute('write_file', { path: 'lossy.txt', content: '\ud800' })).errorCode, 'INVALID_ARGUMENT');
+    assert.equal(approvals, 1);
+    assert.deepEqual(await readdir(run.projectPath), ['exact.txt']);
+  } finally { await run.cleanup(); }
+});
+
+test('literal newline spellings give a diagnostic after an exact mismatch without decoding or mutating', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const actual = 'first\nsecond\n';
+    const args = { path: 'exact.txt', old_text: 'first\\nsecond\\n', new_text: 'changed' };
+    await writeFile(path.join(run.projectPath, 'exact.txt'), actual);
+    const unchangedDigest = createHash('sha256').update(actual, 'utf8').digest('hex');
+    const first = await run.actions.execute('edit_file', args);
+    assert.equal(first.errorCode, 'TEXT_NOT_FOUND');
+    assert.match(first.content[0].text, /literal backslash escape spellings/);
+    assert.match(first.content[0].text, /Copy the actual read_file.text string value/);
+    assert.match(first.content[0].text, /unique exact short substring/);
+    assert.match(first.content[0].text, /never decodes.*no change was made/);
+    assert.equal(first.structuredContent?.input_sha256, unchangedDigest);
+    assert.equal(first.structuredContent?.changed, false);
+    assert.equal(first.structuredContent?.attempts, 1);
+    assert.equal(args.old_text, 'first\\nsecond\\n', 'Diagnostic generation must preserve every argument verbatim.');
+    const second = await run.actions.execute('edit_file', args);
+    assert.equal(second.errorCode, 'REPEATED_EDIT_FAILED');
+    assert.equal(second.structuredContent?.attempts, 2);
+    assert.equal(second.structuredContent?.input_sha256, unchangedDigest);
+    assert.equal(await readFile(path.join(run.projectPath, 'exact.txt'), 'utf8'), actual);
+    assert.equal(approvals, 0);
+    await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+  } finally { await run.cleanup(); }
+});
+
+test('matching literal JavaScript escape text is replaced exactly and never interpreted as a newline', async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => { permissions.push(permission); return true; });
+  try {
+    const initial = "process.stdout.write('before\\n');\n";
+    const final = "process.stdout.write('after\\n');\n";
+    const args = { path: 'literal.mjs', old_text: 'before\\n', new_text: 'after\\n' };
+    await writeFile(path.join(run.projectPath, 'literal.mjs'), initial);
+    const edited = await run.actions.execute('edit_file', args);
+    assert.equal(edited.isError, undefined);
+    assert.equal(edited.structuredContent?.changed, true);
+    assert.equal(await readFile(path.join(run.projectPath, 'literal.mjs'), 'utf8'), final);
+    assert.equal(permissions.length, 1);
+    assert.equal(permissions[0].arguments.old_text, 'before\\n');
+    assert.equal(permissions[0].arguments.new_text, 'after\\n');
+    assert.equal(edited.structuredContent?.sha256, createHash('sha256').update(final, 'utf8').digest('hex'));
   } finally { await run.cleanup(); }
 });
 
@@ -425,7 +569,7 @@ test('complete command output exposes a short durable log reference without requ
     const output = await run.actions.execute('run_command', { command: nodeCommand("require('fs').appendFileSync('count.txt','x');process.stdout.write('complete output')") });
     assert.equal(output.isError, undefined);
     const metadata = commandLogMetadata(output.content[0].text);
-    assert.deepEqual(metadata, { log_id: `log-${metadata.durable_id.slice(0, 8)}`, durable_id: commandLogId(output.content[0].text), output_complete: true, next_offset: null });
+    assert.deepEqual(metadata, { ok: true, operation: 'run_command', log_id: `log-${metadata.durable_id.slice(0, 8)}`, durable_id: commandLogId(output.content[0].text), output_complete: true, next_offset: null, exit_code: 0, exit_signal: null });
     assert.match(output.content[0].text, /complete output/);
     assert.match(output.content[0].text, /no log read is needed/);
     assert.doesNotMatch(output.content[0].text, /Read remaining output|Use read_command_output/);
@@ -501,16 +645,14 @@ test('file edit IDs and missing command logs give actionable guidance without ex
     assert.ok(editSnapshot);
     const editId = editSnapshot.slice(0, -5);
     for (const id of [editId, '00000000-0000-4000-8000-000000000000']) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const response = await run.actions.execute('read_command_output', { id });
-        assert.equal(response.isError, true);
-        assert.equal(response.errorCode, 'COMMAND_LOG_NOT_FOUND');
-        assert.match(response.content[0].text, /Do not retry the same id/);
-        assert.match(response.content[0].text, /log id returned by run_command/);
-        assert.match(response.content[0].text, /use read_file to verify edited files/);
-        assert.ok(!response.content[0].text.includes(run.historyDirectory));
-        assert.ok(!response.content[0].text.includes('ENOENT'));
-      }
+      const response = await run.actions.execute('read_command_output', { id });
+      assert.equal(response.isError, true);
+      assert.equal(response.errorCode, 'COMMAND_LOG_NOT_FOUND');
+      assert.match(response.content[0].text, /Do not retry the same id/);
+      assert.match(response.content[0].text, /log id returned by run_command/);
+      assert.match(response.content[0].text, /use read_file to verify edited files/);
+      assert.ok(!response.content[0].text.includes(run.historyDirectory));
+      assert.ok(!response.content[0].text.includes('ENOENT'));
     }
     const invalid = await run.actions.execute('read_command_output', { id: 'invented-id' });
     assert.equal(invalid.errorCode, 'INVALID_ARGUMENT');
@@ -519,6 +661,84 @@ test('file edit IDs and missing command logs give actionable guidance without ex
     assert.equal(await readFile(path.join(run.projectPath, 'app.txt'), 'utf8'), 'after');
     assert.equal(await run.actions.undo(), 1, 'The successful edit and its undo remain intact.');
     assert.equal(await readFile(path.join(run.projectPath, 'app.txt'), 'utf8'), 'before');
+  } finally { await run.cleanup(); }
+});
+
+test('two reads of a creation action ID stop the turn without repeating its completed files or requesting a command', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const created = await run.actions.execute('create_files', { files: [{ path: 'verified.txt', content: 'created once\n' }] });
+    const id = created.structuredContent?.action_id;
+    assert.equal(typeof id, 'string');
+    const first = await run.actions.execute('read_command_output', { id });
+    assert.equal(first.errorCode, 'COMMAND_LOG_NOT_FOUND');
+    assert.equal(first.structuredContent?.attempts, 1);
+    const second = await run.actions.execute('read_command_output', { id, offset: 0 });
+    assert.equal(second.errorCode, 'REPEATED_LOG_READ_FAILED');
+    assert.equal(second.content[0].text, repeatedCommandReadFailureText);
+    assert.equal(second.structuredContent?.attempts, 2);
+    assert.equal(second.structuredContent?.availability_sha256, first.structuredContent?.availability_sha256);
+    for (const [tool, args] of [
+      ['read_command_output', { id }], ['run_command', { command: 'echo replay > replay.txt' }],
+      ['write_file', { path: 'replay.txt', content: 'no' }],
+      ['create_files', { files: [{ path: 'replay.txt', content: 'no' }] }],
+    ] as const) assert.equal((await run.actions.execute(tool, args)).errorCode, 'LOG_READ_LOOP_STOPPED');
+    assert.equal(approvals, 1);
+    assert.deepEqual(await readdir(run.projectPath), ['verified.txt']);
+    assert.equal(await readFile(path.join(run.projectPath, 'verified.txt'), 'utf8'), 'created once\n');
+    assert.equal(await run.actions.undo(), 1, 'Manual undo stays available after the read-loop stop.');
+  } finally { await run.cleanup(); }
+});
+
+test('malformed log arguments do not count as missing-log retries and existing logs remain repeatably readable', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const absent = '00000000-0000-4000-8000-000000000000';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      assert.equal((await run.actions.execute('read_command_output', { id: 'malformed-id' })).errorCode, 'INVALID_ARGUMENT');
+      assert.equal((await run.actions.execute('read_command_output', { id: absent, offset: -1 })).errorCode, 'INVALID_ARGUMENT');
+    }
+    assert.equal((await run.actions.execute('read_command_output', { id: absent })).errorCode, 'COMMAND_LOG_NOT_FOUND');
+    const executed = await run.actions.execute('run_command', { command: nodeCommand("process.stdout.write('valid saved output')") });
+    assert.equal(executed.isError, undefined);
+    const metadata = commandLogMetadata(executed.content[0].text);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const read = await run.actions.execute('read_command_output', { id: metadata.durable_id.toUpperCase() });
+      assert.equal(read.isError, undefined);
+      assert.equal(JSON.parse(read.content[0].text).text, 'valid saved output');
+    }
+    assert.equal((await run.actions.execute('run_command', { command: nodeCommand("process.stdout.write('another valid command')") })).isError, undefined);
+    assert.equal(approvals, 2, 'Read errors and valid log reads never request action approval.');
+  } finally { await run.cleanup(); }
+});
+
+test('relevant log availability changes reset failure counting and successful reads clear previous missing references', async () => {
+  const run = await setup();
+  try {
+    const prefix = 'a1b2c3d4';
+    const handle = `log-${prefix}`;
+    const logDirectory = path.join(run.historyDirectory, 'command-logs');
+    const firstId = `${prefix}-0000-4000-8000-000000000001`;
+    const secondId = `${prefix}-0000-4000-8000-000000000002`;
+    const thirdId = `${prefix}-0000-4000-8000-000000000003`;
+    assert.equal((await run.actions.execute('read_command_output', { id: handle })).structuredContent?.attempts, 1);
+    await mkdir(logDirectory, { recursive: true });
+    await writeFile(path.join(logDirectory, `${firstId}.log`), 'first');
+    await writeFile(path.join(logDirectory, `${secondId}.log`), 'second');
+    const ambiguous = await run.actions.execute('read_command_output', { id: handle });
+    assert.equal(ambiguous.errorCode, 'COMMAND_LOG_AMBIGUOUS');
+    assert.equal(ambiguous.structuredContent?.attempts, 1, 'An availability change is a fresh observation.');
+    await rm(path.join(logDirectory, `${secondId}.log`));
+    await writeFile(path.join(logDirectory, `${thirdId}.log`), 'third');
+    assert.equal((await run.actions.execute('read_command_output', { id: handle })).structuredContent?.attempts, 1);
+    await rm(path.join(logDirectory, `${thirdId}.log`));
+    assert.equal(JSON.parse((await run.actions.execute('read_command_output', { id: handle })).content[0].text).text, 'first');
+    await rm(path.join(logDirectory, `${firstId}.log`));
+    const missingAgain = await run.actions.execute('read_command_output', { id: handle });
+    assert.equal(missingAgain.errorCode, 'COMMAND_LOG_NOT_FOUND');
+    assert.equal(missingAgain.structuredContent?.attempts, 1, 'The successful intervening read cleared the earlier failure.');
   } finally { await run.cleanup(); }
 });
 
@@ -556,6 +776,10 @@ test('an empty project can create a reviewed WordPress theme and verify it with 
     assert.deepEqual(await readdir(run.projectPath), []);
     const created = await run.actions.execute('create_files', { files });
     assert.equal(created.isError, undefined);
+    assert.equal(created.structuredContent?.changed, true);
+    assert.deepEqual(created.structuredContent?.files, files.map(file => ({ path: file.path, changed: true,
+      sha256: createHash('sha256').update(file.content, 'utf8').digest('hex'), bytes: Buffer.byteLength(file.content, 'utf8') })));
+    assert.deepEqual(JSON.parse(created.content[0].text.split('\n')[0]), created.structuredContent);
     assert.equal(permissions.length, 1);
     assert.equal(permissions[0].title, 'Create 3 project files');
     for (const file of files) {

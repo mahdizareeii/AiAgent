@@ -50,6 +50,10 @@ also remains available for chat.
   backend. No model process exists until `prepareModel`.
 - `getStatus()` returns a serializable copy with hardware, selected inference
   profile, recommendation, download state and actionable errors.
+  `profileSignature` is stable JSON of the pinned engine commit, memory mode,
+  backend, confirmed context/output limits, batch/microbatch and one slot. It
+  is null when no profile exists and matches `PreparedModel.profileSignature`
+  in every mode; a smaller native context or profile change changes identity.
 - `listModels()` returns the five models and imports, installed state,
   quantization, license, source URL, memory estimates, fit reason and measured
   generation speed when available.
@@ -69,16 +73,35 @@ also remains available for chat.
   The effective context may be below the requested profile if the model/server
   enforces a lower limit; request budgets must use the returned value.
 - `setSlowMode(enabled)` unloads an idle model before changing the mode.
-  A model requiring CPU or partial offload requires explicit Slow mode.
+  Automatic mode requires explicit Slow mode for a model requiring CPU or partial offload.
+- `setMemoryMode('automatic' | 'low-memory' | 'experimental-disk')` unloads an
+  idle model and invalidates prior experimental probes. Low memory starts at
+  4K context and 128/32 batches. Ordinary fit labels remain unchanged.
+- `startExperimentalTrial(id, {signal?})` is an explicit main-process operation,
+  initially supported on macOS ARM64. It verifies the artifact, unloads the
+  previous app-owned model, samples current memory, then loads CPU-only mmap
+  with supported lazy reads, fit off, F16 KV and a single 4K slot. A required
+  local Chat probe and eligible native tool-format probe share five minutes;
+  engine loading is bounded to ten minutes. Failed tools retain Chat-only
+  capability. `cancelExperimentalTrial()` invalidates the probe and unloads
+  the owned model. A model switch never starts an experimental trial.
+- In experimental mode, `prepareModel` only reuses a still-running trial with
+  matching model digest and profile signature. A restart requires another
+  explicit trial. `getStatus().experimentalTrial` includes probe outcomes,
+  sampled resident/available memory and pressure, and separately reported
+  rounded engine mmap-buffer/lazy-tensor sizes. Null means unmeasured.
 - `calibrateModel(id, {signal?})` verifies native template support and a local
   structured tool call without executing the generated tool.
 - `requestJson(path, body?, signal?)` and `requestStream(path, body, signal?)`
-  attach the private bearer token. Chat JSON has a 15-minute bound; properties
-  and counts have a 60-second bound. Streaming relies on caller cancellation.
+  attach the private bearer token. Chat and streaming default to a one-hour
+  transport bound; properties and counts retain a 60-second bound. Use
+  `setExecutionRequestTimeout(remainingMs)` and caller cancellation for the
+  remaining active task deadline. Health queries use a shorter explicit bound.
 - `restartLowerProfile(signal?)` reloads the same verified model at a lower
   bounded profile. Call it only for an allocation failure before an action or
   streamed result has been committed. Transport, format and template failures
-  do not justify inference replay. `isAllocationFailure(error)` is exported.
+  do not justify inference replay. Experimental disk rejects automatic profile
+  recovery. `isAllocationFailure(error)` is exported.
 - `stop()` aborts loading, calibration, imports and downloads, waits for their
   cleanup, and terminates only the child owned by this runtime. New operations
   cannot race shutdown. It removes normal auth-file leases; startup removes
@@ -112,6 +135,23 @@ weights**. All MoE weights still need backing memory. Memory mapping and CPU
 fallback do not make an arbitrarily large model fit safely. Slow mode is a
 performance tradeoff, not permission to force unbounded swapping.
 
+Experimental disk is a separate opt-in trial, not a new fit classification.
+Pinned llama.cpp only lazy-reads tensors explicitly marked by their
+architecture, such as per-layer embeddings; selecting mmap does not make
+every dense or expert tensor lazy. The runtime reports the tensors the engine
+actually enabled, including zero when none were eligible. Rounded mmap buffer
+sizes are not RSS and do not establish how much of a model is resident.
+
+After unloading the prior app-owned model, the trial requires context/scratch
+headroom and sets its sampled resident stop threshold to
+`min(total RAM - existing OS reserve, available RAM - 1 GiB)`. Every two seconds,
+macOS `vm_stat`, memory-pressure state and only the owned process's RSS are
+read. Reaching the resident threshold, critical pressure, two consecutive
+samples below 512 MiB available, or missing/stalled measurements stops the
+owned model and invalidates its probe. The watcher remains active after a
+successful probe. This is sampled protection, not a hard memory limit or a
+quality guarantee. The app does not alter paging settings or other programs.
+
 The child inherits only a small OS-path/locale environment allowlist, excluding
 cloud keys and `LLAMA_*`, MCP or RPC configuration. It receives an app-owned
 model path, offline flags and a mode-0600 temporary API-key file. Its HTTP
@@ -129,6 +169,9 @@ fake-engine processes. They exercise cancellation, resumable download,
 checksum rejection, metadata bounds, secret isolation, private authentication,
 process reuse, shutdown races, memory classification, tool gating and bounded
 fallback. Tests do not download production weights.
+Experimental tests additionally cover explicit probe identity, Chat-only tool
+failure, initial headroom, unified memory, immediate cancellation, monitoring
+failure, pressure/residency stops and shared loading/calibration deadlines.
 
 Native Mac Metal and CPU startup, token counting and generation are also
 validated separately with an official tiny llama.cpp fixture. That fixture is

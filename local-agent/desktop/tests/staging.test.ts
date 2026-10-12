@@ -60,7 +60,9 @@ test('staged frozen file reads resume cursors, invalidate changed files, and can
   try {
     const paused = new StagedWork(options);
     await assert.rejects(paused.run('Summarize this source.', 'digest'), /stopped|abort|closed/i);
+    await paused.finishOutcome('cancelled', 'Reading was cancelled.');
     const checkpoint = await paused.readCheckpoint(); assert.ok(checkpoint?.sources[0].cursor); assert.equal(checkpoint?.completed, 2);
+    assert.equal(checkpoint?.phase, 'reading'); assert.equal(checkpoint?.stage.resumable, true); assert.equal(checkpoint?.outcome?.status, 'cancelled');
     const resumedInference = new FixtureInference(); const resumed = new StagedWork({ ...options, inference: resumedInference, signal: new AbortController().signal });
     const context = await resumed.run('Summarize this source.', 'digest', true);
     assert.ok(context); assert.ok(resumedInference.seen.some(text => text.includes('END_MARKER')));
@@ -71,6 +73,9 @@ test('staged frozen file reads resume cursors, invalidate changed files, and can
     assert.ok(changedInference.seen.some(text => text.includes('NEW_SOURCE_ONLY')));
     assert.ok(stages.some(stage => stage.stage === 'Restarting read stages'));
     await changed.mark('agent');
+    await changed.finishOutcome('timed-out', 'Agent execution deadline reached.');
+    assert.equal((await changed.readCheckpoint())?.stage.resumable, false);
+    assert.equal((await changed.readCheckpoint())?.outcome?.status, 'timed-out');
     await assert.rejects(changed.run('Summarize this source.', 'digest', true), /Only paused read-only stages/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -78,10 +83,9 @@ test('staged frozen file reads resume cursors, invalidate changed files, and can
 test('26 frozen file chunks retain evidence and task goals with bounded incremental summaries', { skip: !existsSync(executable), timeout: 30_000 }, async () => {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-staging-bounded-')));
   const file = path.join(directory, 'source.txt');
-  // An 8K profile requests 1638 characters. Numbered-line prefix consumes3;
-  // each 1635-character segment therefore continues at its own marker.
+  // An 8K profile requests 1638 exact characters; location metadata is separate.
   const markers = Array.from({ length: 26 }, (_, index) => `CHUNK_${String(index + 1).padStart(2, '0')}`);
-  await writeFile(file, markers.map(marker => `${marker} ${'x'.repeat(1635 - marker.length - 1)}`).join(''));
+  await writeFile(file, markers.map(marker => `${marker} ${'x'.repeat(1638 - marker.length - 1)}`).join(''));
   const inference = new EvidenceInference();
   const task = 'Report every CHUNK_NN marker and preserve its source location.';
   const snapshots: { completed: number; summaries: string[]; phase: string }[] = [];
@@ -97,7 +101,7 @@ test('26 frozen file chunks retain evidence and task goals with bounded incremen
     assert.ok(inference.goals.every(goal => goal === task), 'Both map and reduction stages must receive the current task.');
     for (let index = 0; index < markers.length; index++) {
       assert.ok(sourceCalls[index].includes(markers[index]));
-      assert.ok(sourceCalls[index].includes(`column ${index * 1635 + 1}]`));
+      assert.ok(sourceCalls[index].includes(`column ${index * 1638 + 1}]`));
       assert.ok(context.includes(markers[index]), `Evidence ${markers[index]} cannot be lost during checkpoint reduction.`);
     }
     assert.ok(snapshots.filter(snapshot => snapshot.phase === 'reading').every(snapshot => snapshot.summaries.length < 8),

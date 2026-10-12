@@ -11,6 +11,8 @@ const MAX_CREATE_BYTES = 512 * 1024;
 const PRIVATE_KEY = /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/;
 const COMMAND_LOG_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const COMMAND_LOG_HANDLE = /^log-([a-f0-9]{8})$/;
+export const repeatedEditFailureText = 'Two identical edits failed against unchanged file content. This turn stopped before any further mutation. Report the blocker using saved readback evidence; completed actions must not be repeated.';
+export const repeatedCommandReadFailureText = 'Two identical command-log reads failed without any change in available logs. This turn stopped to prevent a read loop. Completed actions are preserved; no commands or file edits will be automatically repeated. Use saved file readback or the exact log id from run_command in a new task.';
 
 export interface ActionPermission {
   requestId: string;
@@ -31,12 +33,14 @@ export interface ActionToolEvent {
 
 export interface ActionResult {
   content: Array<{ type: 'text'; text: string }>;
+  /** Host-verified file mutation evidence, also included in the model text. */
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
   /** Host-owned error identity; never inferred from model or command text. */
   errorCode?: string;
 }
 
-interface CommandOutcome extends ActionResult { outputBytes: number; previewBytes: number; }
+interface CommandOutcome extends ActionResult { outputBytes: number; previewBytes: number; exitCode: number | null; exitSignal: NodeJS.Signals | null; }
 
 export interface LocalActionsOptions {
   projectPath: string;
@@ -67,10 +71,14 @@ interface Snapshot {
 
 class ActionError extends Error {
   code: string;
-  constructor(code: string, message: string) { super(message); this.name = 'ActionError'; this.code = code; }
+  details?: Record<string, unknown>;
+  constructor(code: string, message: string, details?: Record<string, unknown>) { super(message); this.name = 'ActionError'; this.code = code; this.details = details; }
 }
 
 const result = (text: string, isError = false): ActionResult => ({ content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) });
+const mutationResult = (text: string, evidence: Record<string, unknown>): ActionResult => ({
+  content: [{ type: 'text', text: `${JSON.stringify(evidence)}\n${text}` }], structuredContent: evidence,
+});
 const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const cancelled = () => new ActionError('CANCELLED', cancelledActionText);
 const contained = (root: string, file: string) => { const relative = path.relative(root, file); return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); };
@@ -87,6 +95,7 @@ function textArgument(args: Record<string, unknown>, key: string, allowEmpty = f
   const value = args[key];
   if (typeof value !== 'string' || (!allowEmpty && !value.trim())) throw new ActionError('INVALID_ARGUMENT', `${key} must be ${allowEmpty ? 'a' : 'a non-empty'} string.`);
   if (value.includes('\0')) throw new ActionError('INVALID_ARGUMENT', `${key} must not contain NUL bytes.`);
+  if (Buffer.from(value, 'utf8').toString('utf8') !== value) throw new ActionError('INVALID_ARGUMENT', `${key} must contain valid Unicode that can be encoded exactly as UTF-8.`);
   return value;
 }
 
@@ -104,7 +113,7 @@ function diffPreview(relative: string, before: string | null, after: string): st
 }
 
 export const ACTION_TOOL_SCHEMAS = [
-  { name: 'edit_file', description: 'Propose one exact text replacement in a project file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
+  { name: 'edit_file', description: 'Propose one exact text replacement in a project file. Copy old_text from read_file.text exactly, preserving whitespace, BOM and line endings; locations are separate metadata. Never add/remove line-number prefixes. Two identical failed edits against unchanged content stop mutations for this turn. The user reviews a diff and approves before any file changes. Result reports changed/unchanged and the verified SHA-256.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
   { name: 'write_file', description: 'Propose creating or replacing a project text file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
   { name: 'create_files', description: 'Propose 1–20 new project text files in one reviewed batch. Parent folders are created automatically; existing files cannot be replaced. Total content <=512 KiB. One approval shows every file and grouped undo is available.', inputSchema: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } } }, required: ['files'], additionalProperties: false } },
   { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command, working directory and time limit. timeout_ms defaults to 60000; explicitly select up to 600000 for dependency setup. Result metadata gives log_id, output_complete and next_offset; when output_complete is true, use the shown output without another log read. Interrupted commands preserve partial work and are never automatically repeated. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', ...commandTimeoutLimits, description: 'Approved execution time limit in milliseconds, 100–600000; default 60000. Longer dependency setup requires an explicit value.' } }, required: ['command'], additionalProperties: false } },
@@ -118,6 +127,10 @@ export const ACTION_TOOL_SCHEMAS = [
 export class LocalActions {
   private options: LocalActionsOptions;
   private mutationQueue: Promise<unknown> = Promise.resolve();
+  private failingEdits = new Map<string, number>();
+  private editLoopStopped = false;
+  private failingCommandReads = new Map<string, { reference: string; availability: string; attempts: number }>();
+  private commandReadLoopStopped = false;
 
   constructor(options: LocalActionsOptions) {
     if (!path.isAbsolute(options.projectPath) || !path.isAbsolute(options.historyDirectory)) throw new ActionError('INVALID_PATH', 'Project and history directories must be absolute paths.');
@@ -130,6 +143,8 @@ export class LocalActions {
     this.options.onTool?.({ id, title, status: 'pending', input: args });
     try {
       if (options.signal?.aborted) throw cancelled();
+      if (this.commandReadLoopStopped) throw new ActionError('LOG_READ_LOOP_STOPPED', repeatedCommandReadFailureText);
+      if (this.editLoopStopped && tool !== 'read_command_output') throw new ActionError('EDIT_LOOP_STOPPED', 'This turn stopped after two identical failed edits. No further file changes or commands may run. Report the observed blocker and use a new task for an explicitly revised action.');
       let output: ActionResult;
       if (tool === 'read_command_output') output = await this.readCommandOutput(args);
       else if (tool === 'run_command') {
@@ -138,29 +153,43 @@ export class LocalActions {
       }
       else if (tool === 'create_files') {
         if (this.options.utilities?.fileEditing === false) throw new ActionError('DISABLED_TOOL', 'File editing is disabled.');
-        output = await this.serial(() => this.createFiles(id, args, options.signal));
+        output = await this.serial(() => this.createFiles(id, args, options.signal), true);
       }
       else if (tool === 'edit_file' || tool === 'write_file') {
         if (this.options.utilities?.fileEditing === false) throw new ActionError('DISABLED_TOOL', 'File editing is disabled.');
         // Serialize edits and undo, including approval, so approved previews
         // cannot race another app action. External changes are rechecked too.
-        output = await this.serial(() => this.writeFile(tool, id, args, options.signal));
+        output = await this.serial(() => this.writeFile(tool, id, args, options.signal), true);
       } else throw new ActionError('UNKNOWN_TOOL', `Unknown action tool: ${tool}`);
       this.options.onTool?.({ id, title, status: output.isError ? 'failed' : 'completed', input: args, output });
       return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The action failed.';
       const output = result(message, true);
-      if (error instanceof ActionError) output.errorCode = error.code;
+      if (error instanceof ActionError) {
+        output.errorCode = error.code;
+        if (error.details) {
+          output.structuredContent = { ok: false, error: error.code, ...error.details };
+          output.content.push({ type: 'text', text: JSON.stringify(output.structuredContent) });
+        }
+      }
       this.options.onTool?.({ id, title, status: 'failed', input: args, output });
       return output;
     }
   }
 
-  private serial<T>(task: () => Promise<T>): Promise<T> {
-    const queued = this.mutationQueue.catch(() => undefined).then(task);
+  private serial<T>(task: () => Promise<T>, agentMutation = false): Promise<T> {
+    const queued = this.mutationQueue.catch(() => undefined).then(() => {
+      if (agentMutation) this.assertAgentMutationAllowed();
+      return task();
+    });
     this.mutationQueue = queued;
     return queued;
+  }
+
+  private assertAgentMutationAllowed(): void {
+    if (this.commandReadLoopStopped) throw new ActionError('LOG_READ_LOOP_STOPPED', repeatedCommandReadFailureText);
+    if (this.editLoopStopped) throw new ActionError('EDIT_LOOP_STOPPED', 'This turn stopped after two identical failed edits. No action was taken.');
   }
 
   private async target(file: string, directory = false): Promise<Target> {
@@ -206,12 +235,14 @@ export class LocalActions {
 
   private async permission(permission: ActionPermission, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) throw cancelled();
+    this.assertAgentMutationAllowed();
     let onAbort: (() => void) | undefined;
     const decision = this.options.onPermission(permission, signal);
     try {
       const approved = signal ? await Promise.race([decision, new Promise<never>((_, reject) => { onAbort = () => reject(cancelled()); signal.addEventListener('abort', onAbort, { once: true }); if (signal.aborted) onAbort(); })]) : await decision;
       if (signal?.aborted) throw cancelled();
       if (approved !== true) throw new ActionError('PERMISSION_DENIED', 'The user denied this action. No action was taken.');
+      this.assertAgentMutationAllowed();
     } finally { if (onAbort) signal?.removeEventListener('abort', onAbort); }
   }
 
@@ -318,7 +349,15 @@ export class LocalActions {
       if (signal?.aborted) throw cancelled();
       const names = planned.map(item => item.target.relative).join('\n');
       const allowance = Math.max(256, this.options.resultChars ?? 2000);
-      return result(`Created ${planned.length} project files. One undo restores this creation batch. If file reading is enabled, verify the files with read_file using their saved paths. File edits do not create command logs.\n${names.slice(0, allowance)}${names.length > allowance ? '\n[File list shortened; every path was included in approval.]' : ''}`);
+      const files = [];
+      for (const item of planned) {
+        const verified = await this.fileVersion(item.target.absolute);
+        if (verified.hash !== item.snapshot.afterHash) throw new ActionError('VERIFICATION_FAILED', `${item.target.relative} changed before its write could be verified. Inspect the actual file; do not repeat this creation batch.`);
+        files.push({ path: item.target.relative, changed: true, sha256: verified.hash, bytes: Buffer.byteLength(verified.content!, 'utf8') });
+      }
+      return mutationResult(`Created ${planned.length} project files. One undo restores this creation batch. If file reading is enabled, verify the files with read_file using their saved paths. File edits do not create command logs.\n${names.slice(0, allowance)}${names.length > allowance ? '\n[File list shortened; every path was included in approval.]' : ''}`, {
+        ok: true, operation: 'create_files', status: 'changed', changed: true, action_id: id, files,
+      });
     } catch (error) {
       for (const item of [...applied].reverse()) {
         try {
@@ -333,6 +372,20 @@ export class LocalActions {
     }
   }
 
+  private failedEdit(target: Target, before: FileVersion, oldText: string, newText: string, code: string, message: string): never {
+    const key = hash(JSON.stringify([target.absolute, before.hash, oldText, newText]));
+    const attempts = (this.failingEdits.get(key) ?? 0) + 1;
+    if (this.failingEdits.size >= 128 && !this.failingEdits.has(key)) this.failingEdits.delete(this.failingEdits.keys().next().value!);
+    this.failingEdits.set(key, attempts);
+    if (attempts >= 2) this.editLoopStopped = true;
+    const spellingHint = code === 'TEXT_NOT_FOUND' && /\\(?:[nrtbfv0]|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})/.test(oldText)
+      ? ' old_text contains literal backslash escape spellings such as \\n, \\r or \\t. Those characters stay literal. Copy the actual read_file.text string value or choose a unique exact short substring already present in the file. The app never decodes these spellings automatically; no change was made.' : '';
+    throw new ActionError(attempts >= 2 ? 'REPEATED_EDIT_FAILED' : code,
+      attempts >= 2 ? repeatedEditFailureText
+        : `${message} Copy exact read_file.text, including whitespace and line endings. Location metadata is not part of the file.${spellingHint}`,
+      { path: target.relative, input_sha256: before.hash, attempts, changed: false });
+  }
+
   private async writeFile(tool: string, id: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ActionResult> {
     if (signal?.aborted) throw cancelled();
     const file = textArgument(args, 'path');
@@ -341,16 +394,19 @@ export class LocalActions {
     let content: string;
     if (tool === 'edit_file') {
       if (before.content === null) throw new ActionError('FILE_NOT_FOUND', 'The file does not exist. Use write_file to propose creating it.');
-      const oldText = textArgument(args, 'old_text');
+      const oldText = textArgument(args, 'old_text', true);
+      if (oldText.length === 0) throw new ActionError('INVALID_ARGUMENT', 'old_text must not be empty. Whitespace and line endings are allowed when they match exactly once.');
       const newText = textArgument(args, 'new_text', true);
       const first = before.content.indexOf(oldText);
-      if (first < 0) throw new ActionError('TEXT_NOT_FOUND', 'old_text does not match the current file. Read the file and propose the edit again.');
-      if (before.content.indexOf(oldText, first + 1) >= 0) throw new ActionError('AMBIGUOUS_EDIT', 'old_text matches more than once. Include enough surrounding text to identify one occurrence.');
+      if (first < 0) this.failedEdit(target, before, oldText, newText, 'TEXT_NOT_FOUND', 'old_text does not match the current file. Read the file and propose a corrected edit.');
+      if (before.content.indexOf(oldText, first + 1) >= 0) this.failedEdit(target, before, oldText, newText, 'AMBIGUOUS_EDIT', 'old_text matches more than once. Include enough surrounding text to identify one occurrence.');
       content = before.content.slice(0, first) + newText + before.content.slice(first + oldText.length);
     } else content = textArgument(args, 'content', true);
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new ActionError('FILE_TOO_LARGE', 'File actions support text files up to 2 MB.');
     if (PRIVATE_KEY.test(content)) throw new ActionError('PROTECTED_CONTENT', 'The agent cannot write private keys.');
-    if (before.content === content) return result('The file already has the proposed content. No change was needed.');
+    if (before.content === content) return mutationResult('The file already has the proposed content. No change was needed. Verify with read_file; do not rewrite it.', {
+      ok: true, operation: tool, path: target.relative, status: 'unchanged', changed: false, sha256: before.hash, bytes: Buffer.byteLength(content, 'utf8'),
+    });
     await this.permission({ requestId: id, title: `${before.content === null ? 'Create' : 'Change'} ${target.relative}`, arguments: args, preview: diffPreview(target.relative, before.content, content) }, signal);
     const checked = await this.target(file);
     const current = await this.fileVersion(checked.absolute);
@@ -370,7 +426,11 @@ export class LocalActions {
     await this.atomicWrite(target.absolute, content, before.mode, signal);
     snapshot.applied = true;
     await this.atomicWrite(path.join(this.options.historyDirectory, `${id}.json`), JSON.stringify(snapshot), 0o600);
-    return result(`${before.content === null ? 'Created' : 'Updated'} ${target.relative}. A snapshot is available for undo. If file reading is enabled, verify with read_file using path ${JSON.stringify(target.relative)}. This file edit does not create a command log.`);
+    const verified = await this.fileVersion(target.absolute);
+    if (verified.hash !== snapshot.afterHash) throw new ActionError('VERIFICATION_FAILED', 'The file changed before its write could be verified. Read the actual content; do not repeat the completed edit.');
+    return mutationResult(`${before.content === null ? 'Created' : 'Updated'} ${target.relative}. A snapshot is available for undo. If file reading is enabled, verify with read_file using path ${JSON.stringify(target.relative)}. This file edit does not create a command log.`, {
+      ok: true, operation: tool, path: target.relative, status: 'changed', changed: true, action_id: id, sha256: verified.hash, bytes: Buffer.byteLength(verified.content!, 'utf8'),
+    });
   }
 
   private async runCommand(id: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ActionResult> {
@@ -401,8 +461,9 @@ export class LocalActions {
       await log.sync();
       await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout,
         state: signal?.aborted || ['COMMAND_TIMEOUT', 'COMMAND_INTERRUPTED'].includes(outcome.errorCode ?? '') ? 'interrupted' : outcome.isError ? 'failed' : 'completed',
+        exitCode: outcome.exitCode, exitSignal: outcome.exitSignal,
         ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}), finishedAt: new Date().toISOString() }), 0o600);
-      const { outputBytes, previewBytes, ...actionOutcome } = outcome;
+      const { outputBytes, previewBytes, exitCode, exitSignal, ...actionOutcome } = outcome;
       const handle = `log-${id.slice(0, 8)}`;
       let logId = id;
       // A short handle is a locator, never a fuzzy match. A rare prefix
@@ -413,13 +474,14 @@ export class LocalActions {
       } catch { /* The durable identity remains valid. */ }
       const outputComplete = outputBytes === previewBytes;
       const nextOffset = outputComplete ? null : previewBytes;
-      const metadata = JSON.stringify({ log_id: logId, durable_id: id, output_complete: outputComplete, next_offset: nextOffset });
+      const evidence = { ok: !outcome.isError, operation: 'run_command', log_id: logId, durable_id: id, output_complete: outputComplete, next_offset: nextOffset, exit_code: exitCode, exit_signal: exitSignal, ...(outcome.errorCode ? { error: outcome.errorCode } : {}) };
+      const metadata = JSON.stringify(evidence);
       const guidance = outputComplete ? 'All saved output is shown above; no log read is needed.'
         : `Read remaining output with read_command_output using id ${JSON.stringify(logId)} and offset ${nextOffset}.`;
       const content = outcome.content.map(item => ({ ...item, text: `${metadata}\n${item.text}\n\nSaved command log: ${id}. ${guidance} Commands are never replayed by task resume.` }));
       if (outcome.errorCode === 'COMMAND_TIMEOUT') content.push({ type: 'text', text: commandTimeoutText });
       else if (outcome.errorCode === 'COMMAND_INTERRUPTED') content.push({ type: 'text', text: interruptedTurnText });
-      return { ...actionOutcome, content };
+      return { ...actionOutcome, content, structuredContent: evidence };
     } finally { await log.close(); }
   }
 
@@ -429,7 +491,8 @@ export class LocalActions {
       let outputBytes = 0;
       let previewBytes = 0;
       let writes = Promise.resolve();
-      const previewLimit = Math.max(256, this.options.resultChars ?? 2000);
+      // Leave room for machine-readable exit evidence and saved-log guidance.
+      const previewLimit = Math.max(256, (this.options.resultChars ?? 2000) - 256);
       let stopped: string | null = null;
       let stoppedCode: string | undefined;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -472,7 +535,7 @@ export class LocalActions {
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) onAbort();
       let finished = false;
-      const finish = async (message: string, failed: boolean) => {
+      const finish = async (message: string, failed: boolean, exitCode: number | null = null, exitSignal: NodeJS.Signals | null = null) => {
         if (finished) return; finished = true;
         clearTimeout(timeout);
         signal?.removeEventListener('abort', onAbort);
@@ -487,10 +550,10 @@ export class LocalActions {
         await terminationCleanup;
         if (killTimer) clearTimeout(killTimer);
         resolve({ ...result(`${message}${output ? `\n\n${output}` : ''}${outputBytes > previewBytes ? '\n[Excerpt only; the full output is in the saved command log.]' : ''}`, failed),
-          ...(stoppedCode ? { errorCode: stoppedCode } : {}), outputBytes, previewBytes: end });
+          ...(stoppedCode ? { errorCode: stoppedCode } : {}), outputBytes, previewBytes: end, exitCode, exitSignal });
       };
       child.once('error', (error) => finish(`The command could not start: ${error.message}`, true));
-      child.once('close', (code, exitSignal) => finish(stopped ?? `Command exited with ${exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`}.`, Boolean(stopped) || code !== 0));
+      child.once('close', (code, exitSignal) => finish(stopped ?? `Command exited with ${exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`}.`, Boolean(stopped) || code !== 0, code, exitSignal));
     });
   }
 
@@ -500,33 +563,52 @@ export class LocalActions {
       && COMMAND_LOG_UUID.test(entry.name.slice(0, -4))).map(entry => entry.name.slice(0, -4));
   }
 
+  private failedCommandRead(reference: string, offset: number, code: string, message: string, matchingIds: string[] = []): never {
+    const canonical = reference.toLowerCase();
+    const key = hash(JSON.stringify([canonical, offset]));
+    const availability = hash(JSON.stringify([code, [...matchingIds].sort()]));
+    const previous = this.failingCommandReads.get(key);
+    const attempts = previous?.availability === availability ? previous.attempts + 1 : 1;
+    if (this.failingCommandReads.size >= 128 && !this.failingCommandReads.has(key)) this.failingCommandReads.delete(this.failingCommandReads.keys().next().value!);
+    this.failingCommandReads.set(key, { reference: canonical, availability, attempts });
+    if (attempts >= 2) this.commandReadLoopStopped = true;
+    throw new ActionError(attempts >= 2 ? 'REPEATED_LOG_READ_FAILED' : code,
+      attempts >= 2 ? repeatedCommandReadFailureText : message,
+      { id: reference, offset, attempts, availability_sha256: availability });
+  }
+
   private async readCommandOutput(args: Record<string, unknown>): Promise<ActionResult> {
     if (this.options.utilities?.terminal === false) throw new ActionError('DISABLED_TOOL', 'Command logs are disabled with terminal utilities.');
     const reference = textArgument(args, 'id');
     const handle = COMMAND_LOG_HANDLE.exec(reference);
     if (!handle && !COMMAND_LOG_UUID.test(reference)) throw new ActionError('INVALID_ARGUMENT', 'Use the exact saved command log UUID returned by run_command, or its returned log-xxxxxxxx handle. Do not invent an id; use read_file to verify edited files.');
-    let id = reference;
-    const missing = () => new ActionError('COMMAND_LOG_NOT_FOUND', 'No saved command log exists for this id. Do not retry the same id. Use only a log id returned by run_command; use read_file to verify edited files.');
+    // Validate unrelated arguments before observing availability; malformed
+    // offsets must not contribute to a missing-log loop counter.
+    const offset = args.offset ?? 0;
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new ActionError('INVALID_ARGUMENT', 'offset must be a non-negative byte position.');
+    let id = reference.toLowerCase();
+    const missing = (): never => this.failedCommandRead(reference, offset, 'COMMAND_LOG_NOT_FOUND', 'No saved command log exists for this id. Do not retry the same id. Use only a log id returned by run_command; use read_file to verify edited files.');
     if (handle) {
       let matches: string[];
       try { matches = await this.matchingCommandLogs(handle[1]); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw missing(); throw error; }
-      if (!matches.length) throw missing();
-      if (matches.length !== 1) throw new ActionError('COMMAND_LOG_AMBIGUOUS', 'This short log handle matches more than one saved command log. Use the exact durable UUID returned with the command; no output was read.');
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') missing(); throw error; }
+      if (!matches.length) missing();
+      if (matches.length !== 1) this.failedCommandRead(reference, offset, 'COMMAND_LOG_AMBIGUOUS', 'This short log handle matches more than one saved command log. Use the exact durable UUID returned with the command; no output was read.', matches);
       id = matches[0];
     }
-    const offset = args.offset ?? 0;
-    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new ActionError('INVALID_ARGUMENT', 'offset must be a non-negative byte position.');
     let file: Awaited<ReturnType<typeof open>>;
     try { file = await open(path.join(this.options.historyDirectory, 'command-logs', `${id}.log`), 'r'); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw missing();
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') missing();
       throw error;
     }
     try {
       const size = (await file.stat()).size;
       const buffer = Buffer.alloc(Math.min(4000, this.options.resultChars ?? 2000));
       const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+      for (const [key, failure] of this.failingCommandReads) {
+        if (failure.reference === reference.toLowerCase()) this.failingCommandReads.delete(key);
+      }
       let end = bytesRead;
       if (offset + end < size) {
         while (end > 0 && (buffer[end - 1] & 0xc0) === 0x80) end--;

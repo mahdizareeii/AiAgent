@@ -3,6 +3,16 @@ import { test } from 'node:test';
 import { DEFAULT_PLUGINS, DEFAULT_UTILITIES, effectiveUtilities, emptyState, migrateState, pluginSchema } from '../state.ts';
 import { MAX_THINKING_BYTES } from '../thinking.ts';
 
+test('v3 migration preserves existing task behavior and v4 retains outcomes and execution preferences', () => {
+  const session = { id: '596c9bc7-bacc-44bf-9f43-9eb5108acb5d', title: 'Retained task', updatedAt: '2026-10-10T00:00:00Z', mode: 'coding', projectPath: '/project', files: [{ name: 'notes.txt', path: '/project/notes.txt' }], messages: [{ role: 'assistant', content: 'Readback retained.' }] };
+  const migrated = migrateState({ version: 3, selectedModel: 'qwen3.5:4b', mode: 'coding', sessions: [session] });
+  assert.deepEqual(migrated.sessions, [session]); assert.equal(migrated.sessions[0].taskEffort ?? 'standard', 'standard');
+  assert.equal(migrated.defaultTaskEffort, 'careful'); assert.equal(migrated.memoryMode, 'automatic');
+  const outcome = { status: 'timed-out', finishReason: 'active deadline', checks: [{ id: 'read:1', title: 'read_file', status: 'passed', detail: 'Literal 1: text\r\n', evidence: { operation: 'read_file', path: '/project/notes.txt', sha256: 'a'.repeat(64), complete: true } }] };
+  const current = { ...migrated, memoryMode: 'low-memory', defaultTaskEffort: 'standard', sessions: [{ ...session, taskEffort: 'careful', messages: [{ role: 'assistant', content: 'Completed changes preserved.', outcome }] }] };
+  assert.deepEqual(migrateState(current), current);
+});
+
 test('web research requires both the plugin and web permission and stays unavailable in Chat', () => {
   for (const mode of ['coding', 'research', 'assistant'] as const) {
     assert.equal(effectiveUtilities(mode, DEFAULT_UTILITIES).webResearch, false);
@@ -13,7 +23,7 @@ test('web research requires both the plugin and web permission and stays unavail
   assert.equal(DEFAULT_UTILITIES.webResearch, false);
   assert.deepEqual(emptyState().plugins, { taskResearch: false });
   assert.deepEqual(DEFAULT_PLUGINS, { taskResearch: false });
-  assert.equal(emptyState().version, 3);
+  assert.equal(emptyState().version, 4);
 });
 
 test('legacy explicit web consent migrates to the plugin while preserving model, project, chats and attachments', () => {

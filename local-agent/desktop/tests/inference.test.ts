@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { request } from 'node:http';
 import { BudgetedInference, compactionPartition, createInferenceGateway, type ChatBody, type InferenceRuntime } from '../inference-gateway.ts';
 import { DEFAULT_UTILITIES, effectiveUtilities, migrateState } from '../state.ts';
+import { outcomeStatus } from '../task-outcome.ts';
 
 function fixture() {
   const counted: ChatBody[] = []; const completed: ChatBody[] = []; let calls = 0; let restarts = 0; let failure: string | undefined;
@@ -19,6 +20,32 @@ function fixture() {
   };
   return { runtime, counted, completed, calls: () => calls, restarts: () => restarts, fail: (value: string) => { failure = value; } };
 }
+test('generation budget counts summaries, streams and allocation retries; finalization is one tools-disabled request', async () => {
+  const f = fixture(); let streams = 0;
+  f.runtime.requestStream = async () => { streams++; return new Response('data: [DONE]\n\n'); };
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 }, undefined, 3);
+  await inference.summarize('Exact earlier evidence.');
+  await inference.completeStream({ messages: [{ role: 'user', content: 'Continue once' }] });
+  f.fail('failed to allocate memory');
+  await assert.rejects(inference.completeJson({ messages: [{ role: 'user', content: 'Continue twice' }] }), /3-step local inference limit/);
+  assert.equal(f.calls(), 2); assert.equal(streams, 1); assert.equal(f.restarts(), 1);
+  const final = { messages: [{ role: 'user', content: 'Report recorded evidence only' }], max_tokens: 80 };
+  await inference.finalizeJson(final);
+  assert.equal(f.calls(), 3); assert.equal(f.completed.at(-1)?.tools, undefined);
+  assert.equal(f.completed.at(-1)?.tool_choice, 'none'); assert.equal(f.completed.at(-1)?.stream, false);
+  await assert.rejects(inference.finalizeJson(final), /already been attempted/);
+  assert.equal(f.calls(), 3);
+});
+test('reserved finalization never retries allocation failures and cannot accept tools', async () => {
+  const f = fixture(), profile = { model: 'owned', contextTokens: 2000, outputTokens: 100 };
+  const rejected = new BudgetedInference(f.runtime, profile);
+  await assert.rejects(rejected.finalizeJson({ messages: [], tools: [] }), /cannot call tools/);
+  assert.equal(f.calls(), 0);
+  const failed = new BudgetedInference(f.runtime, profile); f.fail('failed to allocate memory');
+  await assert.rejects(failed.finalizeJson({ messages: [{ role: 'user', content: 'Recorded checks' }] }), /allocate memory/);
+  assert.equal(f.calls(), 1); assert.equal(f.restarts(), 0);
+  await assert.rejects(failed.finalizeJson({ messages: [] }), /already been attempted/);
+});
 test('bounded local summaries explicitly disable thinking so their allowance remains available for source facts', async () => {
   const f = fixture();
   const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
@@ -56,6 +83,77 @@ test('allocation recovery retries only inference; ordinary errors do not restart
   f.fail('invalid chat template');
   await assert.rejects(inference.completeJson({ messages: [{ role: 'user', content: 'Hello' }] }), /invalid chat template/);
   assert.equal(f.restarts(), 1);
+});
+test('a host context failure overrules synthetic ACP end_turn and preserves completed action context', async () => {
+  const f = fixture(), controller = new AbortController();
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 800, outputTokens: 100 });
+  const completedAction = exchange('already-ran', 'reviewed_actions__run_command', 'COMPLETE_ACTION_RESULT '.repeat(50), '{"command":"run exactly once"}');
+  const body: ChatBody = { stream: true, messages: [{ role: 'user', content: 'Verify the task' },
+    ...exchange('older-read', 'local_files_and_research__read_file', 'Older source evidence'), ...completedAction] };
+  const original = JSON.stringify(body);
+  const gateway = await createInferenceGateway(inference, controller.signal);
+  try {
+    const response = await fetch(`${gateway.baseUrl}/v1/chat/completions`, { method: 'POST',
+      headers: { Authorization: `Bearer ${gateway.apiKey}`, 'Content-Type': 'application/json' }, body: original });
+    assert.equal(response.status, 400);
+    const receipt = await response.json() as { error: { code: string; message: string } };
+    assert.equal(receipt.error.code, 'CONTEXT_LIMIT');
+    assert.match(inference.terminalFailure!.message, /Required context still does not fit/);
+    assert.equal(outcomeStatus({ aborted: false, timedOut: false, error: inference.terminalFailure!.message,
+      finishReason: 'end_turn', hasAnswer: true }), 'blocked', 'A synthetic Goose error answer cannot report a completed task.');
+    assert.equal(JSON.stringify(body), original, 'The completed command and its result must stay exact.');
+    assert.equal(f.calls(), 0); assert.equal(f.restarts(), 0);
+    await assert.rejects(inference.completeStream({ messages: [{ role: 'user', content: 'Retry' }] }), /Required context still does not fit/);
+    assert.equal(f.calls(), 0, 'A terminal context failure cannot start another model request or replay its actions.');
+  } finally { controller.abort(); await gateway.close(); }
+});
+test('step exhaustion remains authoritative after one reserved closing response', async () => {
+  const f = fixture(), inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 }, undefined, 1);
+  await inference.completeJson({ messages: [{ role: 'user', content: 'Work once' }] });
+  await assert.rejects(inference.completeJson({ messages: [{ role: 'user', content: 'Continue' }] }), /1-step local inference limit/);
+  const failed = inference.terminalFailure!;
+  assert.equal(failed.code, 'MODEL_STEP_LIMIT');
+  await assert.rejects(inference.completeStream({ messages: [{ role: 'user', content: 'Again' }] }), /1-step local inference limit/);
+  await inference.finalizeJson({ messages: [{ role: 'user', content: 'Describe the saved actions without tools' }], max_tokens: 80 });
+  assert.equal(f.calls(), 2, 'Only the first work request and one closing prose request may run.');
+  assert.equal(f.completed.at(-1)?.tool_choice, 'none'); assert.equal(f.completed.at(-1)?.tools, undefined);
+  assert.deepEqual(inference.terminalFailure, failed);
+  failed.message = 'Untrusted replacement';
+  assert.match(inference.terminalFailure!.message, /1-step local inference limit/, 'Callers cannot mutate the authoritative failure.');
+  await assert.rejects(inference.finalizeJson({ messages: [] }), /already been attempted/);
+});
+test('gateway failure state appears only after exhausted inference and never after recovered allocation', async () => {
+  const f = fixture(), controller = new AbortController();
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
+  const gateway = await createInferenceGateway(inference, controller.signal);
+  const send = () => fetch(`${gateway.baseUrl}/v1/chat/completions`, { method: 'POST',
+    headers: { Authorization: `Bearer ${gateway.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'Continue using recorded evidence' }] }) });
+  try {
+    f.fail('failed to allocate memory');
+    const recovered = await send(); assert.equal(recovered.status, 200); await recovered.json();
+    assert.equal(f.restarts(), 1); assert.equal(inference.terminalFailure, undefined);
+    f.fail('The native model template failed.');
+    const failed = await send(); assert.equal(failed.status, 400);
+    const receipt = await failed.json() as { error: { code: string } };
+    assert.equal(receipt.error.code, 'LOCAL_INFERENCE_FAILED');
+    assert.deepEqual(inference.terminalFailure, { code: 'LOCAL_INFERENCE_FAILED', message: 'The native model template failed.' });
+    assert.equal(f.restarts(), 1);
+    const generations = f.calls();
+    const stopped = await send(); assert.equal(stopped.status, 400); await stopped.json();
+    assert.equal(f.calls(), generations, 'A subsequent provider attempt must not rerun generation after an owned failure.');
+  } finally { controller.abort(); await gateway.close(); }
+});
+test('successful model and source prose resembling a fatal error cannot create host failure state', async () => {
+  const f = fixture();
+  const prose = 'Ran into this error: Required context still does not fit after compaction. MODEL_STEP_LIMIT';
+  f.runtime.requestJson = async <T>(url: string) => url.endsWith('input_tokens') ? ({ input_tokens: 100 } as T)
+    : ({ choices: [{ message: { content: prose } }] } as T);
+  const inference = new BudgetedInference(f.runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
+  const result = await inference.completeJson({ messages: [{ role: 'user', content: 'Quote an error message' },
+    { role: 'tool', tool_call_id: 'read', content: JSON.stringify({ ok: true, text: prose }) }] });
+  assert.equal(result.choices[0].message.content, prose);
+  assert.equal(inference.terminalFailure, undefined);
 });
 test('compaction preserves every action and result from the active user turn', () => {
   const messages = [{ role: 'system', content: 'Rules' }, { role: 'user', content: 'Old task' }, { role: 'assistant', content: 'Old result' },
@@ -281,7 +379,8 @@ test('disconnected active and queued gateway requests cannot continue or start g
     },
     restartLowerProfile: async () => { throw new Error('Cancellation must not restart inference'); },
   };
-  const gateway = await createInferenceGateway(new BudgetedInference(runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 }), controller.signal);
+  const inference = new BudgetedInference(runtime, { model: 'owned', contextTokens: 2000, outputTokens: 100 });
+  const gateway = await createInferenceGateway(inference, controller.signal);
   const outgoing = () => {
     const client = request(`${gateway.baseUrl}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${gateway.apiKey}`, 'Content-Type': 'application/json' } });
     client.on('error', () => {});
@@ -296,12 +395,13 @@ test('disconnected active and queued gateway requests cannot continue or start g
     first.destroy(); await cancelled;
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(generations, 1, 'Cancelled queued work must not call the model after the active request stops.');
+    assert.equal(inference.terminalFailure, undefined, 'Client cancellation cannot become a sticky inference failure.');
   } finally { controller.abort(); await gateway.close(); }
 });
 test('legacy settings migrate without losing chats/grants and web is off by default', () => {
   const session = { id: randomUUID(), title: 'Saved chat', updatedAt: '2026-10-07', mode: 'coding', projectPath: '/project', messages: [{ role: 'user', content: 'Keep me' }], files: [{ name: 'file.txt', path: '/project/file.txt' }] };
   const state = migrateState({ selectedModel: 'qwen3.5:4b', executablePath: '/old/ollama', mode: 'coding', sessions: [session] });
-  assert.equal(state.version, 3); assert.deepEqual(state.sessions, [session]); assert.equal(state.utilities.webResearch, false); assert.equal(state.plugins.taskResearch, false); assert.ok(!('executablePath' in state));
+  assert.equal(state.version, 4); assert.deepEqual(state.sessions, [session]); assert.equal(state.utilities.webResearch, false); assert.equal(state.plugins.taskResearch, false); assert.ok(!('executablePath' in state));
   assert.equal(effectiveUtilities('assistant', DEFAULT_UTILITIES).terminal, false);
   assert.throws(() => migrateState({ ...state, version: 999 }));
 });

@@ -7,13 +7,18 @@ import ModelSetup from './ModelSetup';
 import Utilities from './Utilities';
 import Plugins from './Plugins';
 import WorkingDetails from './WorkingDetails';
+import TaskOutcomeDetails from './TaskOutcomeDetails';
 import CreateFolderDialog from './CreateFolderDialog';
+import PreferenceChoice from './PreferenceChoice';
 import { appendThinking } from '../thinking';
 import { emptyToolHistory, updateToolHistory } from '../tool-history';
-import { createStatusLoader, modelIsUsable, modelSetupMessage, runtimePresentation, shouldOpenModelSetup } from './status-flow';
+import { createStatusLoader, modelFitAllowsUse, modelIsUsable, modelSetupMessage, runtimePresentation, shouldOpenModelSetup } from './status-flow';
 import { isNearConversationEnd, shouldFollowConversation, workingDetailsIndexes } from './conversation-flow';
 import { resolveTaskSession } from './task-flow';
-import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, Mode, PermissionRequest, StageProgress, UtilityPreferences } from './types';
+import { normalizeTextScale, readTextScale, TEXT_SCALE_KEY } from './appearance';
+import { applyApprovalRequest, applyApprovalResolution, applyApprovalSnapshot, emptyApprovals } from './approval-flow';
+import { prepareValidationTask } from './validation-flow';
+import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, MemoryMode, Mode, PermissionRequest, StageProgress, TaskEffort, UtilityPreferences } from './types';
 
 const modes: { id: Mode; name: string; icon: 'code' | 'search' | 'spark'; description: string; examples: string[] }[] = [
   { id: 'coding', name: 'Agent', icon: 'code', description: 'Turn an idea into files, code, and a working project.', examples: ['Build a new project in this workspace', 'Build a simple website from my idea', 'Explore this project and fix a bug'] },
@@ -94,9 +99,13 @@ export default function App() {
     try { return localStorage.getItem('free-local-agent-theme') === 'dark' ? 'dark' : 'light'; }
     catch { return 'light'; }
   });
+  const [textScale, setTextScale] = useState(() => { try { return readTextScale(localStorage); } catch { return 100; } });
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [stage, setStage] = useState<StageProgress | null>(null);
   const [mode, setMode] = useState<Mode>('coding');
+  const [taskEffort, setTaskEffort] = useState<TaskEffort>('careful');
+  const [modelTrial, setModelTrial] = useState<string | null>(null);
+  const [validating, setValidating] = useState<string | null>(null);
   const [projectPath, setProjectPath] = useState<string | undefined>();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loadingSession, setLoadingSession] = useState(false);
@@ -104,13 +113,15 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [toolHistory, setToolHistory] = useState(emptyToolHistory);
   const { tools, truncated: toolsTruncated } = toolHistory;
-  const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
+  const [approvalView, setApprovalView] = useState(emptyApprovals);
+  const permissions = approvalView.pending;
   const [thinking, setThinking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
   const [files, setFiles] = useState<Attachment[]>([]);
   const [expandedWorking, setExpandedWorking] = useState(new Set<number>());
   const statusLoaderRef = useRef(createStatusLoader<AgentStatus>());
+  const approvalLoaderRef = useRef(createStatusLoader<Awaited<ReturnType<NonNullable<typeof bridge>['approvals']>>>());
   const initializedStatusRef = useRef(false);
   const reviewModelAfterFailureRef = useRef(false);
   const sessionRef = useRef<string | null>(null);
@@ -118,6 +129,8 @@ export default function App() {
   const stopRequestedRef = useRef(false);
   const loadingSessionRef = useRef(false);
   const selectingProjectRef = useRef(false);
+  const reconnectedSessionRef = useRef<string | null>(null);
+  const validationPreparingRef = useRef(false);
   const downloadCancelRef = useRef(false);
   const settingsBusyRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -148,9 +161,17 @@ export default function App() {
       if (!initializedStatusRef.current) {
         initializedStatusRef.current = true;
         setMode('coding');
+        setTaskEffort(next.defaultTaskEffort ?? 'careful');
         setProjectPath(next.projectPath);
         if (shouldOpenModelSetup(next)) setSetupOpen(true);
       }
+    });
+  }, [bridge]);
+
+  const reconcileApprovals = useCallback(async (id = sessionRef.current) => {
+    if (!bridge || !id) return;
+    await approvalLoaderRef.current.load(() => bridge.approvals(id), snapshot => {
+      if (sessionRef.current === id) setApprovalView(current => applyApprovalSnapshot(current, snapshot));
     });
   }, [bridge]);
 
@@ -183,23 +204,75 @@ export default function App() {
         setThinking(false);
         setToolHistory((current) => updateToolHistory(current, event));
       } else if (event.type === 'permission') {
-        setPermissions((current) => current.some((request) => request.requestId === event.requestId) ? current : [...current, event]);
+        setApprovalView(current => applyApprovalRequest(current, event.sessionId, event));
+        if (event.revision === undefined || !event.turnId) void reconcileApprovals().catch(() => {});
+      } else if (event.type === 'permission_resolved') {
+        setApprovalView(current => applyApprovalResolution(current, event));
       } else if (event.type === 'permission_cancelled') {
-        setPermissions((current) => current.filter((request) => request.requestId !== event.requestId));
+        void reconcileApprovals().catch(() => {});
       } else if (event.type === 'done') {
-        setThinking(false); setPermissions([]);
+        setThinking(false);
+        void reconcileApprovals().catch(() => {});
         setStage((current) => current?.resumable ? current : null);
         void refresh().catch((reason) => setError(errorMessage(reason)));
       } else if (event.type === 'error') {
         setError(event.text ?? event.error ?? 'Something went wrong. Please try again.');
         if (event.sessionId) {
-          setThinking(false); setPermissions([]);
+          setThinking(false);
+          void reconcileApprovals().catch(() => {});
           setStage((current) => current?.resumable ? current : null);
         }
       }
     });
-    return () => { live = false; statusLoaderRef.current.invalidate(); unsubscribe?.(); };
-  }, [bridge, refresh]);
+    return () => { live = false; statusLoaderRef.current.invalidate(); approvalLoaderRef.current.invalidate(); unsubscribe?.(); };
+  }, [bridge, refresh, reconcileApprovals]);
+
+  useEffect(() => {
+    const reconcile = () => { void reconcileApprovals().catch(() => {}); };
+    reconcile();
+    const onFocus = () => { reconcile(); void refresh().catch(() => {}); };
+    window.addEventListener('focus', onFocus);
+    const interval = permissions.length ? window.setInterval(reconcile, 5000) : undefined;
+    return () => { window.removeEventListener('focus', onFocus); if (interval !== undefined) window.clearInterval(interval); };
+  }, [sessionId, permissions.length, reconcileApprovals, refresh]);
+
+  useEffect(() => {
+    const id = status?.activeSessionId;
+    if (!bridge || !id || busyRef.current) return;
+    // Restoring a renderer only reads the host's running task. It never sends,
+    // resumes, or approves that task again.
+    busyRef.current = true; setBusy(true); setLoadingSession(true);
+    reconnectedSessionRef.current = id; sessionRef.current = id; setSessionId(id);
+    approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals(id));
+    setView('workspace');
+    void (async () => {
+      try {
+        const loaded = await bridge.loadSession(id);
+        if (sessionRef.current !== id || reconnectedSessionRef.current !== id) return;
+        setMessages(loaded.messages); setMode(loaded.mode); setTaskEffort(loaded.taskEffort ?? 'standard');
+        setProjectPath(loaded.projectPath); setStage(loaded.stage ?? null); setToolHistory(emptyToolHistory());
+        await reconcileApprovals(id);
+      } catch (reason) { setError(errorMessage(reason)); }
+      finally { setLoadingSession(false); }
+    })();
+  }, [status?.activeSessionId, bridge, reconcileApprovals]);
+
+  useEffect(() => {
+    const id = reconnectedSessionRef.current;
+    if (!status || !id || status.activeSessionId) return;
+    reconnectedSessionRef.current = null;
+    void (async () => {
+      await synchronizeSession(id).catch(reason => setError(errorMessage(reason)));
+      await reconcileApprovals(id).catch(() => {});
+      setBusy(false); busyRef.current = false; setThinking(false);
+    })();
+  }, [status, reconcileApprovals]);
+
+  useEffect(() => {
+    if (!busy) return;
+    const interval = window.setInterval(() => { void refresh().catch(() => {}); }, 5000);
+    return () => window.clearInterval(interval);
+  }, [busy, refresh]);
 
   useEffect(() => {
     const expandedCount = [...expandedWorking].filter((index) => visibleWorking.has(index)).length;
@@ -209,6 +282,10 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     try { localStorage.setItem('free-local-agent-theme', theme); } catch { /* An unavailable preference store does not prevent using the workspace. */ }
   }, [theme]);
+  useEffect(() => {
+    document.documentElement.style.setProperty('--text-scale', String(textScale / 100));
+    try { localStorage.setItem(TEXT_SCALE_KEY, String(textScale)); } catch { /* Text remains readable when preference storage is unavailable. */ }
+  }, [textScale]);
   useEffect(() => {
     if (!setupOpen) return;
     setupRef.current?.querySelector<HTMLElement>('button:not(:disabled), summary')?.focus();
@@ -234,6 +311,7 @@ export default function App() {
   function newChat(nextMode: Mode = 'coding') {
     if (busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current) return;
     setSessionId(null); sessionRef.current = null;
+    approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals()); setTaskEffort(status?.defaultTaskEffort ?? 'careful');
     followingOutputRef.current = true; setExpandedWorking(new Set());
     setView('workspace'); setMode(nextMode); setMessages([]); setToolHistory(emptyToolHistory()); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
     inputRef.current?.focus();
@@ -247,8 +325,10 @@ export default function App() {
       const loaded = await bridge.loadSession(id);
       followingOutputRef.current = true; setExpandedWorking(new Set());
       setSessionId(loaded.id); sessionRef.current = loaded.id;
+      approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals(loaded.id)); setTaskEffort(loaded.taskEffort ?? 'standard');
       setView('workspace');
       setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setToolHistory(emptyToolHistory()); setFiles([]); setDraft(''); setStage(loaded.stage ?? null);
+      await reconcileApprovals(loaded.id);
     } catch (reason) { setError(errorMessage(reason)); }
     finally { loadingSessionRef.current = false; setLoadingSession(false); }
   }
@@ -291,7 +371,7 @@ export default function App() {
     const text = draft.trim();
     const submittedFiles = files;
     const userCountBeforeSend = messages.filter((message) => message.role === 'user').length;
-    if (!bridge || !text || createFolderOpen || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || download || calibrating || importing || settingsBusyRef.current || setupBusy) return;
+    if (!bridge || !text || createFolderOpen || permissions.length > 0 || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || download || calibrating || modelTrial || validating || importing || settingsBusyRef.current || setupBusy) return;
     if (!ready) { setSetupOpen(true); return; }
     if (mode === 'coding' && selectedModel?.toolCapable === false) { setError('This model supports chat only. Choose a model with agent tools to create a project, or switch to Chat.'); return; }
     if (files.length && !status?.utilities.fileReading) { setError('Enable Read files in Tools to use your attached files.'); return; }
@@ -311,8 +391,8 @@ export default function App() {
     let failed = false;
     try {
       const currentId = await resolveTaskSession(sessionRef.current,
-        () => bridge.createSession({ mode, projectPath: taskProjectPath }),
-        (id) => { sessionRef.current = id; setSessionId(id); }, () => stopRequestedRef.current);
+        () => bridge.createSession({ mode, projectPath: taskProjectPath, taskEffort }),
+        (id) => { sessionRef.current = id; setSessionId(id); approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals(id)); }, () => stopRequestedRef.current);
       setMessages((current) => [...current, { role: 'user', content: text + (files.length ? `\n\nAttached: ${files.map((file) => file.name).join(', ')}` : '') }, { role: 'assistant', content: '' }]);
       setDraft(''); setFiles([]); started = true;
       await bridge.send({ sessionId: currentId, text, ...(files.length ? { files } : {}) });
@@ -330,7 +410,8 @@ export default function App() {
         // attachments. A failed task that already ran must not stage them again.
         if (failed && started && saved && saved.messages.filter((message) => message.role === 'user').length === userCountBeforeSend) setFiles(submittedFiles);
       }
-      setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]); inputRef.current?.focus();
+      await reconcileApprovals().catch(() => {});
+      setBusy(false); busyRef.current = false; setThinking(false); inputRef.current?.focus();
     }
   }
 
@@ -383,6 +464,50 @@ export default function App() {
     finally { setCalibrating(null); }
   }
 
+  async function tryModel(id: string) {
+    if (!bridge || busyRef.current || settingsBusyRef.current) return;
+    setModelTrial(id); setError(null);
+    const timer = window.setInterval(() => { void refresh().catch(() => {}); }, 1000);
+    try { await bridge.tryExperimentalModel(id); await refresh(); }
+    catch (reason) { setError(errorMessage(reason)); await refresh().catch(() => {}); }
+    finally { window.clearInterval(timer); setModelTrial(null); }
+  }
+
+  async function cancelTrial() {
+    if (!bridge) return;
+    await action(async () => { await bridge.cancelModelTrial(); await refresh(); });
+  }
+
+  async function validateModel(id: string) {
+    if (!bridge || busyRef.current || loadingSessionRef.current || settingsBusyRef.current) return;
+    setValidating(id); setError(null); setSetupOpen(false); setBusy(true); busyRef.current = true;
+    validationPreparingRef.current = true;
+    followingOutputRef.current = true; stopRequestedRef.current = false;
+    setToolHistory(emptyToolHistory()); setExpandedWorking(new Set());
+    try {
+      const prepared = await prepareValidationTask(() => bridge.createModelValidationTask(id), taskId => {
+        validationPreparingRef.current = false;
+        sessionRef.current = taskId; setSessionId(taskId);
+        approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals(taskId));
+      }, taskId => bridge.loadSession(taskId), () => stopRequestedRef.current);
+      const loaded = prepared.session;
+      setMode(loaded.mode); setTaskEffort(loaded.taskEffort ?? 'careful'); setProjectPath(loaded.projectPath);
+      setFiles([]); setDraft(''); setView('workspace');
+      setMessages([...loaded.messages, { role: 'user', content: prepared.prompt }, { role: 'assistant', content: '' }]);
+      await bridge.send({ sessionId: loaded.id, text: prepared.prompt });
+    } catch (reason) { setError(errorMessage(reason)); }
+    finally {
+      validationPreparingRef.current = false;
+      if (sessionRef.current) await synchronizeSession(sessionRef.current).catch(() => {});
+      await reconcileApprovals().catch(() => {}); await refresh().catch(() => {});
+      setBusy(false); busyRef.current = false; setThinking(false); setValidating(null);
+    }
+  }
+
+  async function setMemoryMode(memoryMode: MemoryMode) {
+    if (bridge) await settingsAction(() => bridge.setExecutionPreferences({ memoryMode }));
+  }
+
   async function settingsAction(operation: () => Promise<void>) {
     if (busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current) return;
     settingsBusyRef.current = true; setSettingsBusy(true); setError(null);
@@ -403,7 +528,7 @@ export default function App() {
     const id = sessionRef.current;
     if (!id || !bridge || !ready || createFolderOpen || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || download || calibrating || importing || setupBusy) return;
     stopRequestedRef.current = false;
-    setError(null); setBusy(true); busyRef.current = true; setThinking(false); setPermissions([]); setToolHistory(emptyToolHistory());
+    setError(null); setBusy(true); busyRef.current = true; setThinking(false); setToolHistory(emptyToolHistory());
     // A resumed turn gets its own stable Working row; never stream over the
     // interrupted reply's saved thinking or tool history.
     setMessages(current => [...current, { role: 'assistant', content: '' }]);
@@ -415,23 +540,33 @@ export default function App() {
     finally {
       setStage((current) => current?.resumable ? current : null);
       await synchronizeSession(id).catch((reason) => setError((current) => current ?? errorMessage(reason)));
-      setBusy(false); busyRef.current = false; setThinking(false); setPermissions([]);
+      await reconcileApprovals(id).catch(() => {});
+      setBusy(false); busyRef.current = false; setThinking(false);
     }
   }
 
   async function respondPermission(approved: boolean) {
     const request = permissions[0];
     if (!bridge || !request) return;
-    await bridge.respondPermission({ requestId: request.requestId, approved });
-    setPermissions((current) => current.filter((item) => item.requestId !== request.requestId));
+    try {
+      await bridge.respondPermission({ requestId: request.requestId, approved, sessionId: sessionRef.current ?? undefined, turnId: request.turnId });
+    } catch (reason) {
+      await reconcileApprovals().catch(() => {});
+      throw reason;
+    }
+    // A settled IPC response cannot authorize the action again. Keep this
+    // dialog disabled until an event or snapshot confirms its disappearance.
+    await reconcileApprovals().catch(() => setNotice('Your response was recorded. Waiting to refresh approvals from the local host.'));
   }
 
   async function stopTask() {
     stopRequestedRef.current = true;
-    await bridge?.cancel(sessionRef.current ?? undefined);
+    // Model validation preparation has no bound task yet; cancel that host
+    // preflight rather than accidentally targeting the previously open chat.
+    await bridge?.cancel(validationPreparingRef.current ? undefined : sessionRef.current ?? undefined);
   }
 
-  const locked = busy || loadingSession || selectingProject || !!download || !!calibrating || importing || settingsBusy || setupBusy || createFolderOpen;
+  const locked = busy || loadingSession || selectingProject || permissions.length > 0 || !!download || !!calibrating || !!modelTrial || !!validating || importing || settingsBusy || setupBusy || createFolderOpen;
 
   function workingExpanded(index: number, expanded: boolean) {
     setExpandedWorking((current) => {
@@ -459,6 +594,7 @@ export default function App() {
       </nav>
       <div className="sidebar-bottom">
         <button className="sidebar-link" disabled={locked} onClick={() => setSetupOpen(true)}><Icon name="monitor" size={17} />Models & hardware</button>
+        <div className="text-scale-control"><span>Text size</span><PreferenceChoice label="Text size" value={String(textScale)} options={[90, 95, 100, 105, 110, 115, 120, 125].map(value => ({ value: String(value), label: `${value}%` }))} onChange={value => setTextScale(normalizeTextScale(value))} minimumWidth={100} /></div>
         <div className="sidebar-preferences"><span className="local-badge"><span className={`status-dot ${ready ? 'online' : ''}`} />{ready ? 'Local model ready' : engine.phase === 'preparing' ? 'Preparing engine…' : engine.phase === 'error' ? 'Engine needs attention' : 'Choose a model'}</span><button className="icon-button theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}><Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} /></button></div>
       </div>
     </aside>
@@ -486,6 +622,7 @@ export default function App() {
           {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-body">
             {message.role === 'assistant' && visibleWorking.has(index) && <WorkingDetails thinking={message.thinking} active={busy && index === messages.length - 1} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={busy && index === messages.length - 1 ? tools : message.tools ?? (index === messages.length - 1 ? tools : undefined)} toolsTruncated={busy && index === messages.length - 1 ? toolsTruncated : message.toolsTruncated} expanded={expandedWorking.has(index)} onExpandedChange={(expanded) => workingExpanded(index, expanded)} />}
             {message.content && <><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></>}
+            {message.role === 'assistant' && message.outcome && <TaskOutcomeDetails outcome={message.outcome} />}
           </div></article>)}
           {messages.at(-1)?.role !== 'assistant' && visibleWorking.has(messages.length) && <WorkingDetails active={busy} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={stage} tools={tools} toolsTruncated={toolsTruncated} expanded={expandedWorking.has(messages.length)} onExpandedChange={(expanded) => workingExpanded(messages.length, expanded)} />}
         </div>}
@@ -499,22 +636,23 @@ export default function App() {
           <label className="sr-only" htmlFor="message-input">Message Free Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} spellCheck={false} autoCorrect="off" autoCapitalize="off" placeholder={ready ? (mode === 'coding' ? 'Describe a task, ask about your project, or add files…' : 'Ask a question or add files…') : 'Write a task, then choose a local model to begin…'} rows={2} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
           <div className="composer-toolbar"><div className="composer-left">
             <button className="icon-button" type="button" disabled={locked || !bridge || !status?.utilities.fileReading} title={status?.utilities.fileReading ? 'Attach local files' : 'Enable Read files in Tools to attach documents'} aria-label="Attach local files" onClick={() => void action(async () => { const selected = await bridge!.selectFiles(); setFiles((current) => [...current, ...selected.filter((file) => !current.some((existing) => existing.path === file.path))]); })}><Icon name="plus" size={18} /></button>
-            <label className="mode-select composer-select"><Icon name={chosenMode.icon} size={13} /><span className="sr-only">Task mode</span><select value={mode} disabled={locked || !!sessionId} title={sessionId ? 'Start a new task to change mode' : 'Choose how to work'} onChange={(event) => setMode(event.target.value as Mode)}>{modes.filter((item) => item.id !== 'research' || researchEnabled || mode === 'research').map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <div className="mode-select composer-select"><Icon name={chosenMode.icon} size={13} /><PreferenceChoice label="Task mode" value={mode} options={modes.filter(item => item.id !== 'research' || researchEnabled || mode === 'research').map(item => ({ value: item.id, label: item.name }))} disabled={locked || !!sessionId} title={sessionId ? 'Start a new task to change mode' : 'Choose how to work'} onChange={value => setMode(value as Mode)} minimumWidth={190} /></div>
+            {mode === 'coding' && <PreferenceChoice className="strategy-select composer-select" label="Agent approach" value={taskEffort} options={[{ value: 'standard', label: 'Standard Agent' }, { value: 'careful', label: 'Careful Agent' }]} disabled={locked || !!sessionId || !bridge} title={sessionId ? 'Start a new task to change the agent approach' : 'Careful plans, works in stages, and checks results'} onChange={next => void settingsAction(async () => { await bridge!.setExecutionPreferences({ taskEffort: next as TaskEffort }); setTaskEffort(next as TaskEffort); })} minimumWidth={200} />}
             <button className={`composer-chip workspace-chip ${projectPath ? 'has-project' : ''}`} type="button" disabled={locked || !bridge || !!sessionId} onClick={() => void action(chooseProject)} title={projectPath ? `${projectPath}${sessionId ? ' · Start a new task to change workspace' : ''}` : 'Choose or create a workspace folder'}><Icon name="folder" size={13} /><span>{selectingProject ? 'Choosing…' : projectPath ? folderName(projectPath) : 'Choose folder'}</span></button>
             <button className="composer-chip" type="button" disabled={!status} onClick={() => setUtilitiesOpen(true)} aria-haspopup="dialog"><Icon name="settings" size={13} /><span>Tools</span></button>
           </div><div className="composer-right">
-            <label className="model-select composer-select"><span className="sr-only">Local model</span><select value={selectedModel?.id ?? ''} disabled={locked || !status?.runtime.ready || !bridge || !status?.models.some((model) => model.installed)} onChange={(event) => void settingsAction(() => bridge!.selectModel(event.target.value))}><option value="" disabled>Choose a model</option>{status?.models.filter((model) => model.installed).map((model) => <option key={model.id} value={model.id} disabled={!!model.blockedReason || model.fit === 'insufficient' || (model.fit === 'slow' && !status?.slowMode)}>{model.name}</option>)}</select></label>
+            <PreferenceChoice className="model-select composer-select" label="Local model" value={selectedModel?.id ?? ''} placeholder="Choose a model" options={status?.models.filter(model => model.installed).map(model => ({ value: model.id, label: model.name, disabled: !!model.blockedReason || !modelFitAllowsUse(status!, model.id), description: model.blockedReason || (!modelFitAllowsUse(status!, model.id) ? model.fitReason : undefined) })) ?? []} disabled={locked || !status?.runtime.ready || !bridge || !status?.models.some(model => model.installed)} onChange={value => void settingsAction(() => bridge!.selectModel(value))} minimumWidth={300} />
             <button className="icon-button model-settings" type="button" disabled={locked} aria-label="Manage local models" title="Manage local models" onClick={() => setSetupOpen(true)}><Icon name="monitor" size={15} /></button>
             {busy ? <button type="button" className="stop-button" aria-label="Stop response" onClick={() => void action(stopTask)}><Icon name="stop" size={13} />Stop</button> : <button className="send-button" type="submit" aria-label="Send message" disabled={!draft.trim() || !ready || locked}><Icon name="arrow" size={18} /></button>}
           </div></div>
-        </form><p className="composer-note"><span>Local inference</span><span>{mode === 'coding' ? 'Edits and commands need approval.' : mode === 'assistant' ? 'Chat has no project actions.' : 'Read-only research mode.'}</span><span className="enter-note">↵ Send · ⇧↵ New line</span></p>
+        </form>{mode === 'coding' && <p className="strategy-note">{taskEffort === 'careful' ? 'Careful plans the task, works in bounded steps, and checks actual results.' : 'Standard responds directly with the available tools.'}</p>}<p className="composer-note"><span>Local inference</span><span>{mode === 'coding' ? 'Edits and commands need approval.' : mode === 'assistant' ? 'Chat has no project actions.' : 'Read-only research mode.'}</span><span className="enter-note">↵ Send · ⇧↵ New line</span></p>
       </div>
       </>}
     </main>
 
     {utilitiesOpen && status && <div className="modal-backdrop" onKeyDown={(event) => { if (event.key === 'Escape') setUtilitiesOpen(false); trapDialogFocus(event, utilitiesRef.current); }}><section className="tools-dialog" ref={utilitiesRef} role="dialog" aria-modal="true" aria-labelledby="tools-title"><div className="tools-dialog-header"><h2 id="tools-title">Agent tools</h2><button className="icon-button" aria-label="Close tools" onClick={() => setUtilitiesOpen(false)}><Icon name="close" size={18} /></button></div><p className="muted">Choose what the agent can access. Preferences apply to your next task; changes are unavailable while a task is running.</p>{error && <p className="inline-error" role="alert">{error}</p>}<Utilities preferences={status.utilities} mode={mode} toolCapable={selectedModel?.toolCapable} projectSelected={!!projectPath} calibrated={calibrated} disabled={locked || !bridge} onChange={setUtilities} /><button className="text-button tools-plugin-link" onClick={() => { setUtilitiesOpen(false); setView('plugins'); }}><Icon name="plugin" size={15} />Manage optional Research in Plugins<Icon name="chevron" size={13} /></button></section></div>}
     {createFolderOpen && <CreateFolderDialog busy={selectingProject} error={folderError} onCreate={createFolder} onClose={() => { if (!selectingProjectRef.current) setCreateFolderOpen(false); }} onKeyDown={(event, container) => { if (event.key === 'Escape' && !selectingProjectRef.current) setCreateFolderOpen(false); trapDialogFocus(event, container); }} />}
-    {setupOpen && <ModelSetup status={status} mode={mode} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} importing={importing} download={download} stage={stage} error={error} hasBridge={!!bridge} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && !locked) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onSelect={(id) => settingsAction(() => bridge!.selectModel(id))} onDownload={downloadModel} onCancelDownload={cancelDownload} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
+    {setupOpen && <ModelSetup status={status} mode={mode} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} trialModel={modelTrial} validating={validating} importing={importing} download={download} stage={stage} error={error} hasBridge={!!bridge} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && !locked) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onValidate={validateModel} onMemoryMode={setMemoryMode} onTryModel={tryModel} onCancelTrial={cancelTrial} onSelect={(id) => settingsAction(() => bridge!.selectModel(id))} onDownload={downloadModel} onCancelDownload={cancelDownload} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
     {permissions[0] && <PermissionDialog key={permissions[0].requestId} request={permissions[0]} onRespond={respondPermission} />}
   </div>;
 }

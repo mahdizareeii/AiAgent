@@ -12,21 +12,24 @@ import { downloadModel, type PullProgress } from './download.ts';
 import { abortError, isAllocationFailure, RuntimeError, throwIfAborted } from './errors.ts';
 import { readGGUFMetadata, sha256File } from './gguf.ts';
 import { classifyModel, GIB, parseDevices, probeHardware, type FitResult, type HardwareInfo } from './hardware.ts';
+import { EngineMemoryLog, EXPERIMENTAL_PROFILE_SIGNATURE, PINNED_ENGINE_COMMIT, experimentalResidentBudget, inferenceProfileSignature, probeResourceMeasurements, validResourceMeasurements, type ExperimentalTrial, type MemoryMode, type ResourceMeasurements } from './memory.ts';
 export { MODEL_CATALOG, RuntimeError, isAllocationFailure, classifyModel, probeHardware };
 export type { CuratedModel, PullProgress, HardwareInfo };
+export { EXPERIMENTAL_PROFILE_SIGNATURE, experimentalResidentBudget, inferenceProfileSignature, probeResourceMeasurements } from './memory.ts';
+export type { ExperimentalTrial, MemoryMode, ResourceMeasurements } from './memory.ts';
 
 export const ENGINE_VERSION='0.6.0';
-export const ENGINE_COMMIT='d81235049384534c167caea52b85a694f6103d14';
+export const ENGINE_COMMIT=PINNED_ENGINE_COMMIT;
 export interface ModelRecommendation {supported:boolean;totalMemoryGB:number;suggestedModel:string|null;contextTokens:number;reason:string|null;}
 export function recommendModel(memoryBytes=totalmem()):ModelRecommendation {
   const gb=memoryBytes/GIB;return {supported:gb>=8,totalMemoryGB:Math.round(gb*10)/10,suggestedModel:gb>=24?'gemma4:12b':gb>=8?'qwen3.5:4b':null,contextTokens:8192,reason:gb>=8?null:'The curated models require at least 8 GB of system memory.'};
 }
 export interface AvailableModel extends CuratedModel,FitResult {installed:boolean;sizeBytes:number;digest:string|null;blockedReason:string|null;verificationError?:string;measuredTokensPerSecond?:number;}
 export interface VerifiedModel {model:string;digest:string;sizeBytes:number;capabilities:string[];verifiedAt:string;toolCapable:boolean;}
-export interface PreparedModel extends VerifiedModel {sourceModel:string;baseUrl:string;apiKey:string;contextTokens:number;outputTokens:number;measuredTokensPerSecond?:number;}
+export interface PreparedModel extends VerifiedModel {sourceModel:string;baseUrl:string;apiKey:string;contextTokens:number;outputTokens:number;measuredTokensPerSecond?:number;memoryMode?:MemoryMode;profileSignature?:string;probePassed?:boolean;}
 export interface InferenceProfile {contextTokens:number;outputTokens:number;batchTokens:number;microBatchTokens:number;backend:string;index:number;}
 export type RuntimeState='stopped'|'starting'|'ready'|'loading'|'stopping'|'error';
-export interface RuntimeStatus {state:RuntimeState;baseUrl:string|null;version:string|null;executablePath:string|null;modelCacheDirectory:string;recommendation:ModelRecommendation;downloadingModel:string|null;error:{code:string;message:string}|null;hardware:HardwareInfo|null;profile:InferenceProfile|null;loadedModel:string|null;slowMode:boolean;}
+export interface RuntimeStatus {state:RuntimeState;baseUrl:string|null;version:string|null;executablePath:string|null;modelCacheDirectory:string;recommendation:ModelRecommendation;downloadingModel:string|null;error:{code:string;message:string}|null;hardware:HardwareInfo|null;profile:InferenceProfile|null;loadedModel:string|null;slowMode:boolean;memoryMode?:MemoryMode;profileSignature?:string|null;experimentalTrial?:ExperimentalTrial|null;}
 export interface EngineBackend {id:string;executable:string;libraryDirectory?:string;arguments?:string[];}
 interface EngineManifest {schemaVersion:number;engine:string;version:string;commit:string;build:number;target:string;backends:EngineBackend[];files:{path:string;sha256:string;size:number}[];}
 export interface RuntimeOptions {
@@ -38,11 +41,16 @@ export interface RuntimeOptions {
   freeDiskBytes?:(directory:string)=>Promise<number|null>;
   /** Trusted test fixtures; production always uses the pinned catalog and actual hardware. */
   catalog?:readonly CuratedModel[];hardware?:HardwareInfo;skipCalibration?:boolean;
+  /** Trusted native/test probes; no renderer-supplied sampling functions or deadlines. */
+  resourceProbe?:(pid:number|null)=>Promise<ResourceMeasurements>;
+  refreshHardware?:()=>Promise<HardwareInfo>;
+  experimentalLoadTimeoutMs?:number;experimentalCalibrationTimeoutMs?:number;resourceIntervalMs?:number;
 }
 interface FileFingerprint {size:number;mtimeMs:number;ctimeMs:number;ino:number;dev:number;}
 interface VerificationRecord {fingerprint:FileFingerprint;verified:VerifiedModel;}
 const fingerprint=(s:Stats):FileFingerprint=>({size:s.size,mtimeMs:s.mtimeMs,ctimeMs:s.ctimeMs,ino:s.ino,dev:s.dev});
 const same=(a:FileFingerprint,b:FileFingerprint)=>Object.keys(a).every(k=>a[k as keyof FileFingerprint]===b[k as keyof FileFingerprint]);
+const modelArchitectureAllowsTools=(spec:CuratedModel):boolean=>/^(qwen35|gemma4(?:moe)?)$/.test(spec.architecture);
 async function reservePort(port?:number):Promise<number>{
   if(port!==undefined&&(!Number.isInteger(port)||port<1||port>65535))throw new RuntimeError('INVALID_PORT','The local inference port is invalid.');
   return new Promise((resolve,reject)=>{const server=createServer();server.once('error',(e:NodeJS.ErrnoException)=>reject(new RuntimeError(e.code==='EADDRINUSE'?'PORT_IN_USE':'PORT_UNAVAILABLE','The app-owned inference port is unavailable.',{cause:e})));server.listen({host:'127.0.0.1',port:port??0,exclusive:true},()=>{const address=server.address();if(!address||typeof address==='string'){server.close();reject(new RuntimeError('PORT_UNAVAILABLE','Could not reserve a loopback port.'));return;}server.close(e=>e?reject(e):resolve(address.port));});});
@@ -59,17 +67,116 @@ export class LocalInferenceRuntime extends EventEmitter {
   private imports=new Map<string,CuratedModel>();private importsLoaded=false;private toolsPassed=new Map<string,boolean>();
   private calibrationPromise:Promise<PreparedModel>|null=null;private calibrationController:AbortController|null=null;
   private settingsPromise:Promise<void>|null=null;
+  private trialPromise:Promise<PreparedModel>|null=null;private trialController:AbortController|null=null;
+  private resourceTimer:ReturnType<typeof setInterval>|null=null;private resourceBusy=false;private lowMemorySamples=0;
+  private memoryLog:EngineMemoryLog|null=null;private trialFailure:RuntimeError|null=null;
+  private executionRequestTimeoutMs=3600000;
   constructor(settings:RuntimeOptions){super();if(!path.isAbsolute(settings.dataDirectory))throw new RuntimeError('INVALID_DATA_DIRECTORY','Use an absolute app-owned runtime directory.');this.settings=settings;
-    this.status={state:'stopped',baseUrl:null,version:null,executablePath:null,modelCacheDirectory:path.join(settings.dataDirectory,'models'),recommendation:recommendModel(settings.totalMemoryBytes),downloadingModel:null,error:null,hardware:null,profile:null,loadedModel:null,slowMode:false};}
+    this.status={state:'stopped',baseUrl:null,version:null,executablePath:null,modelCacheDirectory:path.join(settings.dataDirectory,'models'),recommendation:recommendModel(settings.totalMemoryBytes),downloadingModel:null,error:null,hardware:null,profile:null,loadedModel:null,slowMode:false,memoryMode:'automatic',profileSignature:null,experimentalTrial:null};}
   getStatus():RuntimeStatus{return structuredClone(this.status);}
-  async setSlowMode(enabled:boolean):Promise<void> {this.assertIdle();if(this.status.slowMode===Boolean(enabled))return;
-    this.settingsPromise=Promise.resolve().then(async()=>{if(this.child){await this.terminateChild();this.prepared=null;}if(this.stopPromise||this.status.state==='stopping')throw new RuntimeError('MODEL_BUSY','The runtime is stopping.');this.update({slowMode:Boolean(enabled),loadedModel:null,profile:null,state:this.engine.length?'ready':'stopped'});if(this.status.hardware)this.update({recommendation:this.hardwareRecommendation(this.status.hardware)});}).finally(()=>{this.settingsPromise=null;});return this.settingsPromise;
+  async setMemoryMode(mode:MemoryMode):Promise<void>{
+    if(!['automatic','low-memory','experimental-disk'].includes(mode))throw new RuntimeError('INVALID_MEMORY_MODE','Choose an available memory profile.');
+    this.assertIdle();if(this.status.memoryMode===mode)return;
+    this.settingsPromise=(async()=>{await this.terminateChild();this.prepared=null;this.profileIndex=0;this.invalidateTrial();this.update({memoryMode:mode,loadedModel:null,profile:null,state:this.engine.length?'ready':'stopped',error:null});})().finally(()=>{this.settingsPromise=null;});
+    await this.settingsPromise;
   }
-  private assertIdle():void {if(this.stopPromise||this.status.state==='stopping')throw new RuntimeError('MODEL_BUSY','The runtime is stopping.');if(this.preparePromise||this.calibrationPromise||this.settingsPromise)throw new RuntimeError('MODEL_BUSY','Wait for model loading, calibration or settings to finish.');}
-  private update(changes:Partial<RuntimeStatus>):void{this.status={...this.status,...changes};this.emit('status',this.getStatus());}
+  setExecutionRequestTimeout(timeoutMs:number):void{
+    if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1000||timeoutMs>3600000)throw new RuntimeError('INVALID_REQUEST_DEADLINE','Inference requests require a deadline between one second and one hour.');
+    this.executionRequestTimeoutMs=timeoutMs;
+  }
+  private invalidateTrial():void{
+    this.trialController?.abort();this.trialController=null;this.stopResourceWatchdog();
+    if(this.status.experimentalTrial)this.update({experimentalTrial:{...this.status.experimentalTrial,state:'stopped',probePassed:false,toolProbePassed:false,finishedAt:new Date().toISOString()}});
+  }
+  private updateTrial(changes:Partial<ExperimentalTrial>):void{if(this.status.experimentalTrial)this.update({experimentalTrial:{...this.status.experimentalTrial,...changes}});}
+  private syncExperimentalToolProbe(prepared:PreparedModel,passed:boolean):void{
+    const trial=this.status.experimentalTrial,signature=this.status.profileSignature;
+    if(this.status.memoryMode==='experimental-disk'&&this.child&&trial?.state==='passed'&&trial.probePassed&&trial.model===prepared.sourceModel&&trial.digest===prepared.digest&&signature&&trial.profileSignature===signature&&prepared.profileSignature===signature)this.updateTrial({toolProbePassed:passed});
+  }
+  private stopResourceWatchdog():void{if(this.resourceTimer)clearInterval(this.resourceTimer);this.resourceTimer=null;this.lowMemorySamples=0;}
+  private async resourceSample(pid:number|null):Promise<ResourceMeasurements>{
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    try{
+      const sample=await Promise.race([(this.settings.resourceProbe??(ownedPid=>probeResourceMeasurements(ownedPid)))(pid),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new RuntimeError('RESOURCE_MONITOR_UNAVAILABLE','The required experimental memory measurements timed out.')),2000);})]);
+      if(!validResourceMeasurements(sample)||Math.abs(Date.now()-Date.parse(sample.sampledAt))>10000)throw new RuntimeError('RESOURCE_MONITOR_UNAVAILABLE','Current resident-memory, available-memory, and pressure measurements are required.');
+      return sample;
+    }finally{if(timer)clearTimeout(timer);}
+  }
+  private async watchResources(child:ChildProcess):Promise<void>{
+    if(this.resourceBusy||this.child!==child||!this.status.experimentalTrial)return;const trialId=this.status.experimentalTrial.id;this.resourceBusy=true;
+    try{
+      if(!child.pid)throw new RuntimeError('RESOURCE_MONITOR_UNAVAILABLE','The app-owned model process has no measurable process identity.');
+      const sample=await this.resourceSample(child.pid);if(this.child!==child||this.status.experimentalTrial?.id!==trialId)return;this.updateTrial({measurements:sample});
+      const budget=this.status.experimentalTrial?.resourceBudgetBytes??0;
+      this.lowMemorySamples=sample.availableMemoryBytes<512*1024**2?this.lowMemorySamples+1:0;
+      const failure=sample.residentBytes>=budget?new RuntimeError('EXPERIMENTAL_RESIDENT_LIMIT','Experimental disk mode stopped because the model reached its sampled resident-memory budget.'):
+        sample.pressure==='critical'?new RuntimeError('EXPERIMENTAL_MEMORY_PRESSURE','Experimental disk mode stopped because macOS reported critical memory pressure.'):
+        this.lowMemorySamples>=2?new RuntimeError('EXPERIMENTAL_AVAILABLE_MEMORY','Experimental disk mode stopped after sustained available memory below 512 MiB.'):null;
+      if(failure)throw failure;
+    }catch(error){
+      if(this.child!==child||this.status.experimentalTrial?.id!==trialId)return;const failure=error instanceof RuntimeError?error:new RuntimeError('RESOURCE_MONITOR_UNAVAILABLE','Experimental disk mode stopped because reliable memory monitoring became unavailable.',{cause:error});
+      this.trialFailure=failure;this.updateTrial({state:'failed',probePassed:false,toolProbePassed:false,error:{code:failure.code,message:failure.message},finishedAt:new Date().toISOString()});
+      this.trialController?.abort();await this.terminateChild();this.prepared=null;this.update({state:'ready',loadedModel:null,profile:null,error:{code:failure.code,message:failure.message}});
+    }finally{this.resourceBusy=false;}
+  }
+  private startResourceWatchdog(child:ChildProcess):void{
+    this.stopResourceWatchdog();this.resourceTimer=setInterval(()=>{void this.watchResources(child);},this.settings.resourceIntervalMs??2000);this.resourceTimer.unref();
+  }
+  async startExperimentalTrial(model:string,options:{signal?:AbortSignal}={}):Promise<PreparedModel>{
+    this.assertIdle();throwIfAborted(options.signal);if(this.pullController)throw new RuntimeError('DOWNLOAD_BUSY','Wait for the model download to finish.');
+    this.stopResourceWatchdog();this.trialController?.abort();
+    const controller=new AbortController();this.trialController=controller;this.trialFailure=null;
+    const signal=options.signal?AbortSignal.any([controller.signal,options.signal]):controller.signal;
+    this.update({memoryMode:'experimental-disk',experimentalTrial:{id:randomUUID(),model,digest:null,state:'loading',startedAt:new Date().toISOString(),profileSignature:EXPERIMENTAL_PROFILE_SIGNATURE,probePassed:false,toolProbePassed:false,error:null,resourceBudgetBytes:null,mappedBytes:null,lazyEligibleBytes:null,measurements:null}});
+    this.trialPromise=this.experimentalTrialInternal(model,signal).catch(async error=>{
+      await this.terminateChild();this.prepared=null;
+      const failure=this.trialFailure??(error instanceof RuntimeError?error:new RuntimeError(signal.aborted?'EXPERIMENTAL_CANCELLED':'EXPERIMENTAL_TRIAL_FAILED',signal.aborted?'Experimental disk mode was cancelled.':error instanceof Error?error.message:'The experimental model trial failed.',{cause:error}));
+      const cancelled=signal.aborted&&!this.trialFailure;
+      this.updateTrial({state:cancelled?'cancelled':'failed',probePassed:false,toolProbePassed:false,error:cancelled?null:{code:failure.code,message:failure.message},finishedAt:new Date().toISOString()});
+      this.update({state:this.engine.length?'ready':cancelled?'stopped':'error',loadedModel:null,profile:null,error:cancelled?null:{code:failure.code,message:failure.message}});
+      throw cancelled?abortError():failure;
+    }).finally(()=>{this.trialPromise=null;if(this.status.experimentalTrial?.state!=='passed')this.trialController=null;});
+    return this.trialPromise;
+  }
+  async cancelExperimentalTrial():Promise<void>{
+    if(this.status.memoryMode!=='experimental-disk'||!this.status.experimentalTrial)return;
+    this.trialController?.abort();this.stopResourceWatchdog();await this.terminateChild();await this.trialPromise?.catch(()=>{});this.prepared=null;this.trialController=null;
+    this.updateTrial({state:'cancelled',probePassed:false,toolProbePassed:false,error:null,finishedAt:new Date().toISOString()});
+    this.update({state:this.engine.length?'ready':'stopped',loadedModel:null,profile:null,error:null});
+  }
+  private async experimentalTrialInternal(model:string,signal:AbortSignal):Promise<PreparedModel>{
+    if(!this.engine.length)await this.start({signal});const spec=this.spec(model);
+    const hardware=this.status.hardware!;
+    if(hardware.platform!=='darwin'||hardware.architecture!=='arm64')throw new RuntimeError('EXPERIMENTAL_PLATFORM_UNSUPPORTED','Experimental disk mode is currently available only on macOS Apple Silicon.');
+    const verified=await this.inspectModel(model,{signal});this.updateTrial({digest:verified.digest});throwIfAborted(signal);
+    await this.terminateChild();this.prepared=null;throwIfAborted(signal);
+    const fresh=this.settings.refreshHardware?await this.settings.refreshHardware():this.settings.hardware?structuredClone(this.settings.hardware):await probeHardware(this.settings.dataDirectory,{freeDiskBytes:d=>this.disk(d)});
+    // RAM/disk refresh does not discover devices. Keep the separately verified
+    // accelerator descriptors so returning to Automatic can use Metal/Vulkan.
+    fresh.gpus=structuredClone(hardware.gpus);
+    const initial=await this.resourceSample(null);throwIfAborted(signal);fresh.availableMemoryBytes=Math.min(fresh.totalMemoryBytes,initial.availableMemoryBytes);
+    this.update({hardware:fresh,recommendation:this.hardwareRecommendation(fresh)});
+    const budget=experimentalResidentBudget(fresh),fit=classifyModel(spec,fresh);
+    const workspace=Math.max(512*1024**2,Math.ceil(fit.memoryEstimate.contextBytes/2))+fit.memoryEstimate.scratchBytes;
+    this.updateTrial({resourceBudgetBytes:budget,measurements:initial});
+    if(initial.pressure==='critical'||budget<workspace)throw new RuntimeError('EXPERIMENTAL_WORKSPACE_INSUFFICIENT','There is not enough current context and scratch headroom for a bounded experimental trial. Close applications or choose a smaller model.');
+    const profile:InferenceProfile={contextTokens:4096,outputTokens:1024,batchTokens:128,microBatchTokens:32,backend:'cpu',index:2};
+    this.update({state:'loading',profile,loadedModel:null,error:null});
+    const prepared=await this.loadModel(spec,verified,profile,signal,true);throwIfAborted(signal);
+    if(this.trialFailure)throw this.trialFailure;const owned=this.child;if(!owned)throw new RuntimeError('EXPERIMENTAL_TRIAL_FAILED','The experimental model stopped before its probe completed.');
+    await this.watchResources(owned);throwIfAborted(signal);if(this.child!==owned)throw this.trialFailure??new RuntimeError('EXPERIMENTAL_TRIAL_FAILED','The experimental model stopped during resource validation.');
+    this.prepared={...prepared,memoryMode:'experimental-disk',probePassed:true};
+    this.updateTrial({state:'passed',profileSignature:this.prepared.profileSignature!,probePassed:true,toolProbePassed:prepared.toolCapable,finishedAt:new Date().toISOString(),...this.memoryLog?.values(true)});
+    this.update({state:'ready',loadedModel:model,error:null});return {...this.prepared};
+  }
+  async setSlowMode(enabled:boolean):Promise<void> {this.assertIdle();if(this.status.slowMode===Boolean(enabled))return;
+    this.settingsPromise=Promise.resolve().then(async()=>{if(this.child){await this.terminateChild();this.prepared=null;this.invalidateTrial();}if(this.stopPromise||this.status.state==='stopping')throw new RuntimeError('MODEL_BUSY','The runtime is stopping.');this.update({slowMode:Boolean(enabled),loadedModel:null,profile:null,state:this.engine.length?'ready':'stopped'});if(this.status.hardware)this.update({recommendation:this.hardwareRecommendation(this.status.hardware)});}).finally(()=>{this.settingsPromise=null;});return this.settingsPromise;
+  }
+  private assertIdle():void {if(this.stopPromise||this.status.state==='stopping')throw new RuntimeError('MODEL_BUSY','The runtime is stopping.');if(this.preparePromise||this.calibrationPromise||this.settingsPromise||this.trialPromise)throw new RuntimeError('MODEL_BUSY','Wait for model loading, calibration, experimental trial or settings to finish.');}
+  private update(changes:Partial<RuntimeStatus>):void{const status={...this.status,...changes};status.profileSignature=status.profile?inferenceProfileSignature(status.profile,status.memoryMode??'automatic'):null;this.status=status;this.emit('status',this.getStatus());}
   private catalog():readonly CuratedModel[]{return [...(this.settings.catalog??MODEL_CATALOG),...this.imports.values()];}
   private hardwareRecommendation(hardware:HardwareInfo):ModelRecommendation {
-    const rows=this.catalog().map(spec=>({spec,fit:classifyModel(spec,hardware).fit}));const eligible=rows.filter(r=>r.fit==='recommended'||this.status.slowMode&&r.fit==='slow');
+    const rows=this.catalog().map(spec=>({spec,fit:classifyModel(spec,hardware).fit}));const eligible=rows.filter(r=>r.fit==='recommended'||(this.status.slowMode||this.status.memoryMode==='low-memory')&&r.fit==='slow');
     const preferred=hardware.totalMemoryBytes>=24*GIB?'gemma4:12b':'qwen3.5:4b';const chosen=eligible.find(r=>r.spec.id===preferred&&r.fit==='recommended')??eligible.find(r=>r.fit==='recommended')??eligible[0];
     return {...recommendModel(hardware.totalMemoryBytes),supported:rows.some(r=>r.fit!=='insufficient'),suggestedModel:chosen?.spec.id??null,contextTokens:8192,reason:chosen?null:rows.some(r=>r.fit==='slow')?'Enable Slow mode for CPU or partial GPU inference, or free memory to use an accelerated model.':'The model weights exceed the current safe memory budget. Close applications or choose a smaller GGUF.'};
   }
@@ -133,7 +240,7 @@ export class LocalInferenceRuntime extends EventEmitter {
     await this.loadImports();
     const hardware=this.status.hardware??await probeHardware(this.settings.dataDirectory,{totalMemoryBytes:this.settings.totalMemoryBytes,availableMemoryBytes:this.settings.availableMemoryBytes,freeDiskBytes:d=>this.disk(d)});
     return Promise.all(this.catalog().map(async spec=>{let installed=false,sizeBytes=0;try{const s=await lstat(path.join(this.status.modelCacheDirectory,spec.filename));installed=s.isFile()&&!s.isSymbolicLink()&&s.size===spec.estimatedDownloadBytes;sizeBytes=s.size;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new RuntimeError('MODEL_DISCOVERY_FAILED','The model cache could not be inspected. Check its folder permissions and storage path.',{cause:error});}
-      const fit=classifyModel(spec,hardware),verificationError=sizeBytes>0?this.modelFailures.get(spec.id):undefined;return {...spec,...fit,toolCapable:this.toolsPassed.get(spec.id)??spec.toolCapable,installed,sizeBytes,digest:installed&&!verificationError?spec.sha256:null,blockedReason:verificationError??(fit.fit==='insufficient'?fit.fitReason:null),verificationError,measuredTokensPerSecond:this.measurements.get(spec.id)};}));
+      const fit=classifyModel(spec,hardware),verificationError=sizeBytes>0?this.modelFailures.get(spec.id):undefined;return {...spec,...fit,toolCapable:this.toolsPassed.get(spec.id)??spec.toolCapable,installed,sizeBytes,digest:installed&&!verificationError?spec.sha256:null,blockedReason:verificationError??(fit.fit==='insufficient'&&this.status.memoryMode!=='experimental-disk'?fit.fitReason:null),verificationError,measuredTokensPerSecond:this.measurements.get(spec.id)};}));
   }
   async inspectModel(model:string,options:{signal?:AbortSignal;acceptNewDigest?:boolean}={}):Promise<VerifiedModel>{
     try{
@@ -172,10 +279,15 @@ export class LocalInferenceRuntime extends EventEmitter {
   }
   async prepareModel(model:string,options:{signal?:AbortSignal}={}):Promise<PreparedModel>{
     this.assertIdle();throwIfAborted(options.signal);if(this.pullController)throw new RuntimeError('DOWNLOAD_BUSY','Wait for the model download to finish.');
+    if(this.status.memoryMode==='experimental-disk'){
+      const verified=await this.inspectModel(model,options),trial=this.status.experimentalTrial;
+      if(!this.child||!this.prepared||this.prepared.sourceModel!==model||this.prepared.digest!==verified.digest||trial?.state!=='passed'||!trial.probePassed||trial.digest!==verified.digest||!this.status.profileSignature||trial.profileSignature!==this.status.profileSignature||this.prepared.profileSignature!==this.status.profileSignature)throw new RuntimeError('EXPERIMENTAL_TRIAL_REQUIRED','Run Try Experimental disk mode for this exact model and profile before using it.');
+      return {...this.prepared};
+    }
     const controller=new AbortController();this.loadController=controller;const signal=options.signal?AbortSignal.any([controller.signal,options.signal]):controller.signal;if(this.prepared?.sourceModel!==model)this.profileIndex=0;
     this.preparePromise=this.prepareInternal(model,signal,true).catch(error=>{if(!this.child){this.update({state:this.engine.length?'ready':'stopped',baseUrl:null,loadedModel:null,profile:null,error:signal.aborted?null:{code:error instanceof RuntimeError?error.code:'MODEL_LOAD_FAILED',message:error instanceof Error?error.message:'Model loading failed.'}});}throw error;}).finally(()=>{this.preparePromise=null;this.loadController=null;});return this.preparePromise;
   }
-  private profiles():InferenceProfile[]{const available=this.status.hardware?.gpus.some(g=>g.backend===this.engine[0]?.id);const backend=available?this.engine[0].id:'cpu';return [
+  private profiles():InferenceProfile[]{const available=this.status.hardware?.gpus.some(g=>g.backend===this.engine[0]?.id);const backend=available?this.engine[0].id:'cpu';if(this.status.memoryMode==='low-memory')return [{contextTokens:4096,outputTokens:1024,batchTokens:128,microBatchTokens:32,backend,index:0},{contextTokens:4096,outputTokens:1024,batchTokens:64,microBatchTokens:16,backend,index:1},{contextTokens:4096,outputTokens:1024,batchTokens:64,microBatchTokens:16,backend:'cpu',index:2}];return [
     {contextTokens:8192,outputTokens:2048,batchTokens:512,microBatchTokens:128,backend,index:0},
     {contextTokens:8192,outputTokens:2048,batchTokens:256,microBatchTokens:64,backend,index:1},
     {contextTokens:4096,outputTokens:1024,batchTokens:128,microBatchTokens:32,backend:'cpu',index:2}];}
@@ -186,7 +298,7 @@ export class LocalInferenceRuntime extends EventEmitter {
     await this.terminateChild();this.prepared=null;
     if(!this.settings.hardware){const hardware=await probeHardware(this.settings.dataDirectory,{totalMemoryBytes:this.settings.totalMemoryBytes,availableMemoryBytes:this.settings.availableMemoryBytes,freeDiskBytes:d=>this.disk(d)});hardware.gpus=this.status.hardware?.gpus??[];this.update({hardware,recommendation:this.hardwareRecommendation(hardware)});}
     const hardware=this.status.hardware!;const fit=classifyModel(spec,hardware);
-    if(fit.fit==='insufficient')throw new RuntimeError('INSUFFICIENT_MEMORY',fit.fitReason);if(verify&&fit.fit==='slow'&&!this.status.slowMode)throw new RuntimeError('SLOW_MODE_REQUIRED','This model requires Slow mode on the detected hardware. Enable it explicitly or choose a recommended model.');
+    if(fit.fit==='insufficient')throw new RuntimeError('INSUFFICIENT_MEMORY',fit.fitReason);if(verify&&fit.fit==='slow'&&!this.status.slowMode&&this.status.memoryMode!=='low-memory')throw new RuntimeError('SLOW_MODE_REQUIRED','This model requires Slow mode on the detected hardware. Enable it explicitly or choose a recommended model.');
     const profiles=this.profiles();if(this.status.slowMode)this.profileIndex=Math.max(this.profileIndex,1);
     for(;this.profileIndex<profiles.length;this.profileIndex++){
       const profile=profiles[this.profileIndex];this.update({state:'loading',profile,loadedModel:null,error:null});
@@ -194,72 +306,90 @@ export class LocalInferenceRuntime extends EventEmitter {
       catch(error){await this.terminateChild();if(signal.aborted){this.update({state:'ready',loadedModel:null,baseUrl:null,profile:null,error:null});throw abortError();}if(!isAllocationFailure(error)||this.profileIndex===profiles.length-1){const failure=error instanceof RuntimeError?error:new RuntimeError('MODEL_LOAD_FAILED',error instanceof Error?error.message:'The model could not load.',{cause:error});this.update({state:'error',baseUrl:null,loadedModel:null,error:{code:failure.code,message:failure.message}});throw failure;}this.emit('log','Allocation failed; trying a smaller bounded inference profile.\n');}
     }throw new RuntimeError('INSUFFICIENT_MEMORY','All bounded inference profiles exhausted available memory.');
   }
-  private async loadModel(spec:CuratedModel,verified:VerifiedModel,profile:InferenceProfile,signal:AbortSignal):Promise<PreparedModel>{
+  private async loadModel(spec:CuratedModel,verified:VerifiedModel,profile:InferenceProfile,signal:AbortSignal,experimental=false):Promise<PreparedModel>{
     const backend=this.engine.find(b=>b.id===profile.backend)??this.engine.find(b=>b.id==='cpu')!;const port=await reservePort(this.settings.port);throwIfAborted(signal);this.apiKey=randomBytes(32).toString('hex');const authFile=path.join(this.settings.dataDirectory,`.inference-key-${randomUUID()}`);await writeFile(authFile,this.apiKey,{mode:0o600,flag:'wx'});
-    const alias=`local-agent-${spec.id.replace(/[^a-z0-9]/g,'-')}`;const args=[...(backend.arguments??[]),'--model',path.join(this.status.modelCacheDirectory,spec.filename),'--alias',alias,'--host','127.0.0.1','--port',String(port),'--api-key-file',authFile,'--offline','--no-agent','--no-webui','--no-ui-mcp-proxy','--parallel','1','--jinja','--ctx-size',String(profile.contextTokens),'--predict',String(profile.outputTokens),'--batch-size',String(profile.batchTokens),'--ubatch-size',String(profile.microBatchTokens),'--cache-ram','0','--no-cache-prompt','--no-cache-idle-slots','--ctx-checkpoints','0','--no-context-shift','--no-warmup','--flash-attn','auto','--reasoning','auto','--reasoning-format','deepseek','--reasoning-budget',String(Math.min(1024,Math.floor(profile.outputTokens/2))),'--load-mode','mmap','--fit','on','--fit-target','1024'];
+    const alias=`local-agent-${spec.id.replace(/[^a-z0-9]/g,'-')}`;const args=[...(backend.arguments??[]),'--model',path.join(this.status.modelCacheDirectory,spec.filename),'--alias',alias,'--host','127.0.0.1','--port',String(port),'--api-key-file',authFile,'--offline','--no-agent','--no-webui','--no-ui-mcp-proxy','--parallel','1','--jinja','--ctx-size',String(profile.contextTokens),'--predict',String(profile.outputTokens),'--batch-size',String(profile.batchTokens),'--ubatch-size',String(profile.microBatchTokens),'--cache-ram','0','--no-cache-prompt','--no-cache-idle-slots','--ctx-checkpoints','0','--no-context-shift','--no-warmup','--flash-attn','auto','--reasoning','auto','--reasoning-format','deepseek','--reasoning-budget',String(Math.min(1024,Math.floor(profile.outputTokens/2))),'--load-mode','mmap','--fit',experimental?'off':'on',...(experimental?['--lazy-mode','on','--cache-type-k','f16','--cache-type-v','f16','--no-op-offload']:['--fit-target','1024'])];
     this.lastLog='';this.update({baseUrl:`http://127.0.0.1:${port}`,executablePath:this.binary(backend)});let child:ChildProcess;try{throwIfAborted(signal);child=(this.settings.spawn??spawn)(this.binary(backend),args,{env:this.childEnvironment(backend),cwd:this.settings.dataDirectory,stdio:['ignore','pipe','pipe'],shell:false,windowsHide:true});}catch(error){await rm(authFile,{force:true});throw error;}this.child=child;const launch:{error?:Error}={};
-    child.once('error',e=>{launch.error=e;});this.childExit=new Promise(resolve=>child.once('close',(code,exitSignal)=>{if(this.child===child){this.child=null;if(!this.suppressExit&&this.status.state!=='stopping'&&this.status.state!=='stopped')this.update({state:'error',loadedModel:null,baseUrl:null,error:{code:'RUNTIME_EXITED',message:`The local inference engine stopped (${exitSignal??code}). ${this.lastLog.slice(-1000)}`}});}resolve();}));
-    for(const stream of [child.stdout,child.stderr])stream?.on('data',(b:Buffer)=>{const text=b.toString();this.lastLog=(this.lastLog+text).slice(-8000);this.emit('log',text.replaceAll(this.apiKey,'[internal token]'));});
+    child.once('error',e=>{launch.error=e;});this.childExit=new Promise(resolve=>child.once('close',(code,exitSignal)=>{if(this.child===child){this.child=null;this.stopResourceWatchdog();if(!this.suppressExit&&this.status.state!=='stopping'&&this.status.state!=='stopped'){if(experimental)this.updateTrial({state:'failed',probePassed:false,toolProbePassed:false,error:{code:'RUNTIME_EXITED',message:'The experimental model process stopped.'},finishedAt:new Date().toISOString()});this.update({state:'error',loadedModel:null,baseUrl:null,error:{code:'RUNTIME_EXITED',message:`The local inference engine stopped (${exitSignal??code}). ${this.lastLog.slice(-1000)}`}});}}resolve();}));
+    if(experimental){this.memoryLog=new EngineMemoryLog();this.startResourceWatchdog(child);}
+    for(const stream of [child.stdout,child.stderr])stream?.on('data',(b:Buffer)=>{const text=b.toString();this.lastLog=(this.lastLog+text).slice(-8000);if(experimental){this.memoryLog?.push(text);this.updateTrial({...this.memoryLog?.values(this.status.experimentalTrial?.state==='calibrating'||this.status.experimentalTrial?.state==='passed')});}this.emit('log',text.replaceAll(this.apiKey,'[internal token]'));});
     const cancel=()=>child.kill('SIGTERM');signal.addEventListener('abort',cancel,{once:true});
-    try{const deadline=Date.now()+(this.settings.startupTimeoutMs??180000);let healthy=false;
-      while(Date.now()<deadline){throwIfAborted(signal);if(launch.error||this.child!==child||child.exitCode!==null||child.signalCode!==null)throw new RuntimeError(/address already in use/i.test(this.lastLog)?'PORT_IN_USE':isAllocationFailure(this.lastLog)?'ALLOCATION_FAILED':'MODEL_LOAD_FAILED',launch.error?.message??(this.lastLog.slice(-4000)||'The inference engine stopped before readiness.'));
-        try{const health=await this.requestJson<{status:string}>('/health',undefined,signal,1500);if(health.status==='ok'){healthy=true;break;}}catch(error){if(signal.aborted)throw error;}
+    const loadingMs=experimental?(this.settings.experimentalLoadTimeoutMs??600000):(this.settings.startupTimeoutMs??180000),loadingController=new AbortController(),loadingSignal=AbortSignal.any([signal,loadingController.signal]);
+    const loadingTimer=setTimeout(()=>loadingController.abort(),loadingMs);
+    try{const deadline=Date.now()+loadingMs;let healthy=false;
+      while(Date.now()<deadline){throwIfAborted(loadingSignal);if(launch.error||this.child!==child||child.exitCode!==null||child.signalCode!==null)throw new RuntimeError(/address already in use/i.test(this.lastLog)?'PORT_IN_USE':isAllocationFailure(this.lastLog)?'ALLOCATION_FAILED':'MODEL_LOAD_FAILED',launch.error?.message??(this.lastLog.slice(-4000)||'The inference engine stopped before readiness.'));
+        try{const health=await this.requestJson<{status:string}>('/health',undefined,loadingSignal,1500);if(health.status==='ok'){healthy=true;break;}}catch(error){if(loadingSignal.aborted)throw error;}
         await new Promise(resolve=>setTimeout(resolve,100));}
-      if(!healthy)throw new RuntimeError('MODEL_LOAD_TIMEOUT','The model did not become ready in time.');
-      await new Promise(resolve=>setTimeout(resolve,100));throwIfAborted(signal);if(this.child!==child||child.exitCode!==null||child.signalCode!==null)throw new RuntimeError('MODEL_LOAD_FAILED',this.lastLog.slice(-2000));
-      const props=await this.requestJson<{total_slots:number;default_generation_settings:{n_ctx:number};build_info:string;ui:boolean;cors_proxy_enabled:boolean;chat_template_caps:Record<string,unknown>}>('/props',undefined,signal);
+      if(!healthy)throw new RuntimeError(experimental?'EXPERIMENTAL_LOAD_TIMEOUT':'MODEL_LOAD_TIMEOUT','The model did not become ready in time.');
+      await new Promise(resolve=>setTimeout(resolve,100));throwIfAborted(loadingSignal);if(this.child!==child||child.exitCode!==null||child.signalCode!==null)throw new RuntimeError('MODEL_LOAD_FAILED',this.lastLog.slice(-2000));
+      const props=await this.requestJson<{total_slots:number;default_generation_settings:{n_ctx:number};build_info:string;ui:boolean;cors_proxy_enabled:boolean;chat_template_caps:Record<string,unknown>}>('/props',undefined,loadingSignal);
       const actualContext=props.default_generation_settings?.n_ctx;
       if(props.total_slots!==1||!Number.isInteger(actualContext)||actualContext<512||actualContext>profile.contextTokens||props.ui!==false||props.cors_proxy_enabled!==false||!String(props.build_info).includes('d812350'))throw new RuntimeError('INVALID_ENGINE_PROPERTIES','The local service did not confirm the app-owned bounded engine configuration.');
+      clearTimeout(loadingTimer);
       const outputTokens=Math.min(profile.outputTokens,Math.max(64,Math.floor(actualContext/4)));
       if(actualContext!==profile.contextTokens)this.update({profile:{...profile,contextTokens:actualContext,outputTokens}});
       let toolCapable=props.chat_template_caps?.supports_tool_calls===true&&(this.toolsPassed.get(spec.id)??spec.toolCapable);
       let measuredTokensPerSecond:number|undefined;
-      if(toolCapable&&!this.settings.skipCalibration){try{measuredTokensPerSecond=await this.calibrate(alias,signal);this.toolsPassed.set(spec.id,true);}catch(error){if(signal.aborted||isAllocationFailure(error))throw error;toolCapable=false;this.toolsPassed.set(spec.id,false);this.emit('log','Tool calibration did not pass; this model remains available for chat with tools disabled.\n');}}
-      if(!toolCapable&&!this.settings.skipCalibration){try{measuredTokensPerSecond=await this.measureChat(alias,signal);}catch(error){if(signal.aborted||isAllocationFailure(error))throw error;this.emit('log','Chat speed measurement unavailable; this model remains chat-only.\n');}}
+      if(experimental){
+        this.updateTrial({state:'calibrating',profileSignature:this.status.profileSignature!,...this.memoryLog?.values(true)});
+        const calibrationMs=this.settings.experimentalCalibrationTimeoutMs??300000,calibrationDeadline=AbortSignal.timeout(calibrationMs),probeSignal=AbortSignal.any([signal,calibrationDeadline]);
+        try{
+          measuredTokensPerSecond=await this.measureChat(alias,probeSignal,calibrationMs,true);
+          toolCapable=props.chat_template_caps?.supports_tool_calls===true&&(spec.toolCapable||modelArchitectureAllowsTools(spec));
+          if(toolCapable){try{const speed=await this.calibrate(alias,probeSignal,calibrationMs);if(speed!==undefined)measuredTokensPerSecond=speed;}catch(error){if(probeSignal.aborted||isAllocationFailure(error))throw error;toolCapable=false;this.emit('log','Experimental model tool validation failed; the successfully probed model remains chat-only.\n');}}
+          this.toolsPassed.set(spec.id,toolCapable);
+        }catch(error){if(calibrationDeadline.aborted&&!signal.aborted)throw new RuntimeError('EXPERIMENTAL_CALIBRATION_TIMEOUT','The experimental chat and tool probes exceeded their shared five-minute deadline.',{cause:error});throw error;}
+      }
+      if(!experimental&&toolCapable&&!this.settings.skipCalibration){try{measuredTokensPerSecond=await this.calibrate(alias,signal);this.toolsPassed.set(spec.id,true);}catch(error){if(signal.aborted||isAllocationFailure(error))throw error;toolCapable=false;this.toolsPassed.set(spec.id,false);this.emit('log','Tool calibration did not pass; this model remains available for chat with tools disabled.\n');}}
+      if(!experimental&&!toolCapable&&!this.settings.skipCalibration){try{measuredTokensPerSecond=await this.measureChat(alias,signal);}catch(error){if(signal.aborted||isAllocationFailure(error))throw error;this.emit('log','Chat speed measurement unavailable; this model remains chat-only.\n');}}
       if(!toolCapable)this.toolsPassed.set(spec.id,false);
       const record=this.verification.get(spec.id);if(record){record.verified.toolCapable=toolCapable;record.verified.capabilities=toolCapable?['completion','tools']:['completion'];}
       if(measuredTokensPerSecond!==undefined)this.measurements.set(spec.id,measuredTokensPerSecond);
-      return {...verified,capabilities:toolCapable?['completion','tools']:['completion'],model:alias,sourceModel:spec.id,baseUrl:this.status.baseUrl!,apiKey:this.apiKey,contextTokens:actualContext,outputTokens,toolCapable,measuredTokensPerSecond};
-    }finally{signal.removeEventListener('abort',cancel);await rm(authFile,{force:true});}
+      return {...verified,capabilities:toolCapable?['completion','tools']:['completion'],model:alias,sourceModel:spec.id,baseUrl:this.status.baseUrl!,apiKey:this.apiKey,contextTokens:actualContext,outputTokens,toolCapable,measuredTokensPerSecond,memoryMode:this.status.memoryMode??'automatic',profileSignature:this.status.profileSignature??inferenceProfileSignature({...profile,contextTokens:actualContext,outputTokens},this.status.memoryMode??'automatic')};
+    }catch(error){if(loadingController.signal.aborted&&!signal.aborted)throw new RuntimeError(experimental?'EXPERIMENTAL_LOAD_TIMEOUT':'MODEL_LOAD_TIMEOUT','The model did not become ready in time.',{cause:error});throw error;}
+    finally{clearTimeout(loadingTimer);signal.removeEventListener('abort',cancel);await rm(authFile,{force:true});}
   }
-  private async calibrate(model:string,signal:AbortSignal):Promise<number|undefined>{
+  private async calibrate(model:string,signal:AbortSignal,timeoutMs=120000):Promise<number|undefined>{
     const tool={type:'function',function:{name:'local_probe',description:'Return the supplied word.',parameters:{type:'object',properties:{word:{type:'string'}},required:['word'],additionalProperties:false}}};
     const body={model,messages:[{role:'user',content:'Call local_probe with word OK.'}],tools:[tool],tool_choice:'required',parallel_tool_calls:false,max_tokens:96,temperature:0,chat_template_kwargs:{enable_thinking:false},cache_prompt:false};
     await this.requestJson('/v1/chat/completions/input_tokens',body,signal);
-    const result=await this.requestJson<{choices?:{message?:{tool_calls?:{function?:{name?:string;arguments?:string}}[]}}[];timings?:{predicted_per_second?:number}}>('/v1/chat/completions',body,signal,120000);
+    const result=await this.requestJson<{choices?:{message?:{tool_calls?:{function?:{name?:string;arguments?:string}}[]}}[];timings?:{predicted_per_second?:number}}>('/v1/chat/completions',body,signal,timeoutMs);
     const call=result.choices?.[0]?.message?.tool_calls?.[0]?.function;let argumentsValid=false;try{argumentsValid=JSON.parse(call?.arguments??'').word==='OK';}catch{}
     if(call?.name!=='local_probe'||!argumentsValid)throw new RuntimeError('MODEL_CALIBRATION_FAILED','The model did not pass its local tool-call calibration. Its tools will remain disabled.');
     const speed=result.timings?.predicted_per_second;return typeof speed==='number'&&Number.isFinite(speed)&&speed>0?speed:undefined;
   }
-  private async measureChat(model:string,signal:AbortSignal):Promise<number|undefined>{
+  private async measureChat(model:string,signal:AbortSignal,timeoutMs=120000,requireProbe=false):Promise<number|undefined>{
     const body={model,messages:[{role:'user',content:'Reply with OK.'}],max_tokens:16,temperature:0,chat_template_kwargs:{enable_thinking:false},cache_prompt:false};
-    const result=await this.requestJson<{choices?:{message?:{content?:string}}[];timings?:{predicted_per_second?:number}}>('/v1/chat/completions',body,signal,120000);const speed=result.timings?.predicted_per_second;return typeof result.choices?.[0]?.message?.content==='string'&&typeof speed==='number'&&Number.isFinite(speed)&&speed>0?speed:undefined;
+    const result=await this.requestJson<{choices?:{message?:{content?:string}}[];timings?:{predicted_per_second?:number}}>('/v1/chat/completions',body,signal,timeoutMs);const content=result.choices?.[0]?.message?.content;
+    if(requireProbe&&(typeof content!=='string'||content.trim()!=='OK'))throw new RuntimeError('EXPERIMENTAL_CHAT_PROBE_FAILED','The experimental model did not complete its required local chat probe.');
+    const speed=result.timings?.predicted_per_second;return typeof content==='string'&&typeof speed==='number'&&Number.isFinite(speed)&&speed>0?speed:undefined;
   }
   calibrateModel(model:string,options:{signal?:AbortSignal}={}):Promise<PreparedModel>{
     this.assertIdle();throwIfAborted(options.signal);const spec=this.spec(model);
     if(model.startsWith('import:')&&!/^(qwen35|gemma4(?:moe)?)$/.test(spec.architecture)){this.toolsPassed.set(model,false);this.emit('log','This imported architecture remains chat-only; checking local chat speed without enabling agent tools.\n');return this.prepareModel(model,options);}
     const controller=new AbortController();this.calibrationController=controller;const signal=options.signal?AbortSignal.any([controller.signal,options.signal]):controller.signal;
     const loading=this.prepareModel(model,{signal});this.calibrationPromise=(async()=>{const prepared=await loading;throwIfAborted(signal);const owned=this.child;if(!owned||this.stopPromise)throw abortError();
-    const props=await this.requestJson<{chat_template_caps?:{supports_tool_calls?:boolean}}>('/props',undefined,signal);
+    try{const props=await this.requestJson<{chat_template_caps?:{supports_tool_calls?:boolean}}>('/props',undefined,signal);
     if(props.chat_template_caps?.supports_tool_calls!==true)throw new RuntimeError('MODEL_TOOL_TEMPLATE_UNSUPPORTED','This model template does not support native tool calls. Chat remains available.');
-    try{const speed=await this.calibrate(prepared.model,signal);throwIfAborted(signal);if(this.child!==owned||this.prepared?.sourceModel!==model||this.stopPromise)throw abortError();this.toolsPassed.set(model,true);if(speed)this.measurements.set(model,speed);const record=this.verification.get(model);if(record){record.verified.toolCapable=true;record.verified.capabilities=['completion','tools'];}this.prepared={...prepared,toolCapable:true,capabilities:['completion','tools'],measuredTokensPerSecond:speed};return {...this.prepared};}
-    catch(error){if(!signal.aborted){this.toolsPassed.set(model,false);if(this.prepared)this.prepared.toolCapable=false;const record=this.verification.get(model);if(record){record.verified.toolCapable=false;record.verified.capabilities=['completion'];}}throw error;}
+    const speed=await this.calibrate(prepared.model,signal);throwIfAborted(signal);if(this.child!==owned||this.prepared?.sourceModel!==model||this.stopPromise)throw abortError();this.toolsPassed.set(model,true);if(speed)this.measurements.set(model,speed);const record=this.verification.get(model);if(record){record.verified.toolCapable=true;record.verified.capabilities=['completion','tools'];}this.prepared={...prepared,toolCapable:true,capabilities:['completion','tools'],measuredTokensPerSecond:speed};this.syncExperimentalToolProbe(this.prepared,true);return {...this.prepared};}
+    catch(error){if(!signal.aborted){this.toolsPassed.set(model,false);if(this.prepared)this.prepared={...this.prepared,toolCapable:false,capabilities:['completion']};this.syncExperimentalToolProbe(prepared,false);const record=this.verification.get(model);if(record){record.verified.toolCapable=false;record.verified.capabilities=['completion'];}}throw error;}
     })().finally(()=>{this.calibrationPromise=null;this.calibrationController=null;});return this.calibrationPromise;
   }
   async restartLowerProfile(signal?:AbortSignal):Promise<PreparedModel>{
     this.assertIdle();throwIfAborted(signal);if(!this.prepared)throw new RuntimeError('MODEL_NOT_LOADED','Load a verified model before changing its profile.');
+    if(this.status.memoryMode==='experimental-disk')throw new RuntimeError('EXPERIMENTAL_RECOVERY_DISABLED','Experimental disk mode does not restart inference automatically. Run a new explicit trial after reviewing the failure.');
     if(this.profileIndex>=2)throw new RuntimeError('PROFILE_EXHAUSTED','The smallest bounded profile is already in use.');const model=this.prepared.sourceModel;this.profileIndex++;const controller=new AbortController();this.loadController=controller;const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
     this.preparePromise=this.prepareInternal(model,combined,false).finally(()=>{this.preparePromise=null;this.loadController=null;});return this.preparePromise;
   }
-  async requestStream(pathname:string,body:object,signal?:AbortSignal):Promise<Response>{return this.request(pathname,body,signal,0);}
+  async requestStream(pathname:string,body:object,signal?:AbortSignal):Promise<Response>{return this.request(pathname,body,signal,this.settings.requestTimeoutMs??this.executionRequestTimeoutMs);}
   async requestJson<T=Record<string,unknown>>(pathname:string,body?:object,signal?:AbortSignal,timeoutMs?:number):Promise<T>{return (await this.request(pathname,body,signal,timeoutMs)).json() as Promise<T>;}
-  private async request(pathname:string,body?:object,signal?:AbortSignal,timeoutMs=this.settings.requestTimeoutMs??(pathname==='/v1/chat/completions'?900000:60000)):Promise<Response>{
+  private async request(pathname:string,body?:object,signal?:AbortSignal,timeoutMs=this.settings.requestTimeoutMs??(pathname==='/v1/chat/completions'?this.executionRequestTimeoutMs:60000)):Promise<Response>{
     throwIfAborted(signal);if(!this.child||!this.status.baseUrl||!this.apiKey)throw new RuntimeError('RUNTIME_NOT_READY','Load a local model first.');
     if(!/^\/[a-z0-9_\/-]+$/i.test(pathname))throw new RuntimeError('INVALID_INFERENCE_PATH','Use a local inference API path.');
-    const signals=[signal,timeoutMs>0?AbortSignal.timeout(timeoutMs):undefined].filter((v):v is AbortSignal=>Boolean(v));const response=await (this.settings.fetch??fetch)(`${this.status.baseUrl}${pathname}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${this.apiKey}`,Accept:'application/json',...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:signals.length?AbortSignal.any(signals):undefined,redirect:'error',credentials:'omit'});
+    const signals=[signal,this.status.memoryMode==='experimental-disk'?this.trialController?.signal:undefined,timeoutMs>0?AbortSignal.timeout(timeoutMs):undefined].filter((v):v is AbortSignal=>Boolean(v));const response=await (this.settings.fetch??fetch)(`${this.status.baseUrl}${pathname}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${this.apiKey}`,Accept:'application/json',...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:signals.length?AbortSignal.any(signals):undefined,redirect:'error',credentials:'omit'});
     if(!response.ok){const raw=(await response.text()).slice(0,4000);let message=raw;try{const error=JSON.parse(raw).error;message=typeof error==='string'?error:error?.message??raw;}catch{}throw new RuntimeError(isAllocationFailure(message)?'ALLOCATION_FAILED':'INFERENCE_API_ERROR',`Local inference HTTP ${response.status}: ${message}`);}return response;
   }
-  stop():Promise<void>{if(this.stopPromise)return this.stopPromise;this.startController?.abort();this.loadController?.abort();this.calibrationController?.abort();this.cancelPull();this.update({state:'stopping'});
-    this.stopPromise=(async()=>{await this.terminateChild();await this.preparePromise?.catch(()=>{});await this.calibrationPromise?.catch(()=>{});await this.settingsPromise?.catch(()=>{});await this.startPromise?.catch(()=>{});await this.pullPromise?.catch(()=>{});await this.terminateChild();this.prepared=null;this.apiKey='';this.update({state:'stopped',baseUrl:null,loadedModel:null,profile:null,downloadingModel:null,error:null});})().finally(()=>{this.stopPromise=null;});return this.stopPromise;}
-  private async terminateChild():Promise<void>{const child=this.child,exited=this.childExit;if(!child||!exited){this.update({baseUrl:null});return;}this.suppressExit=true;child.kill('SIGTERM');let timer:ReturnType<typeof setTimeout>|undefined;try{const graceful=await Promise.race([exited.then(()=>true),new Promise<boolean>(resolve=>{timer=setTimeout(()=>resolve(false),this.settings.stopTimeoutMs??3000);})]);if(!graceful&&this.child===child){child.kill('SIGKILL');await exited;}}finally{if(timer)clearTimeout(timer);if(this.child===child)this.child=null;this.suppressExit=false;this.update({baseUrl:null});}}
+  stop():Promise<void>{if(this.stopPromise)return this.stopPromise;this.startController?.abort();this.loadController?.abort();this.calibrationController?.abort();this.trialController?.abort();this.stopResourceWatchdog();this.cancelPull();this.update({state:'stopping'});
+    this.stopPromise=(async()=>{await this.terminateChild();await this.preparePromise?.catch(()=>{});await this.calibrationPromise?.catch(()=>{});await this.trialPromise?.catch(()=>{});await this.settingsPromise?.catch(()=>{});await this.startPromise?.catch(()=>{});await this.pullPromise?.catch(()=>{});await this.terminateChild();this.prepared=null;this.apiKey='';this.invalidateTrial();this.update({state:'stopped',baseUrl:null,loadedModel:null,profile:null,downloadingModel:null,error:null});})().finally(()=>{this.stopPromise=null;});return this.stopPromise;}
+  private async terminateChild():Promise<void>{this.stopResourceWatchdog();const child=this.child,exited=this.childExit;if(!child||!exited){this.update({baseUrl:null});return;}this.suppressExit=true;child.kill('SIGTERM');let timer:ReturnType<typeof setTimeout>|undefined;try{const graceful=await Promise.race([exited.then(()=>true),new Promise<boolean>(resolve=>{timer=setTimeout(()=>resolve(false),this.settings.stopTimeoutMs??3000);})]);if(!graceful&&this.child===child){child.kill('SIGKILL');await exited;}}finally{if(timer)clearTimeout(timer);if(this.child===child)this.child=null;this.suppressExit=false;this.update({baseUrl:null});}}
 }

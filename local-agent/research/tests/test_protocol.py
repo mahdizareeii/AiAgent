@@ -42,10 +42,36 @@ def test_coding_protocol_reads_granted_file_and_pdf(tmp_path):
                 listed = await client.list_tools()
                 assert {tool.name for tool in listed.tools} == {"inspect_file", "read_file", "read_pdf", "list_files", "search_files"}
                 result = await client.call_tool("read_file", {"path": "selected.txt"})
-                assert result.structured_content["text"] == "1: local fixture"
+                assert result.structured_content["text"] == "local fixture\n"
+                assert "numbered lines" not in next(tool for tool in listed.tools if tool.name == "read_file").description
+                assert "exact UTF-8" in next(tool for tool in listed.tools if tool.name == "read_file").description
                 pdf_result = await client.call_tool("read_pdf", {"path": "selected.pdf"})
                 assert pdf_result.structured_content["error"] == "scanned_pdf_unsupported"
 
+    asyncio.run(run())
+
+
+def test_coding_protocol_reads_module_source_exactly_and_reports_hash_metadata(tmp_path):
+    import hashlib
+
+    text = "\ufeff// 1: literal prefix\r\nexport const message = 'سلام 🌍';\r\n"
+    payload = text.encode("utf-8")
+    for extension in ("mjs", "cjs", "mts", "cts"):
+        (tmp_path / f"module.{extension}").write_bytes(payload)
+
+    async def run():
+        async with stdio_client(parameters("coding", (tmp_path,))) as (read, write):
+            async with ClientSession(read, write) as client:
+                await client.initialize()
+                for extension in ("mjs", "cjs", "mts", "cts"):
+                    result = await client.call_tool("read_file", {"path": f"module.{extension}"})
+                    assert not result.is_error
+                    assert result.structured_content["ok"]
+                    assert result.structured_content["text"] == text
+                    assert result.structured_content["sha256"] == hashlib.sha256(payload).hexdigest()
+                    assert result.structured_content["start_byte"] == 0
+                    assert result.structured_content["end_byte"] == len(payload)
+                    assert result.structured_content["eof"]
     asyncio.run(run())
 
 
@@ -106,6 +132,6 @@ def test_protocol_long_line_cursor_and_hash(tmp_path):
                 first = (await client.call_tool("read_file", {"path": "long.txt", "max_chars": 500, "expected_sha256": inspection["sha256"]})).structured_content
                 assert not first["eof"] and first["next_cursor"]
                 second = (await client.call_tool("read_file", {"path": "long.txt", "max_chars": 500, "cursor": first["next_cursor"], "expected_sha256": inspection["sha256"]})).structured_content
-                assert second["start_column"] == len(first["text"]) - 3 + 1
-                assert second["text"][3:] == text[497:994]
+                assert second["start_column"] == len(first["text"]) + 1
+                assert second["text"] == text[500:1000]
     asyncio.run(run())

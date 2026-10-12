@@ -113,7 +113,7 @@ try {
     const transport = new StdioClientTransport({ command, args, env, cwd: directory, stderr: 'pipe' });
     let stderr = '';
     transport.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
-    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.4.0-alpha.3' });
+    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.4.0-alpha.4' });
     connections.push({ client, transport });
     try { await bounded(client.connect(transport), `${label} initialization`); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}${stderr ? `\n${stderr}` : ''}`); }
@@ -151,7 +151,7 @@ try {
   assert.equal(inspection.structuredContent.ok, true);
   assert.match(inspection.structuredContent.sha256, /^[a-f0-9]{64}$/);
   const reading = await bounded(research.callTool({ name: 'read_file', arguments: { path: 'smoke.txt', expected_sha256: inspection.structuredContent.sha256 } }), 'Frozen verified file read');
-  assert.equal(reading.structuredContent.text, '1: unchanged');
+  assert.equal(reading.structuredContent.text, 'unchanged\n');
   for (const mode of ['coding', 'research', 'assistant']) {
     const optedIn = await connect(researchExecutable, [], environment({
       LOCAL_AGENT_MODE: mode, LOCAL_AGENT_GRANTED_ROOTS: '[]', LOCAL_AGENT_GRANTED_FILES: '[]',

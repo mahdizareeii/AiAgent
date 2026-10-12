@@ -6,13 +6,16 @@ const bridge: LocalAgentBridge = {
   importModel: () => call('importModel'), calibrateModel: id => call('calibrateModel', id),
   setUtilities: preferences => call('setUtilities', preferences), setPlugins: preferences => call('setPlugins', preferences),
   setSlowMode: enabled => call('setSlowMode', enabled),
+  setExecutionPreferences: options => call('setExecutionPreferences', options),
+  tryExperimentalModel: id => call('tryExperimentalModel', id), cancelModelTrial: () => call('cancelModelTrial'),
+  createModelValidationTask: id => call('createModelValidationTask', id),
   downloadModel: id => call('downloadModel', id),
   cancelDownload: () => call('cancelDownload'), selectModel: id => call('selectModel', id),
   selectProject: () => call('selectProject'), createProject: options => call('createProject', options),
   selectFiles: () => call('selectFiles'),
   createSession: options => call('createSession', options), loadSession: id => call('loadSession', id),
   send: options => call('send', options), cancel: id => call('cancel', id), resume: id => call('resume', id),
-  respondPermission: options => call('respondPermission', options), undo: () => call('undo'),
+  approvals: id => call('approvals', id), respondPermission: options => call('respondPermission', options), undo: () => call('undo'),
   onEvent(callback) {
     const listener = (_: unknown, event: AgentEvent) => callback(event);
     ipcRenderer.on('local-agent:event', listener);

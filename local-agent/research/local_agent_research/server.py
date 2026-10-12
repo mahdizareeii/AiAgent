@@ -79,7 +79,7 @@ def create_server(grants: Grants | None = None, mode: str | None = None) -> MCPS
         @server.tool(name="read_file", annotations=local)
         async def read_file(path: str, start_line: int = 1, max_lines: int = 200, cursor: str | None = None,
                             expected_sha256: str | None = None, max_chars: int | None = None) -> dict[str, Any]:
-            """Read a bounded UTF-8 excerpt with numbered lines. Continue with next_cursor until eof, including long single lines; start_column marks continuation. expected_sha256 detects changed checkpoints. Secret files/symlinks are denied."""
+            """Read exact UTF-8 source in text, including BOM, CRLF and trailing newlines. Line/column and byte positions are separate metadata, never inserted into text. Copy text exactly for edits; never add/remove line-number prefixes. Continue next_cursor until eof, including long single lines. expected_sha256 detects changed checkpoints. Secret files/symlinks are denied."""
             return await run_local(grants.read_file, path, start_line, max_lines, cursor, expected_sha256, max_chars)
 
         @server.tool(name="read_pdf", annotations=local)

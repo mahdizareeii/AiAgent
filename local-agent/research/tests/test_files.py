@@ -21,12 +21,44 @@ def project(tmp_path):
     return root, Grants((root,))
 
 
-def test_file_read_range_is_bounded_and_numbered(project):
+def test_file_read_range_is_bounded_with_locations_separate(project):
     root, grants = project
     result = grants.read_file("hello.py", 2, 1)
-    assert result["text"] == "2: print('hello')"
+    assert result["text"] == "print('hello')\n"
+    assert result["start_line"] == 2 and result["end_line"] == 3
+    assert result["start_byte"] == len(b"first line\n")
+    assert result["end_byte"] == len(b"first line\nprint('hello')\n")
     assert result["total_lines"] == 3
     assert result["truncated"]
+
+
+@pytest.mark.parametrize("extension", ["mjs", "cjs", "mts", "cts"])
+def test_javascript_and_typescript_module_sources_read_exactly_and_are_discoverable(project, extension):
+    root, grants = project
+    text = "\ufeff// 1: literal prefix\r\nexport const message = 'سلام 🌍';\r\n"
+    payload = text.encode("utf-8")
+    source = root / f"module.{extension}"
+    source.write_bytes(payload)
+    inspection = grants.inspect_file(source.name)
+    result = grants.read_file(source.name, expected_sha256=inspection["sha256"])
+    assert inspection["kind"] == "text"
+    assert inspection["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert result["text"] == text and result["text"].encode("utf-8") == payload
+    assert result["eof"] and result["start_byte"] == 0 and result["end_byte"] == len(payload)
+    assert str(source) in grants.list_files(str(root))["files"]
+    matches = grants.search_files(str(root), "export const message")["matches"]
+    assert len(matches) == 1 and matches[0]["line"] == 2
+
+
+@pytest.mark.parametrize("extension", ["mjs", "cjs", "mts", "cts"])
+def test_module_extensions_do_not_bypass_sensitive_file_guards(project, extension):
+    root, grants = project
+    source = root / f".env.settings.{extension}"
+    source.write_text("export const privateValue = 'not-readable';\n", encoding="utf-8")
+    with pytest.raises(ToolError) as error:
+        grants.read_file(source.name)
+    assert error.value.code == "sensitive_file_denied"
+    assert str(source) not in grants.list_files(str(root))["files"]
 
 
 @pytest.mark.parametrize("extension", ["php", "phtml"])
@@ -188,7 +220,7 @@ def test_large_text_streams_beyond_previous_two_mb_limit(project):
     assert inspected["sha256"] == hashlib.sha256(payload).hexdigest()
     result = grants.read_file("large.txt", 199_999, 2, expected_sha256=inspected["sha256"])
     assert result["eof"] and result["total_lines"] == 200_000
-    assert result["text"] == "199999: bounded fixture\n200000: bounded fixture"
+    assert result["text"] == "bounded fixture\nbounded fixture\n"
 
 
 def test_long_utf8_line_can_continue_without_loss(project, monkeypatch):
@@ -201,7 +233,7 @@ def test_long_utf8_line_can_continue_without_loss(project, monkeypatch):
         result = grants.read_file("line.txt", cursor=cursor)
         assert len(result["text"]) <= 500
         assert result["start_line"] == 1 and result["start_column"] == expected_column
-        pieces.append(result["text"].removeprefix("1: "))
+        pieces.append(result["text"])
         expected_column += len(pieces[-1])
         cursor = result["next_cursor"]
         if result["eof"]:
@@ -215,9 +247,59 @@ def test_multiline_continuation_has_correct_line_and_column(project):
     (root / "line.txt").write_text("x" * 600 + "\nlast\n")
     first = grants.read_file("line.txt", max_chars=500)
     second = grants.read_file("line.txt", cursor=first["next_cursor"], max_chars=500)
-    assert second["start_line"] == 1 and second["start_column"] == 498
-    assert second["text"] == "1: " + "x" * 103 + "\n2: last"
+    assert second["start_line"] == 1 and second["start_column"] == 501
+    assert second["text"] == "x" * 100 + "\nlast\n"
     assert second["eof"]
+
+
+@pytest.mark.parametrize("text", ["\ufeff1: literal\r\nسلام 🌍\r\n", "1: literal prefix\n\nlast\n", "no newline", "\r\n", "", "\ufeff"])
+def test_read_file_returns_exact_utf8_bytes_not_display_labels(project, text):
+    root, grants = project
+    payload = text.encode("utf-8")
+    (root / "exact.txt").write_bytes(payload)
+    result = grants.read_file("exact.txt")
+    assert result["text"] == text
+    assert result["text"].encode("utf-8") == payload
+    assert result["start_byte"] == 0 and result["end_byte"] == len(payload)
+    assert result["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert result["encoding"] == "utf-8" and result["eof"]
+
+
+def test_pagination_preserves_crlf_even_when_separator_crosses_budget(project):
+    root, grants = project
+    text = "\ufeff" + "1: " + "😀" * 494 + "x\r\n" + "سلام\r\nlast\n"
+    (root / "exact.txt").write_bytes(text.encode("utf-8"))
+    first = grants.read_file("exact.txt", max_chars=500)
+    second = grants.read_file("exact.txt", max_chars=500, cursor=first["next_cursor"])
+    assert first["text"].endswith("\r")
+    assert second["text"].startswith("\n")
+    assert first["text"] + second["text"] == text
+    assert second["start_byte"] == first["end_byte"]
+    assert second["start_line"] == 1 and second["start_column"] == 501
+    assert second["end_line"] == 4 and second["end_column"] == 1
+    assert second["eof"]
+
+
+@pytest.mark.parametrize("budget", [500, 501, 1000])
+def test_mixed_line_and_column_pagination_concatenates_exact_source(project, budget):
+    root, grants = project
+    text = "\ufeff1: literal\r\n" + "😀سلامé界" * 243 + "\n\n" + "last\r\n" + "final" * 200
+    payload = text.encode("utf-8")
+    (root / "exact.txt").write_bytes(payload)
+    cursor, pieces, offset = None, [], 0
+    for _ in range(100):
+        result = grants.read_file("exact.txt", max_chars=budget, max_lines=2, cursor=cursor)
+        assert len(result["text"]) <= budget
+        assert result["start_byte"] == offset
+        assert result["text"].encode("utf-8") == payload[result["start_byte"]:result["end_byte"]]
+        pieces.append(result["text"])
+        offset = result["end_byte"]
+        cursor = result["next_cursor"]
+        if result["eof"]:
+            break
+        assert cursor and result["text"], "Every non-EOF read must make progress."
+    assert "".join(pieces) == text
+    assert offset == len(payload)
 
 
 def test_changed_file_rejects_cursor_and_checkpoint(project):

@@ -72,3 +72,34 @@ test('Agent task execution remains general and requires prerequisite inspection,
   assert.match(instructions, /Do not automatically repeat completed commands or edits/);
   assert.doesNotMatch(instructions, /WordPress|docker|MariaDB/i);
 });
+
+test('Careful tasks require evidence-backed checks and bounded repair cycles without changing legacy prompts', () => {
+  const careful = taskInstructions('coding', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful');
+  assert.match(careful, /Plan → Implement → Verify → Repair → Final/);
+  assert.match(careful, /at most three repair cycles/);
+  assert.match(careful, /40-step and 60-minute active execution/);
+  assert.match(careful, /Approval waits pause/);
+  assert.match(careful, /Passed, Failed or Unverified.*actual tool/);
+  assert.match(careful, /Copy old_text exactly.*BOM, CRLF, trailing newlines and Unicode/);
+  assert.match(careful, /Never remove literal prefixes/);
+  assert.match(careful, /changed=false.*verify and finish/);
+  assert.doesNotMatch(taskInstructions('coding', DEFAULT_UTILITIES), /Careful task:/);
+  assert.doesNotMatch(taskInstructions('assistant', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful'), /Careful task:/);
+  assert.doesNotMatch(careful, /WordPress|docker|MariaDB/i);
+});
+
+test('concise Agent policy keeps exact source, network, approvals and failure boundaries together', () => {
+  const instructions = taskInstructions('coding', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful');
+  assert.match(instructions, /exact UTF-8.*BOM, CRLF, trailing newlines and Unicode/);
+  assert.match(instructions, /Line\/column metadata is separate, never edit content/);
+  assert.match(instructions, /literal prefixes such as "1: "/);
+  assert.match(instructions, /never repeat the same failed edit/);
+  assert.match(instructions, /Two identical failures against unchanged input stop this turn/);
+  assert.match(instructions, /never retry a denied action through any route/);
+  assert.match(instructions, /Approved commands may access the network with the user's permissions/);
+  assert.match(instructions, /Web research is disabled; never bypass it through terminal or other network routes/);
+  assert.match(instructions, /command limits remain as approved/);
+  assert.match(instructions, /nonempty answer giving verified results or blockers/);
+  assert.ok(instructions.length < 3100, 'The full default policy must leave room for tool schemas and task progress.');
+  assert.doesNotMatch(instructions, /Node\.js|WordPress|docker|MariaDB/i);
+});

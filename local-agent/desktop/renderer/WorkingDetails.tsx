@@ -13,7 +13,7 @@ export default function WorkingDetails({ thinking, active, thinkingActive, waiti
   expanded: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }) {
-  const label = active ? 'Working' : thinking ? 'Thinking' : 'Task activity';
+  const label = active ? 'Working' : 'Task activity';
   const status = active ? workingStatus({ thinkingActive, waitingApproval, stage, tools }) : undefined;
   return <details className={`working-details ${active ? 'is-active' : ''}`} open={expanded} onToggle={(event) => onExpandedChange?.(event.currentTarget.open)}>
     <summary className="working-status" aria-label={label}>
@@ -24,7 +24,7 @@ export default function WorkingDetails({ thinking, active, thinkingActive, waiti
       {!!tools.length && <span className="working-tool-count">{tools.length} {tools.length === 1 ? 'activity' : 'activities'}</span>}
     </summary>
     <div className="working-content">
-      <h3>Model thinking</h3>
+      <h3>Model thinking · may contain tentative plans</h3>
       {thinking ? <pre className="thinking-text">{thinking}</pre> : <p className="thinking-unavailable">{active ? 'Thinking text has not been provided for this reply yet.' : 'This model did not provide thinking text for this reply.'}</p>}
       {active && status && <p className="working-current-stage"><strong>Current stage</strong><span>{status}</span></p>}
       {!!tools.length && <div className="tool-activity working-tool-activity" aria-label="Tool activity">{tools.map(tool => <details key={tool.id}>

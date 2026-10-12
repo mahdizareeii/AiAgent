@@ -1,4 +1,23 @@
 export type Mode = 'coding' | 'research' | 'assistant';
+export type TaskEffort = 'standard' | 'careful';
+export type MemoryMode = 'automatic' | 'low-memory' | 'experimental-disk';
+export interface TaskCheck { id: string; title: string; status: 'passed' | 'failed' | 'unverified'; detail: string; toolId?: string;
+  evidence?: { operation?: string; path?: string; sha256?: string; changed?: boolean; actionId?: string; complete?: boolean }; }
+export interface TaskOutcome {
+  status: 'completed' | 'blocked' | 'cancelled' | 'timed-out' | 'incomplete';
+  finishReason: string; checks: TaskCheck[];
+  model?: { id: string; digest: string; runtime: string; contextTokens: number; backend: string; memoryMode: MemoryMode };
+}
+export interface ExperimentalTrialView {
+  state: string; modelId: string; reason?: string; startedAt?: string; profileSignature?: string;
+  mappedBytes?: number; lazyEligibleBytes?: number; rssBytes?: number; peakRssBytes?: number; limitBytes?: number;
+  pressure?: 'normal' | 'warning' | 'critical'; availableMemoryBytes?: number;
+}
+export interface ModelValidationRecord {
+  id: string; modelId: string; digest: string; templateHash: string; runtime: string; profileSignature: string;
+  startedAt: string; completedAt?: string; elapsedMs?: number;
+  status: 'running' | 'passed' | 'failed' | 'cancelled'; checks: TaskCheck[]; sessionId?: string;
+}
 
 export interface HardwareSnapshot {
   platform: string;
@@ -29,6 +48,7 @@ export interface ExecutionProfile {
   gpuLayers?: number;
   cpuThreads?: number;
   label?: string;
+  batchTokens?: number; microBatchTokens?: number; memoryMode?: MemoryMode; profileSignature?: string;
 }
 
 export interface LocalModel {
@@ -55,6 +75,7 @@ export interface LocalModel {
   toolCapable: boolean;
   measuredTokensPerSecond?: number;
   sourceUrl?: string;
+  digest?: string;
 }
 
 export interface SessionSummary {
@@ -79,6 +100,12 @@ export interface AgentStatus {
   utilities: UtilityPreferences;
   plugins: PluginPreferences;
   slowMode: boolean;
+  memoryMode?: MemoryMode;
+  defaultTaskEffort?: TaskEffort;
+  experimentalTrial?: ExperimentalTrialView;
+  validationRecords?: ModelValidationRecord[];
+  activeSessionId?: string;
+  activeTurnId?: string;
   models: LocalModel[];
   recommendation: string | null;
   selectedModel: string | null;
@@ -99,6 +126,7 @@ export interface ChatMessage {
   thinking?: string;
   tools?: ToolActivity[];
   toolsTruncated?: boolean;
+  outcome?: TaskOutcome;
 }
 
 export interface AgentSession {
@@ -107,6 +135,7 @@ export interface AgentSession {
   mode: Mode;
   projectPath?: string;
   stage?: StageProgress;
+  taskEffort?: TaskEffort;
 }
 
 export interface DownloadProgress {
@@ -137,7 +166,10 @@ export interface PermissionRequest {
   preview?: unknown;
   command?: string;
   cwd?: string;
+  turnId?: string;
+  revision?: number;
 }
+export interface PermissionSnapshot { revision: number; sessionId: string; turnId: string | null; pending: PermissionRequest[]; }
 
 export type AgentEvent = (
   | { type: 'status' }
@@ -147,9 +179,10 @@ export type AgentEvent = (
   | ({ type: 'tool' } & ToolActivity)
   | ({ type: 'permission' } & PermissionRequest)
   | { type: 'permission_cancelled'; requestId: string }
+  | { type: 'permission_resolved'; requestId: string; revision: number; turnId: string; resolution: 'approved' | 'denied' | 'cancelled' | 'expired' }
   | { type: 'done' }
   | { type: 'error'; text?: string; error?: string }
-) & { sessionId?: string };
+) & { sessionId?: string; turnId?: string };
 
 export interface LocalAgentBridge {
   status(): Promise<AgentStatus>;
@@ -159,18 +192,23 @@ export interface LocalAgentBridge {
   setUtilities(preferences: UtilityPreferences): Promise<void>;
   setPlugins(preferences: PluginPreferences): Promise<void>;
   setSlowMode(enabled: boolean): Promise<void>;
+  setExecutionPreferences(options: { memoryMode?: MemoryMode; taskEffort?: TaskEffort }): Promise<void>;
+  tryExperimentalModel(id: string): Promise<void>;
+  cancelModelTrial(): Promise<void>;
+  createModelValidationTask(id: string): Promise<{ sessionId: string; prompt: string }>;
   downloadModel(id: string): Promise<void>;
   cancelDownload(): Promise<void>;
   selectModel(id: string): Promise<void>;
   selectProject(): Promise<string | null>;
   createProject(options: { name: string }): Promise<string | null>;
   selectFiles(): Promise<Attachment[]>;
-  createSession(options: { mode: Mode; projectPath?: string }): Promise<{ id: string }>;
+  createSession(options: { mode: Mode; projectPath?: string; taskEffort?: TaskEffort }): Promise<{ id: string }>;
   loadSession(id: string): Promise<AgentSession>;
   send(options: { sessionId: string; text: string; files?: Attachment[] }): Promise<void>;
   cancel(sessionId?: string): Promise<void>;
   resume(sessionId: string): Promise<void>;
-  respondPermission(options: { requestId: string; approved: boolean }): Promise<void>;
+  approvals(sessionId: string): Promise<PermissionSnapshot>;
+  respondPermission(options: { requestId: string; approved: boolean; sessionId?: string; turnId?: string }): Promise<{ status: 'settled' | 'expired'; revision: number }>;
   undo(): Promise<{ restored: number }>;
   onEvent(callback: (event: AgentEvent) => void): () => void;
 }
