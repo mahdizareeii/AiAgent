@@ -17,6 +17,7 @@ import { createActionHost } from './action-host.ts';
 import { BudgetedInference, createInferenceGateway } from './inference-gateway.ts';
 import { StagedWork, type Checkpoint } from './staging.ts';
 import { createWorkspaceFolder, persistWorkspaceSelection, selectWorkspaceFolder } from './workspace.ts';
+import { restoreNativeDialogFocus, runNativeDialog } from './native-dialog.ts';
 import { emptyState, migrateState, utilitySchema, pluginSchema, memoryModeSchema, taskEffortSchema, effectiveUtilities, type SavedState, type SavedSession } from './state.ts';
 import { ApprovalRegistry } from './approvals.ts';
 import { TaskClock, TaskTimeoutError } from './task-clock.ts';
@@ -80,7 +81,14 @@ function chooseWorkspaceDirectory(title: string, buttonLabel: string) {
   // On this macOS/Electron combination attached sheets left folder confirmation
   // disabled. Use the native application-modal panel; selection is still
   // validated and granted by the main process after the panel returns.
-  return process.platform === 'darwin' ? dialog.showOpenDialog(options) : dialog.showOpenDialog(window!, options);
+  return chooseNativeFiles(options);
+}
+
+function chooseNativeFiles(options: OpenDialogOptions) {
+  return runNativeDialog(window, options, {
+    standalone: options => dialog.showOpenDialog(options),
+    parented: (owner, options) => dialog.showOpenDialog(owner, options),
+  });
 }
 
 function beginModelPreflight(sessionId?: string): ModelPreflight {
@@ -507,7 +515,7 @@ function registerHandlers(): void {
   });
   handle('importModel', async () => {
     if (active) throw new Error('Wait for the current response before importing a model.');
-    const result = await dialog.showOpenDialog(window!, { title: 'Import a local GGUF model', properties: ['openFile'], filters: [{ name: 'GGUF models', extensions: ['gguf'] }] });
+    const result = await chooseNativeFiles({ title: 'Import a local GGUF model', properties: ['openFile'], filters: [{ name: 'GGUF models', extensions: ['gguf'] }] });
     if (result.canceled || !result.filePaths[0]) return;
     const imported = await runtime.importModel(await realpath(result.filePaths[0]));
     state.selectedModel = imported.model; await save(); emit({ type: 'status' });
@@ -588,7 +596,7 @@ function registerHandlers(): void {
     } finally { updatingCapabilities = false; emit({ type: 'status' }); }
   });
   handle('selectFiles', async () => {
-    const result = await dialog.showOpenDialog(window!, { title: 'Attach local files', properties: ['openFile', 'multiSelections'] });
+    const result = await chooseNativeFiles({ title: 'Attach local files', properties: ['openFile', 'multiSelections'] });
     if (result.canceled) return [];
     if (result.filePaths.length > 20) throw new Error('Attach up to 20 files at a time.');
     const files = await Promise.all(result.filePaths.map(async value => {
@@ -654,8 +662,8 @@ async function saveScreenshot(): Promise<void> {
   savingScreenshot = true;
   const item = Menu.getApplicationMenu()?.getMenuItemById('save-app-screenshot');
   if (item) item.enabled = false;
+  const owner = window;
   try {
-    const owner = window;
     if (!owner || owner.isDestroyed() || owner.webContents.isDestroyed()) throw new Error('Open the app window before saving a screenshot.');
     // Capture the real current page before the native dialog covers it. This
     // exports app content only, without inspecting or changing renderer state.
@@ -672,7 +680,10 @@ async function saveScreenshot(): Promise<void> {
     if (owner.isDestroyed()) throw new Error('The app window closed before the screenshot could be saved.');
     // Standalone macOS panels avoid the disabled confirmation seen in attached
     // native sheets on this Electron/macOS combination.
-    const result = process.platform === 'darwin' ? await dialog.showSaveDialog(options) : await dialog.showSaveDialog(owner, options);
+    const result = await runNativeDialog(owner, options, {
+      standalone: options => dialog.showSaveDialog(options),
+      parented: (owner, options) => dialog.showSaveDialog(owner, options),
+    });
     if (!result.canceled && result.filePath) await writeFile(result.filePath, png, { mode: 0o600 });
   } catch (error) {
     const message = `Could not save screenshot: ${errorText(error)}`;
@@ -680,6 +691,7 @@ async function saveScreenshot(): Promise<void> {
   } finally {
     savingScreenshot = false;
     if (item) item.enabled = true;
+    restoreNativeDialogFocus(owner);
   }
 }
 

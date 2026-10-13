@@ -186,13 +186,14 @@ function assertToolSet(request: ChatRequest, utilities: UtilityPreferences): voi
 async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, approveScaffold?: boolean,
   plugins: PluginPreferences = DEFAULT_PLUGINS,
   skillsDirectory = path.join(repository, 'local-agent', 'desktop', 'skills'),
-  backendOverrides: Partial<Pick<BackendOptions, 'taskEffort' | 'signal' | 'appPolicyProvided'>> = {}) {
+  backendOverrides: Partial<Pick<BackendOptions, 'taskEffort' | 'signal' | 'appPolicyProvided'>> = {},
+  attachmentOutsideWorkspace = false) {
   assert.deepEqual(missingResources(mode), [], 'Native integration resources must be prepared when LOCAL_AGENT_REQUIRE_INTEGRATION=1.');
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-backend-integration-')));
   const project = path.join(directory, 'project');
   const data = path.join(directory, 'goose-data');
   await mkdir(project);
-  const selectedFile = path.join(project, 'selected-مطالعه-😀.txt');
+  const selectedFile = path.join(attachmentOutsideWorkspace ? directory : project, 'selected-مطالعه-😀.txt');
   await writeFile(selectedFile, `${fixtureText}\n`);
   const requests: { url: string; body: unknown; authorization?: string }[] = [];
   const chats: ChatRequest[] = [];
@@ -713,13 +714,15 @@ test('real Goose coding mode advertises reviewed actions without built-in shell 
     } finally { await run.cleanup(); }
   });
 
-test('real Goose app-owned Careful policy stays single across a native file-tool round trip',
+test('real Goose app-owned Careful policy reads an absolute granted attachment outside the workspace',
   { skip: skipReason('coding'), timeout: 120_000 }, async () => {
     const run = await fixture('coding', {}, undefined, DEFAULT_PLUGINS,
-      path.join(repository, 'local-agent', 'desktop', 'skills'), { taskEffort: 'careful', appPolicyProvided: true });
+      path.join(repository, 'local-agent', 'desktop', 'skills'), { taskEffort: 'careful', appPolicyProvided: true }, true);
     try {
       const policy = taskInstructions('coding', run.utilities, true, DEFAULT_PLUGINS, 'careful');
-      await run.backend.prompt(`${policy}\nCURRENT USER REQUEST:\n${readPrompt}: read the selected document and report its text.`);
+      assert.equal(path.dirname(run.selectedFile), path.dirname(run.project), 'The attachment is outside the granted project root.');
+      const task = `${readPrompt}: read the granted attachment at ${run.selectedFile} and report its text.`;
+      await run.backend.prompt(`${policy}\nCURRENT USER REQUEST:\n${task}`);
       const agentRequests = run.chats.filter(request => request.tools?.length);
       assert.ok(agentRequests.length >= 2, 'The actual native sidecar must return a file read to Goose.');
       for (const request of agentRequests) {
@@ -728,13 +731,21 @@ test('real Goose app-owned Careful policy stays single across a native file-tool
         assert.ok(userPrompt.includes(JSON.stringify(policy).slice(1, -1)), 'The complete app policy survives ACP unchanged.');
         assert.equal(userPrompt.split('Careful task:').length, 2, 'The backend must not duplicate Careful rules.');
         assert.equal(userPrompt.split('Copy old_text exactly').length, 2, 'The backend must not duplicate exact-edit rules.');
-        assert.match(userPrompt, /Selected project:.*File-tool paths are relative/);
+        assert.match(userPrompt, /Selected project:.*Project mutation paths are relative; never repeat its folder name/);
+        assert.match(userPrompt, /Read granted attachments using their supplied absolute paths/);
+        assert.doesNotMatch(userPrompt, /File-tool paths are relative/);
+        assert.ok(userPrompt.includes(JSON.stringify(task).slice(1, -1)), 'The supplied absolute attachment path survives ACP unchanged.');
         assert.match(userPrompt, /Output limit: 1024 tokens/);
         assert.doesNotMatch(userPrompt, /OPTIONAL PLUGIN|Task research/);
       }
+      assert.ok(run.events.some(event => event.type === 'tool' && JSON.stringify(event.input).includes(run.selectedFile)),
+        'The actual sidecar read uses the granted absolute path outside the project.');
       assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'completed' && JSON.stringify(event.output).includes(fixtureText)));
       assert.match(run.events.filter(event => event.type === 'message').filter(event => !event.thinking).map(event => event.text).join(''), /LOCAL_AGENT_READ_OK/);
       assert.equal(run.actions(), 0, 'Policy dedup must not add any host action.');
+      assert.equal(run.permissions.length, 0, 'Reading a granted attachment needs no mutation approval.');
+      assert.deepEqual(await readdir(run.project), [], 'The read-only task must not create or change project files.');
+      assert.equal(await readFile(run.selectedFile, 'utf8'), `${fixtureText}\n`);
       assert.deepEqual(run.errors, []);
     } finally { await run.cleanup(); }
   });

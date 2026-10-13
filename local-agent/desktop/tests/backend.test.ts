@@ -37,10 +37,35 @@ test('trusted app policy eliminates duplicated rules while retaining workspace, 
   assert.equal(prompt.split('Copy old_text exactly').length, 2);
   const wrapper = prompt.slice(0, -request.length);
   assert.match(wrapper, /Selected project: "\/project"/);
-  assert.match(wrapper, /File-tool paths are relative; never repeat its folder name/);
+  assert.match(wrapper, /Project mutation paths are relative; never repeat its folder name/);
+  assert.match(wrapper, /Read granted attachments using their supplied absolute paths/);
   assert.match(wrapper, /Output limit: 1024 tokens/);
   assert.doesNotMatch(wrapper, /approval|denial|Careful task:|old_text|Available tools/);
-  assert.ok(wrapper.length < 300, 'Only a bounded path/output wrapper is needed.');
+  assert.ok(wrapper.length < 350, 'Only a bounded path/output wrapper is needed.');
+});
+
+test('an outside-workspace attachment keeps its absolute read path without expanding project grants', () => {
+  const attachment = '/selected/notes-سلام-😀.txt';
+  const configured = { ...options, appPolicyProvided: true, grantedFiles: [attachment] };
+  const request = `Read the granted attachment at ${attachment}.\nKeep 1: literal\r\nسلام 🌍 unchanged.`;
+  const prompt = agentPrompt(configured, request);
+  assert.ok(prompt.endsWith(request), 'Supplied absolute paths and exact request text stay intact.');
+  assert.match(prompt, /Project mutation paths are relative; never repeat its folder name/);
+  assert.match(prompt, /Read granted attachments using their supplied absolute paths/);
+  assert.doesNotMatch(prompt, /File-tool paths are relative/);
+  const env = backendEnvironment(configured);
+  assert.deepEqual(JSON.parse(env.LOCAL_AGENT_GRANTED_ROOTS!), ['/project']);
+  assert.deepEqual(JSON.parse(env.LOCAL_AGENT_GRANTED_FILES!), [attachment]);
+  assert.deepEqual(backendExtensions(configured), backendExtensions(options));
+  for (const mode of ['assistant', 'research', 'coding'] as const) {
+    const readOnly = agentPrompt({ ...configured, mode,
+      utilities: { ...configured.utilities, fileEditing: false, terminal: false } }, request);
+    assert.ok(readOnly.endsWith(request));
+    assert.match(readOnly, /Read granted attachments using their supplied absolute paths/);
+    assert.doesNotMatch(readOnly, /Project mutation paths|File-tool paths are relative/);
+  }
+  assert.doesNotMatch(agentPrompt({ ...configured, utilities: { ...configured.utilities, fileReading: false } }, request),
+    /Read granted attachments using their supplied absolute paths/);
 });
 
 test('deduplication requires the explicit trusted option and never weakens actual tool registration', () => {
