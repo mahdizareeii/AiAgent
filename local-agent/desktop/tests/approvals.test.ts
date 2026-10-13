@@ -1,7 +1,46 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ApprovalRegistry } from '../approvals.ts';
+import { ApprovalRegistry, stopTurnOnApprovalExpiry } from '../approvals.ts';
+import { LocalActions } from '../actions.ts';
+import { mkdtemp, access, rm, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { AgentEvent } from '../renderer/types.ts';
+
+test('expiry stops only its active turn and never overwrites another cancellation', () => {
+  const event: AgentEvent = { type: 'permission_resolved', requestId: 'a', resolution: 'expired', revision: 1, sessionId: 's', turnId: 'old' };
+  const controller = new AbortController(), active = { sessionId: 's', turnId: 'new', controller };
+  assert.equal(stopTurnOnApprovalExpiry(event, active), false);
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(stopTurnOnApprovalExpiry({ ...event, turnId: 'new' }, active), true);
+  assert.equal(controller.signal.reason.code, 'APPROVAL_EXPIRED');
+  assert.doesNotMatch(controller.signal.reason.message, /user denied/i);
+  const cancelled = new AbortController(); cancelled.abort('user stopped');
+  assert.equal(stopTurnOnApprovalExpiry({ ...event, turnId: 'new' }, { ...active, controller: cancelled }), false);
+  assert.equal(cancelled.signal.reason, 'user stopped');
+  for (const resolution of ['approved', 'denied', 'cancelled'] as const)
+    assert.equal(stopTurnOnApprovalExpiry({ ...event, resolution, turnId: 'new' }, { ...active, controller: new AbortController() }), false);
+});
+
+test('real expired approval cannot mutate a file or accept a delayed response', async () => {
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'approval-expiry-')));
+  const controller = new AbortController(), turn = { sessionId: 's', turnId: 't', controller };
+  let requestId = '';
+  const registry = new ApprovalRegistry({ timeoutMs: 10, emit: event => stopTurnOnApprovalExpiry(event, turn) });
+  const actions = new LocalActions({ projectPath: directory, historyDirectory: path.join(directory, 'history'),
+    onPermission: request => { requestId = request.requestId; return registry.request('s', 't', request, controller.signal); } });
+  try {
+    const running = actions.execute('write_file', { path: 'expired.txt', content: 'must not run' }, { signal: controller.signal });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const result = await running;
+    assert.equal(controller.signal.reason.code, 'APPROVAL_EXPIRED');
+    assert.equal(result.errorCode, 'CANCELLED');
+    assert.doesNotMatch(result.content.map(part => part.text).join(' '), /user denied/i);
+    await assert.rejects(access(path.join(directory, 'expired.txt')));
+    assert.equal(registry.respond({ requestId, approved: true }).status, 'expired');
+    assert.deepEqual(registry.snapshot('s', 't').pending, []);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('host settles once before a delayed client can respond and leaves newer approval intact', async () => {
   const events: AgentEvent[] = []; const registry = new ApprovalRegistry({ emit: event => events.push(event) });

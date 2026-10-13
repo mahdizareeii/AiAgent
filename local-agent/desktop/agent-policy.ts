@@ -1,8 +1,10 @@
 import type { Mode, PluginPreferences, UtilityPreferences } from './renderer/types.ts';
 import { DEFAULT_PLUGINS, effectiveUtilities } from './state.ts';
+import { NORMAL_TASK_BUDGET_MS, providerTimeoutSeconds } from './execution-policy.ts';
 
 /** Keep the model's claimed capabilities aligned with the tools actually registered. */
-export function taskInstructions(mode: Mode, preferences: UtilityPreferences, toolCapable = true, plugins: PluginPreferences = DEFAULT_PLUGINS, effort: 'standard' | 'careful' = 'standard'): string {
+export function taskInstructions(mode: Mode, preferences: UtilityPreferences, toolCapable = true, plugins: PluginPreferences = DEFAULT_PLUGINS, effort: 'standard' | 'careful' = 'standard', budgetMs = NORMAL_TASK_BUDGET_MS): string {
+  const activeMinutes = providerTimeoutSeconds(budgetMs) / 60;
   const tools = effectiveUtilities(mode, preferences, plugins);
   if (!toolCapable) {
     return `This model has no callable tools. Answer from the request, conversation and staged local context; preserve file/page/line references. For changing facts, label claims unverified. Current documentation research requires a validated tool-capable model, the Task research plugin, and enabled web access. Never claim searches, files, commands or current verification without evidence. ${mode === 'coding' ? 'Agent execution requires a validated tool-capable model.' : 'State concrete uncertainty.'}`;
@@ -26,7 +28,7 @@ ${tools.fileEditing ? 'Use create_files for new batches, write_file for single f
   const exactEdits = mode === 'coding' && tools.fileEditing
     ? 'read_file.text is exact UTF-8 source. Copy old_text exactly, preserving BOM, CRLF, trailing newlines and Unicode. Line/column metadata is separate, never edit content. Never remove literal prefixes such as "1: ". For changed=false, verify and finish. After failure, read current text and correct arguments; never repeat the same failed edit. Two identical failures against unchanged input stop this turn.' : '';
   const careful = mode === 'coding' && effort === 'careful'
-    ? 'Careful task: Plan → Implement → Verify → Repair → Final; at most three repair cycles, within 40-step and 60-minute active execution limits. Approval waits pause execution; command limits remain as approved. Report Passed, Failed or Unverified with actual tool readback/command evidence, never your own success claim. Finish with a nonempty answer giving verified results or blockers.' : '';
+    ? `Careful task: Plan → Implement → Verify → Repair → Final; at most three repair cycles, within 40-step and ${activeMinutes}-minute active execution limits. Approval waits pause execution; command limits remain as approved. Report Passed, Failed or Unverified with actual tool readback/command evidence, never your own success claim. Finish with a nonempty answer giving verified results or blockers.` : '';
   return `${behavior}${exactEdits ? `\n\n${exactEdits}` : ''}${careful ? `\n\n${careful}` : ''}${research ? `\n\n${research}` : ''}\n\nAvailable tools for this turn (use their exact registered names):\n${capabilities || 'No tools are enabled; ask the user to enable the utilities needed for this task.'}\n${tools.webResearch ? '' : 'Web research tools are disabled.'}`;
 }
 

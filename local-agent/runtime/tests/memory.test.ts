@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {EngineMemoryLog,experimentalResidentBudget,validResourceMeasurements} from '../memory.ts';
+import {EngineMemoryLog,experimentalResidentBudget,validResourceMeasurements,validateSSDNumericalProof,PINNED_ENGINE_COMMIT,type SSDNumericalConfiguration} from '../memory.ts';
 import {GIB,type HardwareInfo} from '../hardware.ts';
 
 test('experimental residency budgets count unified RAM once and reserve current headroom',()=>{
@@ -22,4 +22,13 @@ test('engine measurements distinguish mapped buffers and architecture-marked laz
 test('resource monitoring rejects missing, malformed and negative measurements',()=>{
   const sample={sampledAt:new Date().toISOString(),residentBytes:123,availableMemoryBytes:456,pressure:'normal' as const};
   assert(validResourceMeasurements(sample));assert(!validResourceMeasurements({...sample,residentBytes:-1}));assert(!validResourceMeasurements({...sample,availableMemoryBytes:NaN}));assert(!validResourceMeasurements({...sample,sampledAt:'unavailable'}));
+});
+
+
+test('numerical certificate scope and profile cannot be substituted by Chat results or another model',()=>{
+  const configuration:SSDNumericalConfiguration={baseCommit:PINNED_ENGINE_COMMIT,modelSha256:'a'.repeat(64),templateSha256:'b'.repeat(64),architecture:'gemma4',backend:'cpu',cpuKernel:'standard',useExtraBufts:false,cpuRepackTensorCount:0,workerPatchSha256:'c'.repeat(64),report:'validation/gemma-cpu.json',reportSha256:'d'.repeat(64),scope:'representative-experts-and-two-swa-layers',profile:{contextTokens:4096,outputTokens:1024,batchTokens:64,microBatchTokens:16,cacheSlotsPerLayer:24,cacheTypeK:'f16',cacheTypeV:'f16',swaFull:false,slots:1,ioWorkers:2,ioMode:'darwin-nocache',decodeThreads:4,batchThreads:4}};
+  const report={...configuration,schemaVersion:1,passed:true};assert(validateSSDNumericalProof(report,configuration,configuration.workerPatchSha256));
+  for(const change of [{passed:false},{modelSha256:'e'.repeat(64)},{templateSha256:'e'.repeat(64)},{workerPatchSha256:'e'.repeat(64)},{baseCommit:'e'.repeat(40)},{architecture:'qwen3next'},{backend:'metal'},{cpuKernel:'default'},{useExtraBufts:true},{cpuRepackTensorCount:1},{scope:'chat-and-tools-passed'},{profile:{...configuration.profile,batchThreads:8}},{profile:{...configuration.profile,cacheTypeK:'q8_0'}}])assert.equal(validateSSDNumericalProof({...report,...change},configuration,configuration.workerPatchSha256),false);
+  assert.equal(validateSSDNumericalProof({...report,architecture:'qwen3next'}, {...configuration,architecture:'qwen3next'},configuration.workerPatchSha256),false,'A Gemma scoped certificate does not enable the Qwen worker.');
+  assert.equal(validateSSDNumericalProof(report,{...configuration,report:'../outside.json'},configuration.workerPatchSha256),false);
 });

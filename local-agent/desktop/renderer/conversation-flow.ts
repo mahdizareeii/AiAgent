@@ -1,4 +1,18 @@
-import type { ChatMessage, StageProgress, ToolActivity } from './types';
+import type { ChatMessage, Mode, StageProgress, ToolActivity } from './types';
+
+/** Execution policy belongs in Advanced; this area presents actual progress. */
+export function conversationStage(stage: StageProgress | null): StageProgress | null {
+  if (!stage) return null;
+  if (stage.stage === 'Plan → Implement → Verify → Repair → Final' || stage.message === 'Results are checked against tool evidence; approvals pause the execution clock.') return null;
+  return stage;
+}
+
+export function composerPlaceholder(mode: Mode, ready: boolean, busy: boolean, opening: boolean) {
+  if (busy) return mode === 'assistant' ? 'Replying locally…' : 'Working on your task…';
+  if (opening) return 'Opening the conversation…';
+  if (!ready) return mode === 'assistant' ? 'Write a message, then choose a local model…' : 'Write a task, then choose a local model…';
+  return mode === 'coding' ? 'Describe a task, ask about your project, or add files…' : 'Ask a question or add files…';
+}
 
 export function isNearConversationEnd({ scrollHeight, scrollTop, clientHeight }: { scrollHeight: number; scrollTop: number; clientHeight: number }, threshold = 96) {
   return scrollHeight - Math.max(0, scrollTop) - clientHeight <= threshold;

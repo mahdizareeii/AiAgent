@@ -44,6 +44,11 @@ export function finalizationEvidence(checks: TaskCheck[], tools: ToolActivity[])
     activity: tools.slice(-8).map(tool => ({ id: tool.id, title: tool.title, status: tool.status })) });
 }
 
+/** Progress prose from an interrupted backend is not a closing task answer. */
+export function shouldFinalizeTask(options: { hasAnswer: boolean; aborted: boolean; finishReason: string; error?: string }): boolean {
+  return !options.aborted && (!options.hasAnswer || Boolean(options.error) || options.finishReason !== 'end_turn');
+}
+
 export function outcomeStatus(options: { aborted: boolean; timedOut: boolean; error?: string; finishReason: string; hasAnswer: boolean }): TaskOutcome['status'] {
   if (options.timedOut) return 'timed-out';
   if (options.aborted) return 'cancelled';

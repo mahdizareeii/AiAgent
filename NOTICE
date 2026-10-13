@@ -23,6 +23,13 @@ Native inference engine
   third-party source components, plus archive-provided library notices.
   resources/inference/NOTICE and licenses/ accompany the packaged engine.
   GPU drivers and GPU SDKs are system dependencies and are not redistributed.
+  Apple Silicon packages also include a separate experimental SSD worker,
+  built from the same pinned source with backports of commits
+  4260e460832f5e95c41d8b6d8b2aea98007df524 and
+  db5268ffac4c3ddacd7edcf62e78e3a1ba8d8191 from upstream PR 25294,
+  plus this application's allocation, cancellation and I/O safeguards.
+  This unmerged proposal is not an upstream stable release. Its MIT and
+  third-party notices accompany resources/ssd-inference/darwin-arm64.
   Windows resources include unmodified signed Visual Studio C++ redistributable
   files under Microsoft's applicable redistribution terms, identified by the
   inference manifest and NOTICE. LLVM OpenMP notices accompany its libraries.

@@ -1,0 +1,3115 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3086e81b1..e53bfa728 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -316,3 +316,8 @@ configure_file(cmake/llama.pc.in
+ 
+ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
+         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
++
++add_executable(llama-ssd-self-test tests/test-ssd-native.cpp)
++target_include_directories(llama-ssd-self-test PRIVATE src)
++target_compile_features(llama-ssd-self-test PRIVATE cxx_std_17)
++target_link_libraries(llama-ssd-self-test PRIVATE llama ggml-cpu)
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 14d82f695..1a2e9fba4 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2787,6 +2787,60 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_DENSE_REGEX, params.tensor_buft_overrides);
+         }
+     ).set_env("LLAMA_ARG_N_CPU_FFN"));
++    add_opt(common_arg({"--ssd-require-streaming"}, "require audited bounded SSD expert streaming (no ordinary fallback)",
++        [](common_params & p) { p.ssd_require_streaming=true; p.moe_stream=true; p.load_mode=LLAMA_LOAD_MODE_NONE; }));
++    add_opt(common_arg({"--ssd-expert-cache-bytes"}, "BYTES", "total expert cache byte budget",
++        [](common_params & p,const std::string & s) { size_t pos; p.moe_stream_budget=std::stoull(s,&pos); if(pos!=s.size()) throw std::invalid_argument("invalid bytes"); p.moe_stream=true; }));
++    add_opt(common_arg({"--ssd-budget-bytes"}, "BYTES", "complete worker allocation budget",
++        [](common_params & p,const std::string & s) { size_t pos; p.ssd_allocation_budget=std::stoull(s,&pos); if(pos!=s.size()) throw std::invalid_argument("invalid bytes"); }));
++    add_opt(common_arg({"--ssd-resident-limit-bytes"}, "BYTES", "sampled native resident memory stop limit",
++        [](common_params & p,const std::string & s) { size_t pos; p.ssd_resident_limit=std::stoull(s,&pos); if(pos!=s.size()) throw std::invalid_argument("invalid bytes"); }));
++    add_opt(common_arg({"--ssd-deadline-ms"}, "MS", "initial shared loading deadline (max eight hours)",
++        [](common_params & p,const std::string & s) { size_t pos; p.ssd_deadline_ms=std::stoull(s,&pos); if(pos!=s.size()) throw std::invalid_argument("invalid duration"); }));
++    add_opt(common_arg(
++        {"--moe-stream"},
++        "stream Mixture of Experts (MoE) routed expert weights from disk on demand",
++        [](common_params & params) {
++            params.moe_stream = true;
++        }
++    ).set_env("LLAMA_ARG_MOE_STREAM"));
++    add_opt(common_arg(
++        {"--moe-stream-cache"}, "<NG|Ns>",
++        "expert cache for --moe-stream: memory budget in GiB (e.g. 40) or exact slots per layer with an 's' suffix (e.g. 64s); implies --moe-stream (default: auto)",
++        [](common_params & params, const std::string & value) {
++            params.moe_stream = true;
++            size_t pos = 0;
++            const uint64_t n = std::stoull(value, &pos);
++            std::string suffix = value.substr(pos);
++            for (auto & c : suffix) {
++                c = std::tolower(c);
++            }
++            if (suffix == "s" || suffix == "slot" || suffix == "slots") {
++                params.moe_stream_slots = n;
++            } else if (suffix.empty() || suffix == "g" || suffix == "gb" || suffix == "gib") {
++                params.moe_stream_budget = n * 1024ull * 1024ull * 1024ull;
++            } else {
++                throw std::invalid_argument("invalid value");
++            }
++        }
++    ).set_env("LLAMA_ARG_MOE_STREAM_CACHE"));
++    add_opt(common_arg(
++        {"--moe-stream-io-threads"}, "N",
++        "I/O threads for --moe-stream expert loads; implies --moe-stream (default: auto)",
++        [](common_params & params, int value) {
++            params.moe_stream = true;
++            params.moe_stream_io_threads = value;
++        }
++    ).set_env("LLAMA_ARG_MOE_STREAM_IO_THREADS"));
++    add_opt(common_arg(
++        {"--moe-stream-direct"},
++        "use O_DIRECT for --moe-stream expert reads (bypass the page cache); implies --moe-stream. "
++        "falls back to buffered reads if O_DIRECT is unsupported by the OS or filesystem",
++        [](common_params & params) {
++            params.moe_stream = true;
++            params.moe_stream_direct = true;
++        }
++    ).set_env("LLAMA_ARG_MOE_STREAM_DIRECT"));
+     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
+     add_opt(common_arg(
+         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",
+diff --git a/common/common.cpp b/common/common.cpp
+index c301c22ca..de780411d 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1471,6 +1471,13 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
+         common_set_adapter_lora(lctx, params.lora_adapters);
+     }
+ 
++    if (params.warmup && params.moe_stream) {
++        // the warmup graph routes every token through all experts at once, which cannot fit the
++        // streaming expert cache
++        COM_TRC("%s", "skipping warmup: not supported with MoE expert streaming\n");
++        params.warmup = false;
++    }
++
+     if (params.warmup) {
+         COM_TRC("%s", "warming up the model with an empty run - please wait ... (--no-warmup to disable)\n");
+ 
+@@ -1663,6 +1670,12 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
+     mparams.use_extra_bufts = !params.no_extra_bufts;
+     mparams.no_host         = params.no_host;
+ 
++    mparams.moe_stream            = params.moe_stream;
++    mparams.moe_stream_slots      = params.moe_stream_slots;
++    mparams.moe_stream_budget     = params.moe_stream_budget;
++    mparams.moe_stream_io_threads = params.moe_stream_io_threads;
++    mparams.moe_stream_direct     = params.moe_stream_direct;
++
+     if (params.kv_overrides.empty()) {
+         mparams.kv_overrides = NULL;
+     } else {
+diff --git a/common/common.h b/common/common.h
+index 2f50d90c6..d362e36c3 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -588,6 +588,16 @@ struct common_params {
+     bool no_host           = false; // bypass host buffer allowing extra buffers to be used
+     bool load_mtp          = false; // load MTP/NextN layers
+ 
++    bool ssd_require_streaming = false;
++    uint64_t ssd_allocation_budget = 0;
++    uint64_t ssd_resident_limit = 0;
++    uint64_t ssd_deadline_ms = 600000;
++    bool     moe_stream            = false; // stream MoE routed expert weights from disk on demand
++    uint32_t moe_stream_slots      = 0;     // expert cache slots per streamed layer (0 = auto)
++    uint64_t moe_stream_budget     = 0;     // total expert cache byte budget, used when slots == 0 (0 = auto)
++    int32_t  moe_stream_io_threads = 0;     // expert load I/O threads (<= 0 = default)
++    bool     moe_stream_direct     = false; // use O_DIRECT for expert reads (bypass page cache)
++
+     bool single_turn       = false; // single turn chat conversation
+ 
+     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index d9c508049..ce38d0f7a 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -587,6 +587,8 @@ void common_perf_print(const struct llama_context * ctx, const struct common_sam
+         LOG_INF("%s: unaccounted time = %10.2f ms / %5.1f %%      (total - sampling - prompt eval - eval) / (total)\n", __func__, t_unacc_ms, t_unacc_pc);
+         LOG_INF("%s:    graphs reused = %10d\n", __func__, data.n_reused);
+ 
++        llama_moe_stream_print_stats(llama_get_model(ctx));
++
+         common_memory_breakdown_print(ctx);
+     }
+ }
+diff --git a/ggml/include/ggml-ssd-policy.h b/ggml/include/ggml-ssd-policy.h
+new file mode 100644
+index 000000000..6a84b47a5
+--- /dev/null
++++ b/ggml/include/ggml-ssd-policy.h
+@@ -0,0 +1,51 @@
++#pragma once
++#include "ggml.h"
++#include <stdint.h>
++#include <stddef.h>
++#ifdef __cplusplus
++#include <new>
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
++enum ggml_ssd_kind { GGML_SSD_DENSE, GGML_SSD_CACHE, GGML_SSD_STAGING, GGML_SSD_CONTEXT,
++                     GGML_SSD_RECURRENT, GGML_SSD_SCRATCH, GGML_SSD_UPLOAD, GGML_SSD_RESERVED, GGML_SSD_KINDS };
++GGML_API void ggml_ssd_start(uint64_t budget, uint64_t resident_limit, uint64_t deadline_ms);
++GGML_API void ggml_ssd_finish(void);
++GGML_API void ggml_ssd_cache_budget(uint64_t bytes);
++GGML_API bool ggml_ssd_enabled(void);
++GGML_API bool ggml_ssd_stopped(void);
++GGML_API void ggml_ssd_cancel(const char * reason);
++GGML_API bool ggml_ssd_deadline(uint64_t duration_ms);
++GGML_API void ggml_ssd_idle(void);
++GGML_API void ggml_ssd_shutdown(void);
++GGML_API bool ggml_ssd_deadline_armed(void);
++GGML_API bool ggml_ssd_reserve(size_t size, int kind);
++GGML_API void ggml_ssd_release(size_t size, int kind);
++GGML_API int ggml_ssd_category(int kind);
++GGML_API int ggml_ssd_current_category(void);
++GGML_API const char * ggml_ssd_snapshot(void);
++GGML_API void ggml_ssd_stage(const char * stage);
++GGML_API void ggml_ssd_groups(uint32_t expected, uint32_t streamed, uint32_t slots);
++GGML_API void ggml_ssd_cpu_kernel(bool use_extra_bufts, uint32_t repack_tensor_count);
++GGML_API void ggml_ssd_cpu_threads(uint32_t decode_threads, uint32_t batch_threads);
++GGML_API void ggml_ssd_io_validated(void);
++GGML_API void ggml_ssd_progress(int kind, uint64_t count);
++GGML_API uint32_t ggml_ssd_slots(uint32_t experts, uint32_t top_k, uint64_t expert_bytes,
++                                  uint64_t cache_budget, uint32_t requested_slots);
++#ifdef __cplusplus
++}
++struct ggml_ssd_scope {
++    int previous;
++    explicit ggml_ssd_scope(int kind) : previous(ggml_ssd_category(kind)) {}
++    ~ggml_ssd_scope() { ggml_ssd_category(previous); }
++};
++struct ggml_ssd_bytes {
++    size_t size;
++    int kind;
++    ggml_ssd_bytes(size_t n, int k) : size(n), kind(k) {
++        if (!ggml_ssd_reserve(n,k)) throw std::bad_alloc();
++    }
++    ~ggml_ssd_bytes() { ggml_ssd_release(size,kind); }
++};
++#endif
+diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
+index 947732000..099acd933 100644
+--- a/ggml/src/CMakeLists.txt
++++ b/ggml/src/CMakeLists.txt
+@@ -190,6 +190,7 @@ if (GGML_BACKEND_DL AND NOT BUILD_SHARED_LIBS)
+ endif()
+ 
+ add_library(ggml-base
++    ggml-ssd-policy.cpp
+             ../include/ggml.h
+             ../include/ggml-alloc.h
+             ../include/ggml-backend.h
+@@ -215,6 +216,8 @@ set_target_properties(ggml-base PROPERTIES
+ 
+ configure_file(ggml-version.h.in ${CMAKE_CURRENT_BINARY_DIR}/ggml-version.h @ONLY)
+ 
++set(SSD_PATCH_SHA256 "development" CACHE STRING "audited SSD worker source patch SHA256")
++target_compile_definitions(ggml-base PRIVATE SSD_PATCH_SHA256="${SSD_PATCH_SHA256}")
+ target_include_directories(ggml-base PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
+ if (GGML_BACKEND_DL)
+     target_compile_definitions(ggml-base PUBLIC GGML_BACKEND_DL)
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 5bdade6de..8109235e1 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -9,6 +9,8 @@
+ #endif
+ 
+ #include "ggml-backend.h"
++#include "ggml-ssd-policy.h"
++#include <mutex>
+ #include "ggml-backend-impl.h"
+ #include "ggml-alloc.h"
+ #include "ggml-impl.h"
+@@ -29,6 +31,11 @@
+ #endif
+ 
+ 
++// SSD accounting is confined to the separate worker build and disabled otherwise.
++static thread_local unsigned ssd_alloc_depth=0;
++static std::mutex ssd_buffer_mtx;
++static std::unordered_map<ggml_backend_buffer_t, std::pair<size_t,int>> ssd_buffers;
++
+ // backend buffer type
+ 
+ const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
+@@ -42,7 +49,28 @@ ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t
+         // return a dummy buffer for zero-sized allocations
+         return ggml_backend_buffer_init(buft, {}, NULL, 0);
+     }
+-    return buft->iface.alloc_buffer(buft, size);
++#if defined(__APPLE__)
++    if(ggml_ssd_enabled() && strncmp(ggml_backend_buft_name(buft),"MTL",3)==0) {
++        const size_t page=16384;
++        if(size>SIZE_MAX-(page-1)) return nullptr;
++        size=(size+page-1)&~(page-1); // account actual Darwin/Metal backing pages before allocation
++    }
++#endif
++    const int kind = ggml_ssd_current_category();
++    if(ssd_alloc_depth>0) return buft->iface.alloc_buffer(buft,size);
++    if (!ggml_ssd_reserve(size,kind)) return nullptr;
++    struct depth_guard { depth_guard(){ssd_alloc_depth++;} ~depth_guard(){ssd_alloc_depth--;} } depth;
++    auto * buffer = buft->iface.alloc_buffer(buft,size);
++    if (!buffer) { ggml_ssd_release(size,kind); return nullptr; }
++    if (ggml_ssd_enabled()) {
++        const size_t actual = ggml_backend_buffer_get_size(buffer);
++        if (actual>size && !ggml_ssd_reserve(actual-size,kind)) {
++            ggml_backend_buffer_free(buffer); ggml_ssd_release(size,kind); return nullptr;
++        }
++        if(actual<size) ggml_ssd_release(size-actual,kind);
++        std::lock_guard<std::mutex> lock(ssd_buffer_mtx); ssd_buffers[buffer]={actual,kind};
++    }
++    return buffer;
+ }
+ 
+ // shared planning logic for allocating a list of tensors into one or more buffers of the given type
+@@ -171,6 +199,12 @@ static size_t ggml_backend_buft_get_alloc_size_n_default(ggml_backend_buffer_typ
+ 
+ ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_n(ggml_backend_buffer_type_t buft, struct ggml_tensor ** tensors, int n_tensors) {
+     GGML_ASSERT(buft);
++    if (buft->iface.alloc_buffer_n && ggml_ssd_enabled()) {
++        // The supported CPU/Metal allocators use the audited generic path.
++        // Reject a newly introduced backend rather than bypass its preallocation budget.
++        GGML_LOG_ERROR("SSD worker: unaudited batch allocator\n");
++        return nullptr;
++    }
+     if (buft->iface.alloc_buffer_n) {
+         return buft->iface.alloc_buffer_n(buft, tensors, n_tensors);
+     }
+@@ -258,6 +292,11 @@ void ggml_backend_buffer_free(ggml_backend_buffer_t buffer) {
+         return;
+     }
+ 
++    if (ggml_ssd_enabled()) {
++        std::lock_guard<std::mutex> lock(ssd_buffer_mtx);
++        auto it=ssd_buffers.find(buffer);
++        if(it!=ssd_buffers.end()) { ggml_ssd_release(it->second.first,it->second.second); ssd_buffers.erase(it); }
++    }
+     if (buffer->iface.free_buffer != NULL) {
+         buffer->iface.free_buffer(buffer);
+     }
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index 81ff5d79f..a59400046 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -1,6 +1,7 @@
+ #include "ggml-backend.h"
+ #include "ggml-backend-impl.h"
+ #include "ggml-cpu.h"
++#include "ggml-ssd-policy.h"
+ #include "repack.h"
+ #include "traits.h"
+ #include "ggml-impl.h"
+@@ -117,6 +118,7 @@ static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
+ 
+ static void ggml_backend_cpu_free(ggml_backend_t backend) {
+     struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
++    ggml_ssd_release(cpu_ctx->work_size,GGML_SSD_SCRATCH);
+     delete[] cpu_ctx->work_data;
+     delete cpu_ctx;
+     delete backend;
+@@ -136,6 +138,7 @@ static ggml_backend_graph_plan_t ggml_backend_cpu_graph_plan_create(ggml_backend
+     cpu_plan->cgraph = *cgraph; // FIXME: deep copy
+ 
+     if (cpu_plan->cplan.work_size > 0) {
++        if(!ggml_ssd_reserve(cpu_plan->cplan.work_size,GGML_SSD_SCRATCH)) { delete cpu_plan; return NULL; }
+         cpu_plan->cplan.work_data = new uint8_t[cpu_plan->cplan.work_size];
+         if (cpu_plan->cplan.work_data == NULL) {
+             delete cpu_plan;
+@@ -153,6 +156,7 @@ static ggml_backend_graph_plan_t ggml_backend_cpu_graph_plan_create(ggml_backend
+ static void ggml_backend_cpu_graph_plan_free(ggml_backend_t backend, ggml_backend_graph_plan_t plan) {
+     struct ggml_backend_plan_cpu * cpu_plan = (struct ggml_backend_plan_cpu *)plan;
+ 
++    ggml_ssd_release(cpu_plan->cplan.work_size,GGML_SSD_SCRATCH);
+     delete[] cpu_plan->cplan.work_data;
+     delete cpu_plan;
+ 
+@@ -173,7 +177,9 @@ static enum ggml_status ggml_backend_cpu_graph_compute(ggml_backend_t backend, s
+     struct ggml_cplan cplan = ggml_graph_plan(cgraph, cpu_ctx->n_threads, cpu_ctx->threadpool);
+ 
+     if (cpu_ctx->work_size < cplan.work_size) {
+-        delete[] cpu_ctx->work_data;
++        ggml_ssd_release(cpu_ctx->work_size,GGML_SSD_SCRATCH);
++        delete[] cpu_ctx->work_data; cpu_ctx->work_data=nullptr; cpu_ctx->work_size=0;
++        if(!ggml_ssd_reserve(cplan.work_size,GGML_SSD_SCRATCH)) return GGML_STATUS_ALLOC_FAILED;
+         cpu_ctx->work_data = new uint8_t[cplan.work_size];
+         if (cpu_ctx->work_data == NULL) {
+             cpu_ctx->work_size = 0;
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index 827d92622..28bef1b8a 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1,4 +1,6 @@
+ #import "ggml-metal-device.h"
++#include "ggml-ssd-policy.h"
++#include <unistd.h>
+ #import "ggml-metal-fusion.h"
+ 
+ #import "ggml-impl.h"
+@@ -2333,52 +2335,40 @@ void ggml_metal_buffer_set_tensor(ggml_metal_buffer_t buf, struct ggml_tensor *
+     }
+ 
+     @autoreleasepool {
+-        // src
+-        void * data_ptr = (void *)(uintptr_t) data; // "const cast" the src data
+-        id<MTLBuffer> buf_src = [buf->dev->mtl_device newBufferWithBytesNoCopy:data_ptr
+-                                                               length:size
+-                                                              options:MTLResourceStorageModeShared
+-                                                          deallocator:nil];
+-
+-        GGML_ASSERT(buf_src);
+-
+-        // dst
+-        struct ggml_metal_buffer_id bid_dst = ggml_metal_buffer_get_id(buf, tensor);
+-        bid_dst.offs += offset;
+-
+-        // note: for experimentation purposes, here we use a semaphore to wait for the copy to complete
+-        //       this is alternative to waitUntilCompleted, which should be faster, but don't seem to make much difference
+-        dispatch_semaphore_t completion_semaphore = dispatch_semaphore_create(0);
+-
+-        id<MTLCommandBuffer> cmd_buf = [buf->dev->mtl_queue commandBufferWithUnretainedReferences];
+-
+-        {
+-            id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
+-
+-            [encoder copyFromBuffer:buf_src
+-                       sourceOffset:0
+-                           toBuffer:bid_dst.metal
+-                  destinationOffset:bid_dst.offs
+-                               size:size];
+-
+-            [encoder endEncoding];
++        // Shared source pages are already charged to staging; this wrapper does not duplicate bytes.
++        if(ggml_ssd_stopped()) { ggml_ssd_cancel("cancelled"); return; }
++        // Expert slices and final dense chunks need not be page-aligned; own and charge a bounded upload.
++        const size_t upload_size=(size+4095)&~(size_t)4095;
++        if(upload_size<size || !ggml_ssd_reserve(upload_size,GGML_SSD_UPLOAD)) {
++            GGML_LOG_ERROR("SSD Metal upload allocation budget exceeded\n"); _Exit(75);
+         }
+-
+-        [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+-                             // TODO: can check for errors here
+-            GGML_UNUSED(cb);
+-
+-            dispatch_semaphore_signal(completion_semaphore);
+-        }];
+-
++        void * upload=NULL;
++        if(posix_memalign(&upload,4096,upload_size)!=0) { GGML_LOG_ERROR("SSD Metal upload allocation failed\n"); _Exit(75); }
++        memcpy(upload,data,size);
++        id<MTLBuffer> buf_src = [buf->dev->mtl_device newBufferWithBytesNoCopy:upload
++                      length:upload_size options:MTLResourceStorageModeShared deallocator:nil];
++        if(!buf_src) { GGML_LOG_ERROR("SSD Metal upload source allocation failed\n"); abort(); }
++        struct ggml_metal_buffer_id bid_dst=ggml_metal_buffer_get_id(buf,tensor);
++        bid_dst.offs+=offset;
++        id<MTLCommandBuffer> cmd_buf=[buf->dev->mtl_queue commandBufferWithUnretainedReferences];
++        id<MTLBlitCommandEncoder> encoder=[cmd_buf blitCommandEncoder];
++        if(!cmd_buf || !encoder) { [buf_src release]; GGML_LOG_ERROR("SSD Metal upload unavailable\n"); abort(); }
++        [encoder copyFromBuffer:buf_src sourceOffset:0 toBuffer:bid_dst.metal destinationOffset:bid_dst.offs size:size];
++        [encoder endEncoding];
+         [cmd_buf commit];
+-
+-        dispatch_semaphore_wait(completion_semaphore, DISPATCH_TIME_FOREVER);
+-        dispatch_release(completion_semaphore);
+-
+-        //[cmd_buf waitUntilCompleted];
+-
++        const uint64_t started=ggml_time_us();
++        while(cmd_buf.status<MTLCommandBufferStatusCompleted) {
++            if(ggml_ssd_stopped() || ggml_time_us()-started>30ull*1000*1000) {
++                GGML_LOG_ERROR("SSD Metal upload cancelled or timed out\n"); _Exit(75);
++            }
++            usleep(10000);
++        }
++        if(cmd_buf.status!=MTLCommandBufferStatusCompleted || cmd_buf.error!=nil) {
++            GGML_LOG_ERROR("SSD Metal upload failed before expert residency\n"); _Exit(75);
++        }
+         [buf_src release];
++        free(upload);
++        ggml_ssd_release(upload_size,GGML_SSD_UPLOAD);
+     }
+ }
+ 
+diff --git a/ggml/src/ggml-ssd-policy.cpp b/ggml/src/ggml-ssd-policy.cpp
+new file mode 100644
+index 000000000..113238fde
+--- /dev/null
++++ b/ggml/src/ggml-ssd-policy.cpp
+@@ -0,0 +1,200 @@
++#include "ggml-ssd-policy.h"
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdio>
++#include <cstdlib>
++#include <ctime>
++#include <mutex>
++#include <sstream>
++#include <stdexcept>
++#include <string>
++#include <thread>
++#if defined(__APPLE__)
++#include <libproc.h>
++#include <sys/resource.h>
++#include <unistd.h>
++#endif
++#ifndef SSD_PATCH_SHA256
++#define SSD_PATCH_SHA256 "development"
++#endif
++static constexpr uint64_t MAX_DEADLINE_MS = 8ull*60*60*1000;
++static constexpr uint64_t OVERHEAD_RESERVE = 256ull*1024*1024;
++struct ssd_policy {
++    std::mutex mtx;
++    std::condition_variable cv;
++    std::array<uint64_t, GGML_SSD_KINDS> ledger{};
++    uint64_t total = 0, budget = 0, limit = 0, cache_budget = 0;
++    uint32_t expected = 0, streamed = 0, slots = 0;
++    int use_extra_bufts = -1;
++    uint32_t cpu_repack_tensor_count = 0;
++    uint32_t decode_threads = 0, batch_threads = 0;
++    uint64_t reads = 0, hits = 0, waves = 0, bytes_read = 0, cache_misses = 0;
++    uint64_t rss = 0, footprint = 0;
++    bool measurement = false, io = false, enabled = false, done = false, deadline_armed = true;
++    std::atomic<bool> stopped{false};
++    std::string reason, stage = "boot", sampled_at;
++    std::chrono::steady_clock::time_point deadline;
++    std::thread sampler;
++    ~ssd_policy() { ggml_ssd_finish(); }
++};
++static ssd_policy policy;
++static thread_local int category = GGML_SSD_SCRATCH;
++static void measure_locked() {
++#if defined(__APPLE__)
++    rusage_info_v4 usage{};
++    if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t*)&usage) == 0) {
++        policy.rss = usage.ri_resident_size;
++        policy.footprint = usage.ri_phys_footprint;
++        policy.measurement = policy.footprint > 0 && policy.rss > 0;
++    } else { policy.measurement = false; }
++#else
++    policy.measurement = false;
++#endif
++    const auto now = std::chrono::system_clock::now();
++    const auto t = std::chrono::system_clock::to_time_t(now);
++    std::tm utc{}; gmtime_r(&t,&utc);
++    char s[40]; strftime(s,sizeof(s),"%Y-%m-%dT%H:%M:%SZ",&utc); policy.sampled_at=s;
++}
++static std::string snapshot_locked() {
++    const char * names[] = {"denseBytes","expertCacheBytes","stagingBytes","contextBytes",
++                           "recurrentBytes","scratchBytes","uploadBytes","reservedBytes"};
++    std::ostringstream s;
++    s << "{\"workerIdentity\":\"free-local-agent-ssd-v1\",\"patchSha256\":\"" << SSD_PATCH_SHA256
++      << "\",\"baseCommit\":\"d81235049384534c167caea52b85a694f6103d14\",\"pid\":";
++#if defined(__APPLE__)
++    s << getpid();
++#else
++    s << 0;
++#endif
++    s << ",\"stage\":\"" << policy.stage << "\",\"sampledAt\":\"" << policy.sampled_at
++      << "\",\"expectedGroups\":" << policy.expected << ",\"streamedGroups\":" << policy.streamed
++      << ",\"cacheSlotsPerLayer\":" << policy.slots
++      << ",\"ioMode\":\"" << (policy.io ? "darwin-nocache" : "unvalidated")
++      << "\",\"allocationBudgetBytes\":" << policy.budget << ",\"residentLimitBytes\":" << policy.limit
++      << ",\"cpuKernel\":\"" << (policy.use_extra_bufts<0?"unknown":policy.use_extra_bufts?"default":"standard") << "\",\"useExtraBufts\":";
++    if(policy.use_extra_bufts<0) s << "null"; else s << (policy.use_extra_bufts?"true":"false");
++    s << ",\"cpuRepackTensorCount\":";
++    if(policy.use_extra_bufts<0) s << "null"; else s << policy.cpu_repack_tensor_count;
++    s << ",\"decodeThreads\":";
++    if(!policy.decode_threads) s << "null"; else s << policy.decode_threads;
++    s << ",\"batchThreads\":";
++    if(!policy.batch_threads) s << "null"; else s << policy.batch_threads;
++    s << ",\"expertCacheBytes\":" << policy.ledger[GGML_SSD_CACHE] << ",\"ledger\":{";
++    for (int i=0;i<GGML_SSD_KINDS;i++) { if(i) s << ','; s << '"' << names[i] << "\":" << policy.ledger[i]; }
++    s << ",\"totalBytes\":" << policy.total << "},\"rssBytes\":";
++    if (policy.measurement) s << policy.rss; else s << "null";
++    s << ",\"physicalFootprintBytes\":";
++    if (policy.measurement) s << policy.footprint; else s << "null";
++    s << ",\"reads\":" << policy.reads << ",\"hits\":" << policy.hits << ",\"waves\":" << policy.waves
++      << ",\"bytesRead\":" << policy.bytes_read << ",\"cacheMisses\":" << policy.cache_misses
++      << ",\"deadlineArmed\":" << (policy.deadline_armed?"true":"false")
++      << ",\"stopped\":" << (policy.stopped.load()?"true":"false")
++      << ",\"stopReason\":\"" << policy.reason << "\"}";
++    return s.str();
++}
++static void emit_locked() { fprintf(stderr,"SSD_STATUS %s\n",snapshot_locked().c_str()); fflush(stderr); }
++void ggml_ssd_start(uint64_t budget,uint64_t limit,uint64_t deadline_ms) {
++    if (!budget || !limit || budget>limit || budget<OVERHEAD_RESERVE || !deadline_ms || deadline_ms>MAX_DEADLINE_MS)
++        throw std::invalid_argument("invalid SSD allocation/resident budget or deadline");
++#if !defined(__APPLE__)
++    throw std::runtime_error("SSD worker only validated on Darwin ARM64");
++#endif
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    if(policy.enabled) throw std::runtime_error("SSD worker already initialized");
++    policy.enabled=true; policy.done=false; policy.stopped=false;
++    policy.budget=budget; policy.limit=limit; policy.deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(deadline_ms);
++    policy.ledger[GGML_SSD_RESERVED]=OVERHEAD_RESERVE; policy.total=OVERHEAD_RESERVE;
++    measure_locked(); emit_locked();
++    if(!policy.measurement) throw std::runtime_error("native physical footprint monitoring unavailable");
++    policy.sampler=std::thread([]{
++        std::unique_lock<std::mutex> lock(policy.mtx);
++        auto next_sample=std::chrono::steady_clock::now();
++        while(!policy.done) {
++            policy.cv.wait_for(lock,std::chrono::milliseconds(100),[]{return policy.done;});
++            if(policy.done) break;
++            auto now=std::chrono::steady_clock::now();
++            if(now>=next_sample) {
++                measure_locked(); emit_locked(); next_sample=now+std::chrono::seconds(2);
++                if(!policy.measurement) { policy.reason="native-memory-monitor-unavailable"; policy.stopped=true; }
++                else if(policy.footprint>policy.limit || policy.rss>policy.limit) { policy.reason="resident-memory-budget"; policy.stopped=true; }
++            }
++            if(policy.deadline_armed && now>=policy.deadline) { policy.reason="deadline"; policy.stopped=true; }
++            // Process termination bounds otherwise uninterruptible filesystem and driver calls.
++            if(policy.stopped) { policy.stage="stopped"; emit_locked(); std::_Exit(75); }
++        }
++    });
++}
++void ggml_ssd_cache_budget(uint64_t bytes) { std::lock_guard<std::mutex> lock(policy.mtx); policy.cache_budget=bytes; }
++void ggml_ssd_cpu_kernel(bool use_extra_bufts,uint32_t repack_tensor_count) {
++    if(!use_extra_bufts && repack_tensor_count) throw std::runtime_error("standard CPU profile must not use CPU_REPACK tensors");
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    policy.use_extra_bufts=use_extra_bufts; policy.cpu_repack_tensor_count=repack_tensor_count;
++}
++void ggml_ssd_cpu_threads(uint32_t decode_threads,uint32_t batch_threads) {
++    if(!decode_threads || !batch_threads || decode_threads>64 || batch_threads>64)
++        throw std::runtime_error("SSD CPU threads must fit the planned 1-to-64 thread bound");
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    policy.decode_threads=decode_threads; policy.batch_threads=batch_threads;
++}
++void ggml_ssd_finish() {
++    { std::lock_guard<std::mutex> lock(policy.mtx); policy.done=true; policy.cv.notify_all(); }
++    if(policy.sampler.joinable()) policy.sampler.join();
++}
++bool ggml_ssd_enabled() { return policy.enabled; }
++bool ggml_ssd_stopped() { return policy.stopped.load(); }
++void ggml_ssd_cancel(const char * reason) {
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    policy.reason = reason && std::string(reason)=="deadline" ? "deadline" : "cancelled";
++    policy.stopped=true; policy.cv.notify_all();
++}
++bool ggml_ssd_deadline(uint64_t ms) {
++    if(!ms || ms>MAX_DEADLINE_MS || policy.stopped) return false;
++    std::lock_guard<std::mutex> lock(policy.mtx); policy.deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms); policy.deadline_armed=true;
++    return true;
++}
++void ggml_ssd_shutdown() {
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    auto bound=std::chrono::steady_clock::now()+std::chrono::seconds(10);
++    if(!policy.deadline_armed || bound<policy.deadline) policy.deadline=bound;
++    policy.deadline_armed=true; policy.stage="shutting-down";
++}
++void ggml_ssd_idle() { std::lock_guard<std::mutex> lock(policy.mtx); if(!policy.stopped) policy.deadline_armed=false; }
++bool ggml_ssd_deadline_armed() { std::lock_guard<std::mutex> lock(policy.mtx); return policy.deadline_armed && !policy.stopped; }
++bool ggml_ssd_reserve(size_t n,int kind) {
++    if(!policy.enabled || n==0) return true;
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    if(kind<0 || kind>=GGML_SSD_KINDS || policy.stopped || n>policy.budget-policy.total) return false;
++    if(kind==GGML_SSD_CACHE && policy.cache_budget && n>policy.cache_budget-policy.ledger[kind]) return false;
++    policy.total+=n; policy.ledger[kind]+=n; return true;
++}
++void ggml_ssd_release(size_t n,int kind) {
++    if(!policy.enabled || n==0) return;
++    std::lock_guard<std::mutex> lock(policy.mtx);
++    if(kind>=0 && kind<GGML_SSD_KINDS && policy.ledger[kind]>=n) { policy.ledger[kind]-=n; policy.total-=n; }
++}
++int ggml_ssd_category(int kind) { int old=category; category=kind; return old; }
++int ggml_ssd_current_category() { return category; }
++const char * ggml_ssd_snapshot() {
++    static thread_local std::string json;
++    std::lock_guard<std::mutex> lock(policy.mtx); json=snapshot_locked(); return json.c_str();
++}
++void ggml_ssd_stage(const char * stage) { std::lock_guard<std::mutex> lock(policy.mtx); policy.stage=stage; if(policy.stage=="ready") policy.deadline_armed=false; }
++void ggml_ssd_groups(uint32_t expected,uint32_t streamed,uint32_t slots) {
++    std::lock_guard<std::mutex> lock(policy.mtx); policy.expected=expected; policy.streamed=streamed; policy.slots=slots;
++}
++void ggml_ssd_io_validated() { std::lock_guard<std::mutex> lock(policy.mtx); policy.io=true; }
++void ggml_ssd_progress(int kind,uint64_t n) {
++    std::lock_guard<std::mutex> lock(policy.mtx); if(kind==0)policy.reads+=n; else if(kind==1)policy.hits+=n; else if(kind==2) policy.waves+=n; else if(kind==3) policy.bytes_read+=n; else if(kind==4) policy.cache_misses+=n;
++}
++uint32_t ggml_ssd_slots(uint32_t experts,uint32_t top_k,uint64_t bytes,uint64_t budget,uint32_t requested) {
++    if(!experts || !top_k || top_k>UINT32_MAX/3 || !bytes || 3*top_k>=experts)
++        throw std::runtime_error("model cannot use bounded SSD expert streaming");
++    const uint32_t floor=3*top_k;
++    if(budget && (budget/bytes<floor)) throw std::runtime_error("SSD cache budget is below three times topK; refusing full-weight fallback");
++    uint64_t slots=requested ? requested : budget ? budget/bytes : floor;
++    if(slots<floor || slots>=experts || slots>UINT32_MAX || (budget && slots>budget/bytes))
++        throw std::runtime_error("SSD slots violate cache budget or three-times-topK floor");
++    return uint32_t(slots);
++}
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 9bcabdbd3..bf1deb5ed 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -7,6 +7,7 @@
+ #include "ggml-threading.h"
+ #include "ggml-cpu.h"
+ #include "ggml.h"
++#include "ggml-ssd-policy.h"
+ 
+ // FIXME: required here for quantization functions
+ #include "ggml-quants.h"
+@@ -1631,6 +1632,9 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
+ 
+     const size_t mem_size = params.mem_buffer ? params.mem_size : GGML_PAD(params.mem_size, GGML_MEM_ALIGN);
+ 
++    if (!params.mem_buffer && !ggml_ssd_reserve(mem_size, GGML_SSD_RESERVED)) {
++        GGML_FREE(ctx); return NULL;
++    }
+     *ctx = (struct ggml_context) {
+         /*.mem_size           =*/ mem_size,
+         /*.mem_buffer         =*/ params.mem_buffer ? params.mem_buffer : ggml_aligned_malloc(mem_size),
+@@ -1666,6 +1670,7 @@ void ggml_free(struct ggml_context * ctx) {
+     }
+ 
+     if (ctx->mem_buffer_owned) {
++        ggml_ssd_release(ctx->mem_size, GGML_SSD_RESERVED);
+         ggml_aligned_free(ctx->mem_buffer, ctx->mem_size);
+     }
+ 
+diff --git a/include/llama.h b/include/llama.h
+index 9bca8ee10..e7d8bd863 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -346,6 +346,13 @@ extern "C" {
+         // override key-value pairs of the model meta data
+         const struct llama_model_kv_override * kv_overrides;
+ 
++        // SSD streaming of MoE routed expert weights (experts are paged from the GGUF on demand
++        // into a per-layer cache of moe_stream_slots experts; requires moe_stream = true)
++        uint32_t moe_stream_slots;      // expert cache slots per streamed layer (0 = auto)
++        uint64_t moe_stream_budget;     // total cache byte budget, used when slots == 0 (0 = auto heuristic)
++        int32_t  moe_stream_io_threads; // expert load I/O threads (<= 0 = default)
++        bool     moe_stream_direct;     // use O_DIRECT for expert reads (bypass page cache); falls back if unsupported
++
+         // Keep the booleans together to avoid misalignment during copy-by-value.
+         bool vocab_only;      // only load the vocabulary, no weights
+         bool check_tensors;   // validate model tensor data
+@@ -353,6 +360,7 @@ extern "C" {
+         bool no_host;         // bypass host buffer allowing extra buffers to be used
+         bool no_alloc;        // only load metadata and simulate memory allocations
+         bool load_mtp;        // whether to load MTP layers
++        bool moe_stream;      // stream MoE routed expert weights from disk on demand
+     };
+ 
+     struct llama_sampler_seq_config {
+@@ -1699,6 +1707,9 @@ extern "C" {
+     LLAMA_API void                           llama_perf_sampler_print(const struct llama_sampler * chain);
+     LLAMA_API void                           llama_perf_sampler_reset(      struct llama_sampler * chain);
+ 
++    // print MoE expert streaming statistics (no-op when streaming is not enabled)
++    LLAMA_API void llama_moe_stream_print_stats(const struct llama_model * model);
++
+     //
+     // training
+     //
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index afdaddc79..549f3a502 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -36,6 +36,7 @@ set(LLAMA_CORE_SOURCES
+     llama-model-loader.cpp
+     llama-model-saver.cpp
+     llama-model.cpp
++    llama-moe-stream.cpp
+     llama-quant.cpp
+     llama-sampler.cpp
+     llama-vocab.cpp
+diff --git a/src/llama-adapter.cpp b/src/llama-adapter.cpp
+index df3654d86..9a5c5e631 100644
+--- a/src/llama-adapter.cpp
++++ b/src/llama-adapter.cpp
+@@ -332,6 +332,9 @@ static void llama_adapter_lora_init_impl(llama_model & model, FILE * file, llama
+         // device buft and device ctx
+         const auto * model_tensor = model.get_tensor(name.c_str());
+         if (!model_tensor) {
++            if (model.moe_stream() && name.find("_exps.") != std::string::npos) {
++                throw std::runtime_error("LoRA tensor '" + name + "' targets an SSD-streamed expert tensor, which is not supported");
++            }
+             throw std::runtime_error("LoRA tensor '" + name + "' does not exist in base model (hint: maybe wrong base model?)");
+         }
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 07b4c6148..8dee70462 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-context.h"
++#include "ggml-ssd-policy.h"
+ 
+ #include "ggml.h"
+ #include "llama-arch.h"
+@@ -9,6 +10,7 @@
+ #include "llama-memory.h"
+ #include "llama-mmap.h"
+ #include "llama-model.h"
++#include "llama-moe-stream.h"
+ #include "llama-ext.h"
+ #include "llama-sampler.h"
+ #include "llama.h"
+@@ -90,6 +92,7 @@ llama_context::llama_context(
+     // MTP uses the embd input for the hidden state
+     balloc(std::make_unique<llama_batch_allocr>(model.hparams.n_pos_per_embd(),
+                 llm_arch_supports_mixed_batch(model.arch) && params.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT)) {
++    ggml_ssd_scope allocation_scope(GGML_SSD_CONTEXT);
+     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
+     //     may need to be backend-dependent
+     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
+@@ -113,6 +116,7 @@ llama_context::llama_context(
+ 
+     cparams.n_threads               = params.n_threads;
+     cparams.n_threads_batch         = params.n_threads_batch;
++    if(ggml_ssd_enabled())ggml_ssd_cpu_threads(cparams.n_threads,cparams.n_threads_batch);
+     cparams.yarn_ext_factor         = params.yarn_ext_factor  >= 0.0f ? params.yarn_ext_factor  : hparams.yarn_ext_factor;
+     cparams.yarn_attn_factor        = params.yarn_attn_factor >= 0.0f ? params.yarn_attn_factor : hparams.yarn_attn_factor;
+     cparams.yarn_beta_fast          = params.yarn_beta_fast   >= 0.0f ? params.yarn_beta_fast   : hparams.yarn_beta_fast;
+@@ -275,6 +279,24 @@ llama_context::llama_context(
+     cparams.op_offload = params.op_offload;
+     cparams.kv_unified = params.kv_unified;
+ 
++    if (model.moe_stream() && hparams.n_expert_used_max() > 0) {
++        // ubatches that touch more experts than the streaming cache holds run the expert GEMMs in
++        // multiple waves, so no ubatch size restriction is needed
++        LLAMA_LOG_INFO("%s: MoE expert streaming with %u cache slots, n_ubatch = %u\n",
++                __func__, model.moe_stream()->n_slots, cparams.n_ubatch);
++
++        // op offload snapshots host weights to the device per graph split, which assumes they do
++        // not change during the graph - streamed caches are rewritten between waves
++        bool cache_on_host = false;
++        for (const auto & buf : model.moe_stream()->bufs) {
++            cache_on_host = cache_on_host || ggml_backend_buffer_is_host(buf.get());
++        }
++        if (cache_on_host && cparams.op_offload) {
++            LLAMA_LOG_WARN("%s: disabling op offload: the expert streaming cache is in host memory\n", __func__);
++            cparams.op_offload = false;
++        }
++    }
++
+     // initialized later
+     cparams.pipeline_parallel = false;
+     cparams.training = false;
+@@ -615,6 +637,7 @@ static int llama_graph_n_input_tensors(ggml_cgraph * gf) {
+ }
+ 
+ void llama_context::sched_reserve() {
++    ggml_ssd_scope allocation_scope(GGML_SSD_SCRATCH);
+     if (!sched_need_reserve) {
+         return;
+     }
+@@ -1199,6 +1222,7 @@ void llama_context::detach_threadpool() {
+ void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {
+     LLAMA_LOG_DEBUG("%s: n_threads = %d, n_threads_batch = %d\n", __func__, n_threads, n_threads_batch);
+ 
++    if(ggml_ssd_enabled())ggml_ssd_cpu_threads(n_threads,n_threads_batch);
+     cparams.n_threads       = n_threads;
+     cparams.n_threads_batch = n_threads_batch;
+ }
+@@ -2428,6 +2452,14 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+         }
+     }
+ 
++    if (const auto * mstream = model.moe_stream()) {
++        const uint32_t n_eu = model.hparams.n_expert_used_max();
++        const uint32_t cap = std::max<uint32_t>((mstream->n_slots - n_eu)/2, 1);
++        const uint32_t n_touch_max = std::min<uint64_t>(model.hparams.n_expert, uint64_t(n_tokens)*n_eu);
++        const uint32_t n_waves = (n_touch_max + cap - 1)/cap;
++        res += 24u*n_waves*(uint32_t) mstream->layers.size();
++    }
++
+     uint32_t n_sampling_nodes = 0;
+     uint32_t n_sampling_nodes_max = 0;
+     for (const auto & [seq_id, sampler] : sampling.samplers) {
+@@ -2599,6 +2631,7 @@ llm_graph_params llama_context::graph_params(
+         /*.mctx        =*/ mctx,
+         /*.cross       =*/ &cross,
+         /*.prec_policy =*/ &model.prec_policy,
++        /*.mstream     =*/ model.moe_stream(),
+         /*.samplers    =*/ sampling.samplers,
+         /*.n_outputs   =*/ n_outputs,
+         /*.cb          =*/ graph_get_cb(),
+@@ -4440,6 +4473,10 @@ void llama_perf_context_print(const llama_context * ctx) {
+             __func__, data.t_eval_ms, data.n_eval, data.t_eval_ms / data.n_eval, 1e3 / data.t_eval_ms * data.n_eval);
+     LLAMA_LOG_INFO("%s:       total time = %10.2f ms / %5d tokens\n", __func__, (t_end_ms - data.t_start_ms), (data.n_p_eval + data.n_eval));
+     LLAMA_LOG_INFO("%s:    graphs reused = %10d\n", __func__, data.n_reused);
++
++    if (const auto * mstream = ctx->get_model().moe_stream()) {
++        mstream->print_stats();
++    }
+ }
+ 
+ void llama_perf_context_reset(llama_context * ctx) {
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 1112ad885..2b0ad0412 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -5,6 +5,7 @@
+ #include "llama-batch.h"
+ #include "llama-cparams.h"
+ #include "llama-sampler.h"
++#include "llama-moe-stream.h"
+ 
+ #include "llama-kv-cache.h"
+ #include "llama-kv-cache-iswa.h"
+@@ -1524,6 +1525,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
+     mctx             (params.mctx),
+     cross            (params.cross),
+     prec_policy      (params.prec_policy),
++    mstream          (params.mstream),
+     samplers         (params.samplers),
+     cb_func          (params.cb),
+     res              (params.res),
+@@ -1589,7 +1591,8 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
+           ggml_tensor * w,   // ggml_tensor * as
+           ggml_tensor * cur, // ggml_tensor * b
+           ggml_tensor * ids,
+-          ggml_tensor * w_s) const {
++          ggml_tensor * w_s,
++          ggml_tensor * ids_scale) const {
+     ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur, ids);
+ 
+     if (prec_policy) {
+@@ -1601,11 +1604,15 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
+     }
+ 
+     if (w_s) {
++        // w_s always covers all experts, so index it with the original expert ids
++        //   even when the GEMM ids are remapped cache slots (MoE streaming)
++        ggml_tensor * ids_s = ids_scale ? ids_scale : ids;
++
+         const int64_t n_expert = w_s->ne[0];
+         const int64_t n_tokens = cur->ne[2];
+         ggml_tensor * s = ggml_reshape_3d(ctx0, w_s, 1, n_expert, 1);
+         s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
+-        s = ggml_get_rows(ctx0, s, ids);
++        s = ggml_get_rows(ctx0, s, ids_s);
+         res = ggml_mul(ctx0, res, s);
+     }
+     for (const auto & lora : *loras) {
+@@ -2205,6 +2212,45 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     //call early so that topk-moe can be used
+     ggml_build_forward_expand(gf, weights);
+ 
++    // MoE expert streaming: make the selected experts cache-resident and remap the ids fed to the
++    //   expert GEMMs to cache slots; the routing itself (weights, scales, biases) keeps the original ids
++    llama_moe_stream_layer * msl = mstream ? mstream->layer(il) : nullptr;
++    if (msl && !msl->matches(gate_exps, up_exps, down_exps, gate_up_exps)) {
++        msl = nullptr; // a different expert group of the same layer (e.g. grovemoe chexps), not streamed
++    }
++
++    // a ubatch can touch more distinct experts than the cache holds; the expert GEMMs then run in
++    //   waves of at most stream_wave_cap experts, the pairs of the other waves masked to zero and the
++    //   wave outputs summed. n_touch_max caps at n_expert, so each expert is loaded at most once per
++    //   ubatch regardless of batch size - wave splitting bounds prefill I/O to one sweep of them.
++    uint32_t n_stream_waves  = 1;
++    uint32_t stream_wave_cap = 0;
++    if (msl) {
++        // worst-case distinct experts: n_expert_used per token, but never more than n_expert total
++        const uint64_t n_touch_max = std::min<uint64_t>((uint64_t) n_expert, (uint64_t) n_tokens*n_expert_used);
++        if (n_touch_max > msl->n_slots) {
++            // the cache must hold three sets at once: this wave's experts, the next wave's preloaded
++            //   experts (so its loads overlap this wave's compute), and n_expert_used parking slots
++            //   the masked-out pairs GEMM against (Metal needs a slot at most once per token row).
++            //   so cap + cap + n_expert_used = n_slots -> cap = (n_slots - n_expert_used)/2
++            stream_wave_cap = msl->n_slots > (uint32_t) n_expert_used ? (msl->n_slots - (uint32_t) n_expert_used)/2 : 0;
++            if (stream_wave_cap < (uint32_t) n_expert_used) {
++                // a wave must fit at least n_expert_used experts, i.e. n_slots >= 3*n_expert_used
++                GGML_ABORT("MoE expert streaming: multi-pass expert GEMMs need an expert cache of at least "
++                           "3*n_expert_used slots (have %u, need %u); increase --moe-stream-cache or reduce -ub",
++                        msl->n_slots, 3*(uint32_t) n_expert_used);
++            }
++            n_stream_waves = (uint32_t) ((n_touch_max + stream_wave_cap - 1)/stream_wave_cap); // ceil(n_touch_max/cap)
++        }
++    }
++
++    ggml_tensor * ids_gemm = selected_experts;
++    if (msl && n_stream_waves == 1) {
++        ggml_tensor * ids_cont = ggml_cont(ctx0, selected_experts); // top_k output is a view
++        ids_gemm = ggml_map_custom1(ctx0, ids_cont, llama_moe_stream_remap, 1, msl);
++        cb(ids_gemm, "ffn_moe_topk_stream", il);
++    }
++
+     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
+ 
+     if (weight_before_ffn) {
+@@ -2214,12 +2260,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(cur, "ffn_moe_weighted", il);
+     }
+ 
++    // the expert GEMM pipeline: run once normally, or once per wave under multi-pass prefill;
++    //   biases and per-expert scales are always indexed by the original selected_experts
++    auto build_expert_gemms = [&](ggml_tensor * cur, ggml_tensor * ids_gemm) -> ggml_tensor * {
+     ggml_tensor * up = nullptr;
+     ggml_tensor * experts = nullptr;
+ 
+     if (gate_up_exps) {
+         // merged gate_up path: one mul_mat_id, then split into gate and up views
+-        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
++        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, ids_gemm, up_exps_s, selected_experts); // [n_ff*2, n_expert_used, n_tokens]
+         cb(gate_up, "ffn_moe_gate_up", il);
+ 
+         if (up_exps_s) {
+@@ -2238,7 +2287,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(up, "ffn_moe_up", il);
+     } else {
+         // separate gate and up path
+-        up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s); // [n_ff, n_expert_used, n_tokens]
++        up = build_lora_mm_id(up_exps, cur, ids_gemm, up_exps_s, selected_experts); // [n_ff, n_expert_used, n_tokens]
+         cb(up, "ffn_moe_up", il);
+ 
+         if (up_exps_s) {
+@@ -2251,7 +2300,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         }
+ 
+         if (gate_exps) {
+-            cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
++            cur = build_lora_mm_id(gate_exps, cur, ids_gemm, gate_exps_s, selected_experts); // [n_ff, n_expert_used, n_tokens]
+             cb(cur, "ffn_moe_gate", il);
+         } else {
+             cur = up;
+@@ -2352,7 +2401,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+             GGML_ABORT("fatal error");
+     }
+ 
+-    experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
++    experts = build_lora_mm_id(down_exps, cur, ids_gemm, down_exps_s, selected_experts); // [n_embd, n_expert_used, n_tokens]
+     if (arch == LLM_ARCH_MISTRAL4) {
+         // src1 can exceed F16 range
+         ggml_prec_set_src(experts, GGML_PREC_F32, 1);
+@@ -2368,6 +2417,45 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(experts, "ffn_moe_down_biased", il);
+     }
+ 
++    return experts;
++    }; // build_expert_gemms
++
++    ggml_tensor * experts = nullptr;
++
++    if (msl && n_stream_waves > 1) {
++        ggml_tensor * ids_cont = ggml_cont(ctx0, selected_experts);
++
++        for (uint32_t w = 0; w < n_stream_waves; w++) {
++            ggml_tensor * args[2] = { ids_cont, nullptr };
++            int n_args = 1;
++            if (experts != nullptr) {
++                // ordering token: forces this wave's ids op to run after the previous wave's GEMMs
++                //   consumed their slots; a 1-element view keeps the cross-backend copy tiny
++                args[1] = ggml_view_1d(ctx0, experts, 1, 0);
++                n_args  = 2;
++            }
++            ggml_tensor * ids_w = ggml_custom_4d(ctx0, GGML_TYPE_I32,
++                    ids_cont->ne[0], ids_cont->ne[1], 1, 1,
++                    args, n_args, llama_moe_stream_wave_ids, 1, msl->wave_userdata(w, stream_wave_cap));
++            cb(ids_w, "ffn_moe_wave_ids", il);
++
++            ggml_tensor * e_w = build_expert_gemms(cur, ids_w);
++
++            ggml_tensor * margs[2] = { ids_cont, ids_w };
++            ggml_tensor * mask_w = ggml_custom_4d(ctx0, GGML_TYPE_F32,
++                    1, n_expert_used, n_tokens, 1,
++                    margs, 2, llama_moe_stream_wave_mask, 1, msl->wave_userdata(w, stream_wave_cap));
++            cb(mask_w, "ffn_moe_wave_mask", il);
++
++            e_w = ggml_mul(ctx0, e_w, mask_w); // zero the pairs that belong to other waves
++
++            experts = experts == nullptr ? e_w : ggml_add(ctx0, experts, e_w);
++            ggml_build_forward_expand(gf, experts);
++        }
++    } else {
++        experts = build_expert_gemms(cur, ids_gemm);
++    }
++
+     if (!weight_before_ffn) {
+         experts = ggml_mul(ctx0, experts, weights);
+         cb(experts, "ffn_moe_weighted", il);
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 5cf74c997..8627ae504 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -776,6 +776,8 @@ using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor
+ 
+ class llm_graph_result;
+ 
++struct llama_moe_stream;
++
+ struct llm_graph_params {
+     llm_arch arch = LLM_ARCH_UNKNOWN;
+ 
+@@ -795,6 +797,8 @@ struct llm_graph_params {
+     const llama_cross            * cross;
+ 
+     const llama_prec_policy * prec_policy = nullptr;
++    // MoE expert SSD streaming state of the model, null when not enabled
++    llama_moe_stream * mstream = nullptr;
+ 
+     std::map<llama_seq_id, llama_sampler *> samplers;
+ 
+@@ -1038,6 +1042,7 @@ struct llm_graph_context {
+     const llama_cross            * cross;
+ 
+     const llama_prec_policy * prec_policy;
++    llama_moe_stream * mstream;
+ 
+     std::map<llama_seq_id, llama_sampler *> samplers;
+ 
+@@ -1068,11 +1073,13 @@ struct llm_graph_context {
+               ggml_tensor * w_s = nullptr) const;
+ 
+     // do mat_mul_id, while optionally apply lora and per-expert scale
++    // ids_scale: ids to use for the w_s gather, when the GEMM ids are remapped cache slots (MoE streaming)
+     ggml_tensor * build_lora_mm_id(
+               ggml_tensor * w,   // ggml_tensor * as
+               ggml_tensor * cur, // ggml_tensor * b
+               ggml_tensor * ids,
+-              ggml_tensor * w_s = nullptr) const;
++              ggml_tensor * w_s = nullptr,
++              ggml_tensor * ids_scale = nullptr) const;
+ 
+     ggml_tensor * build_norm(
+              ggml_tensor * cur,
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 53130e868..a698f1503 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-memory-recurrent.h"
++#include "ggml-ssd-policy.h"
+ 
+ #include "ggml-backend.h"
+ #include "llama-impl.h"
+@@ -26,6 +27,7 @@ llama_memory_recurrent::llama_memory_recurrent(
+                  uint32_t   n_seq_max,
+                  uint32_t   n_rs_seq,
+     const layer_filter_cb & filter) : hparams(model.hparams), n_seq_max(n_seq_max) {
++    ggml_ssd_scope allocation_scope(GGML_SSD_RECURRENT);
+     const int32_t n_layer = hparams.n_layer();
+ 
+     head = 0;
+@@ -116,11 +118,18 @@ llama_memory_recurrent::llama_memory_recurrent(
+ 
+     // allocate tensors and initialize the buffers to avoid NaNs in the padding
+     for (auto & [buft, ctx] : ctx_map) {
+-        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
++        ggml_backend_buffer_t buf;
++        if(hparams.no_alloc) {
++            buf=ggml_backend_buft_alloc_buffer(buft,0);
++            for(auto * tensor=ggml_get_first_tensor(ctx.get());tensor; tensor=ggml_get_next_tensor(ctx.get(),tensor))
++                tensor->buffer=buf;
++        } else {
++            buf=ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(),buft);
++        }
+         if (!buf) {
+             throw std::runtime_error("failed to allocate buffer for rs cache");
+         }
+-        ggml_backend_buffer_clear(buf, 0);
++        if(!hparams.no_alloc) ggml_backend_buffer_clear(buf, 0);
+         LLAMA_LOG_INFO("%s: %10s RS buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
+         ctxs_bufs.emplace_back(std::move(ctx), buf);
+     }
+@@ -156,7 +165,7 @@ void llama_memory_recurrent::clear(bool data) {
+     head = 0;
+     used = 0;
+ 
+-    if (data) {
++    if (data && !hparams.no_alloc) {
+         for (auto & [_, buf] : ctxs_bufs) {
+             ggml_backend_buffer_clear(buf.get(), 0);
+         }
+@@ -431,8 +440,14 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
+ 
+ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {
+     std::map<ggml_backend_buffer_type_t, size_t> ret;
+-    for (const auto & [_, buf] : ctxs_bufs) {
+-        ret[ggml_backend_buffer_get_type(buf.get())] += ggml_backend_buffer_get_size(buf.get());
++    for (const auto & [ctx, buf] : ctxs_bufs) {
++        auto * buft=ggml_backend_buffer_get_type(buf.get());
++        if(hparams.no_alloc) {
++            GGML_ASSERT(ggml_backend_buffer_get_base(buf.get())==nullptr);
++            ret[buft]+=ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(),buft);
++        } else {
++            ret[buft]+=ggml_backend_buffer_get_size(buf.get());
++        }
+     }
+     return ret;
+ }
+diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
+index 045489df7..1580ece74 100644
+--- a/src/llama-mmap.cpp
++++ b/src/llama-mmap.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-mmap.h"
++#include "ggml-ssd-policy.h"
+ 
+ #include "llama-impl.h"
+ 
+@@ -221,6 +222,12 @@ struct llama_file::impl {
+         if (fp == NULL) {
+             throw std::runtime_error(format("failed to open %s: %s", fname.c_str(), strerror(errno)));
+         }
++#if defined(__APPLE__)
++        if(ggml_ssd_enabled() && (fcntl(fileno(fp),F_NOCACHE,1)<0 || fcntl(fileno(fp),F_RDAHEAD,0)<0)) {
++            fclose(fp); fp=nullptr;
++            throw std::runtime_error("SSD model descriptor cache bypass unavailable");
++        }
++#endif
+         seek(0, SEEK_END);
+         size = tell();
+         seek(0, SEEK_SET);
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 6cc0b2028..c0f4cbf0c 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-model-loader.h"
++#include "ggml-ssd-policy.h"
+ 
+ #include "ggml-alloc.h"
+ #include "ggml.h"
+@@ -577,6 +578,7 @@ llama_model_loader::llama_model_loader(
+         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
+ 
+         files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
++        file_paths.emplace_back(fname);
+         contexts.emplace_back(ctx);
+ 
+         // Save tensors data offset of the main file.
+@@ -645,6 +647,7 @@ llama_model_loader::llama_model_loader(
+                 }
+ 
+                 files.emplace_back(new llama_file(fname_split, "rb", use_direct_io));
++                file_paths.emplace_back(fname_split);
+                 contexts.emplace_back(ctx);
+ 
+                 // Save tensors data offset info of the shard.
+@@ -696,6 +699,7 @@ llama_model_loader::llama_model_loader(
+         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
+ 
+         files.emplace_back(new llama_file(file));
++        file_paths.emplace_back();
+         contexts.emplace_back(ctx);
+ 
+         // Save tensors data offset info of the main file.
+@@ -924,7 +928,7 @@ const struct ggml_tensor * llama_model_loader::check_tensor_dims(
+ }
+ 
+ // checks if the weight tensor can be used with the specified buffer type and device
+-static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w, ggml_op op, ggml_backend_buffer_type_t buft, ggml_backend_dev_t dev) {
++bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w, ggml_op op, ggml_backend_buffer_type_t buft, ggml_backend_dev_t dev) {
+     GGML_ASSERT(w != nullptr);
+ 
+     if (op == GGML_OP_NONE) {
+@@ -1064,7 +1068,7 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
+ }
+ 
+ // find the first buffer type in the list that can use the tensor
+-static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list) {
++ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list) {
+     GGML_ASSERT(!buft_list->empty());
+     for (const auto & cur : *buft_list) {
+         ggml_backend_dev_t cur_dev = cur.first;
+@@ -1175,9 +1179,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+         }
+ 
+         // skip unused tensors
+-        if (info.op == GGML_OP_NONE || (flags & TENSOR_SKIP)) {
++        if (info.op == GGML_OP_NONE || (flags & (TENSOR_SKIP | TENSOR_STREAMED))) {
+             const size_t nbytes = ggml_nbytes(t_meta);
+-            LLAMA_LOG_WARN("model has unused tensor %s (size = %zu bytes) -- ignoring\n", tn.str().c_str(), nbytes);
++            if (flags & TENSOR_STREAMED) {
++                LLAMA_LOG_DEBUG("tensor %s is SSD-streamed (size = %zu bytes)\n", tn.str().c_str(), nbytes);
++            } else {
++                LLAMA_LOG_WARN("model has unused tensor %s (size = %zu bytes) -- ignoring\n", tn.str().c_str(), nbytes);
++            }
+ 
+             size_data -= nbytes;
+             n_created++;
+@@ -1523,7 +1531,7 @@ bool llama_model_loader::load_all_data(
+     std::vector<void *> host_ptrs;
+     size_t buffer_idx = 0; // buffer to use for async loads
+     ggml_backend_t upload_backend = [&](const char * func) -> ggml_backend_t {
+-        if (use_mmap || check_tensors) {
++        if (ggml_ssd_enabled() || use_mmap || check_tensors) {
+             return nullptr;
+         }
+         // When not using mmaped io use async uploads from pinned memory to GPU memory.
+@@ -1735,6 +1743,31 @@ bool llama_model_loader::load_all_data(
+                     }
+                 } else {
+                     // scoped to one tensor so only one staging buffer is alive at a time
++                    if(ggml_ssd_enabled()) {
++                        if(strcmp(ggml_backend_buffer_name(cur->buffer),"CPU_REPACK")==0) {
++                            // Repacking requires a whole tensor. The model defers expert cache allocation
++                            // until these guarded temporary buffers have been released.
++                            ggml_ssd_bytes staging_budget(n_size,GGML_SSD_STAGING);
++                            std::vector<no_init<uint8_t>> read_buf(n_size);
++                            file->seek(weight->offs,SEEK_SET);file->read_raw(read_buf.data(),n_size);
++                            if(ggml_ssd_stopped()) return false;
++                            ggml_backend_tensor_set(cur,read_buf.data(),0,n_size);
++                            size_done+=n_size;continue;
++                        }
++                        constexpr size_t CHUNK=1024*1024;
++                        ggml_ssd_bytes staging_budget(CHUNK,GGML_SSD_STAGING);
++                        std::vector<no_init<uint8_t>> chunk(CHUNK);
++                        file->seek(weight->offs,SEEK_SET);
++                        for(size_t pos=0;pos<n_size;) {
++                            if(ggml_ssd_stopped()) return false;
++                            const size_t size=std::min(CHUNK,n_size-pos);
++                            file->read_raw(chunk.data(),size);
++                            ggml_backend_tensor_set(cur,chunk.data(),pos,size);
++                            pos+=size;
++                        }
++                        size_done+=n_size;
++                        continue;
++                    }
+                     std::vector<no_init<uint8_t>> read_buf(n_size);
+                     file->seek(weight->offs, SEEK_SET);
+                     file->read_raw(read_buf.data(), n_size);
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index 9e51d0ce7..e94a7cdcc 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -29,6 +29,12 @@ enum llama_fver {
+ 
+ const char * llama_file_version_name(llama_fver version);
+ 
++// check if the buffer type of the given device supports op with the tensor as its weight
++bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w, ggml_op op, ggml_backend_buffer_type_t buft, ggml_backend_dev_t dev);
++
++// find the first buffer type in the list that can use the tensor
++ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list);
++
+ struct llama_model_loader {
+     // Holds information on a model weight
+     struct llama_tensor_weight {
+@@ -70,6 +76,7 @@ struct llama_model_loader {
+     static const int TENSOR_SKIP_IF_VIRTUAL = 1 << 3;
+     static const int TENSOR_ALLOW_RESHAPE   = 1 << 4;
+     static const int TENSOR_READ_LAZY       = 1 << 5; // read rows on demand instead of loading whole tensor; requires mmap for now
++    static const int TENSOR_STREAMED        = 1 << 6;
+ 
+     int n_kv      = 0;
+     int n_tensors = 0;
+@@ -118,6 +125,7 @@ struct llama_model_loader {
+     } lazy;
+ 
+     llama_files files;
++    std::vector<std::string> file_paths; // same order as files; empty string for FILE*-based loading
+     llama_ftype ftype;
+     llama_fver  fver;
+ 
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 97e0cee70..d54a0d5e9 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1,4 +1,6 @@
+ #include "llama-model.h"
++#include "ggml-ssd-policy.h"
++#include <set>
+ 
+ #include "llama-arch.h"
+ #include "llama-ext.h"
+@@ -7,6 +9,7 @@
+ #include "llama-mmap.h"
+ #include "llama-cparams.h"
+ #include "llama-model-loader.h"
++#include "llama-moe-stream.h"
+ 
+ #include "llama-kv-cache.h"
+ #include "llama-kv-cache-iswa.h"
+@@ -1224,6 +1227,8 @@ struct llama_model::impl {
+     bool has_tensor_overrides;
+ 
+     std::vector<float> tensor_split_owned;
++    // MoE expert SSD streaming state, null when not enabled
++    std::unique_ptr<llama_moe_stream> moe_stream;
+ };
+ 
+ bool llama_prec_policy::apply(ggml_tensor * res) const {
+@@ -1499,7 +1504,68 @@ void llama_model_base::load_vocab(llama_model_loader & ml) {
+     vocab.load(ml, kv);
+ }
+ 
++static bool llama_moe_stream_is_exps(llm_tensor tensor) {
++    switch (tensor) {
++        case LLM_TENSOR_FFN_GATE_EXPS:
++        case LLM_TENSOR_FFN_UP_EXPS:
++        case LLM_TENSOR_FFN_DOWN_EXPS:
++        case LLM_TENSOR_FFN_GATE_UP_EXPS:
++            return true;
++        default:
++            return false;
++    }
++}
++
++// like select_weight_buft, but only consider each device's default buffer type: extra buffer
++//   types (e.g. CPU weight repacking) may not support the partial writes that slot-wise expert
++//   cache updates require
++static ggml_backend_buffer_type_t llama_moe_stream_select_buft(const llama_hparams & hparams, ggml_tensor * meta, const buft_list_t * buft_list) {
++    for (const auto & [dev, buft] : *buft_list) {
++        if (buft != ggml_backend_dev_buffer_type(dev)) {
++            continue;
++        }
++        if (weight_buft_supported(hparams, meta, GGML_OP_MUL_MAT_ID, buft, dev)) {
++            return buft;
++        }
++    }
++    return nullptr;
++}
++
++static bool llama_moe_stream_is_exps_name(const std::string & name) {
++    for (const char * suffix : { ".ffn_gate_exps.weight", ".ffn_up_exps.weight", ".ffn_down_exps.weight", ".ffn_gate_up_exps.weight" }) {
++        const size_t len = strlen(suffix);
++        if (name.size() >= len && name.compare(name.size() - len, len, suffix) == 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// resolve the per-layer expert cache slot count; returns 0 when streaming should not be enabled
++// (not a MoE model, or the cache would hold every expert anyway)
++static uint32_t llama_moe_stream_resolve_slots(const llama_model_params & params, const llama_hparams & hparams, const llama_model_loader & ml) {
++    if(!hparams.n_expert || !hparams.n_expert_used_max()) throw std::runtime_error("SSD requires routed MoE experts");
++    uint64_t per_slot = 0;
++    std::set<int32_t> groups;
++    for (const auto & item : ml.weights_map) {
++        const auto & name=item.first; const auto & w=item.second;
++        if (!llama_moe_stream_is_exps_name(name)) continue;
++        if(w.tensor->ne[2]!=hparams.n_expert || w.tensor->ne[3]!=1 || !ggml_is_contiguous(w.tensor))
++            throw std::runtime_error("unsupported routed tensor dimensions; SSD requires every routed group");
++        const uint64_t n=ggml_nbytes(w.tensor)/hparams.n_expert;
++        if(n>UINT64_MAX-per_slot) throw std::runtime_error("expert cache byte overflow");
++        per_slot+=n;
++        int il=-1; if(sscanf(name.c_str(),"blk.%d.",&il)!=1 || il<0) throw std::runtime_error("unsupported routed tensor name");
++        groups.insert(il);
++    }
++    const uint32_t slots=ggml_ssd_slots(hparams.n_expert,hparams.n_expert_used_max(),per_slot,params.moe_stream_budget,params.moe_stream_slots);
++    ggml_ssd_groups(groups.size(),0,slots);
++    return slots;
++}
++
+ bool llama_model_base::load_tensors(llama_model_loader & ml) {
++    ggml_ssd_scope allocation_scope(GGML_SSD_DENSE);
++    if (ggml_ssd_enabled()) ggml_ssd_stage("loading");
+     const auto & split_mode   = params.split_mode;
+     const bool use_mlock      = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
+     const auto & tensor_split = params.tensor_split;
+@@ -1615,6 +1681,20 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+     // assign the output layer
+     pimpl->dev_output = get_layer_buft_list(n_layer_all);
+ 
++    if (params.moe_stream) {
++        if(arch!=LLM_ARCH_GEMMA4 && arch!=LLM_ARCH_QWEN3NEXT)
++            throw std::runtime_error("SSD worker currently supports Gemma4 and Qwen3Next routed experts only");
++        const uint32_t n_slots = llama_moe_stream_resolve_slots(params, hparams, ml);
++        if (n_slots > 0) {
++            if (pimpl->has_tensor_overrides) {
++                LLAMA_LOG_WARN("%s: tensor buffer overrides (-ot/--cpu-moe) do not apply to SSD-streamed expert tensors\n", __func__);
++            }
++            pimpl->moe_stream = std::make_unique<llama_moe_stream>(n_layer_all, n_slots, params.moe_stream_io_threads, params.moe_stream_direct);
++            LLAMA_LOG_INFO("%s: MoE expert SSD streaming enabled, %u of %u experts cached per layer, %d I/O threads\n",
++                    __func__, n_slots, hparams.n_expert, pimpl->moe_stream->n_io_threads);
++        }
++    }
++
+     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;
+ 
+     // create tensors for the weights
+@@ -1814,6 +1894,20 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+     ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+     pimpl->mappings.reserve(ml.mappings.size());
+ 
++    if(pimpl->moe_stream) {
++        for (const auto & item : ml.weights_map) {
++            if (llama_moe_stream_is_exps_name(item.first) && !pimpl->moe_stream->original_names.count(item.first))
++                throw std::runtime_error("SSD routed group was not fully streamed; refusing fallback");
++        }
++        uint32_t streamed=0;
++        for(const auto & sl:pimpl->moe_stream->layers) {
++            if(!sl) continue;
++            if(sl->weights.size()!=2 && sl->weights.size()!=3) throw std::runtime_error("incomplete SSD routed group");
++            streamed++;
++        }
++        ggml_ssd_groups(streamed,streamed,pimpl->moe_stream->n_slots);
++    }
++
+     // create the backend buffers
+     std::vector<std::pair<ggml_context *, llama_buf_map>> ctx_buf_maps;
+     ctx_buf_maps.reserve(ml.ctx_map.size());
+@@ -1910,6 +2004,23 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         ctx_buf_maps.emplace_back(ctx, buf_map);
+     }
+ 
++    if (ggml_ssd_enabled()) {
++        uint32_t repack_count=0;
++        for(const auto & named:tensors_by_name)
++            if(named.second->buffer && strcmp(ggml_backend_buffer_name(named.second->buffer),"CPU_REPACK")==0) repack_count++;
++        ggml_ssd_cpu_kernel(params.use_extra_bufts,repack_count);
++    }
++
++    if (pimpl->moe_stream) {
++        if (pimpl->moe_stream->ctxs.empty()) {
++            throw std::runtime_error("SSD requires streamable routed expert tensors; refusing full-weight fallback");
++        } else {
++            // Metadata-only planning needs dummy buffers. Real cache allocation follows dense
++            // loading so a whole-tensor CPU_REPACK upload never overlaps the expert cache.
++            if(ml.no_alloc) pimpl->moe_stream->alloc_bufs(true);
++        }
++    }
++
+     if (llama_supports_gpu_offload()) {
+         const int n_gpu = std::min(n_gpu_layers, n_layer_all);
+ 
+@@ -1953,6 +2064,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
++    if(pimpl->moe_stream) {
++        pimpl->moe_stream->alloc_bufs(false);
++        pimpl->moe_stream->open_files(ml.file_paths);
++    }
++
+     if (use_mmap_buffer) {
+         for (auto & mapping : ml.mappings) {
+             pimpl->mappings.emplace_back(std::move(mapping));
+@@ -1968,6 +2084,42 @@ ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM
+         // blocks that are not model layers (e.g. the blocks of a head) go with the output
+         buft_list_layer = (size_t) tn.bid < pimpl->dev_layer.size() ? pimpl->dev_layer.at(tn.bid).buft_list : pimpl->dev_output.buft_list;
+     }
++    // route MoE routed-expert weights to the streaming expert cache instead of materializing them
++    if (pimpl->moe_stream && tn.bid >= 0 && buft_list_layer != nullptr &&
++        (flags & (TENSOR_DUPLICATED | TENSOR_SKIP | TENSOR_SKIP_IF_VIRTUAL)) == 0 &&
++        llama_moe_stream_is_exps(tn.tensor) && tn.suffix != nullptr && strcmp(tn.suffix, "weight") == 0) {
++        const std::string name = tn.str();
++        const auto * w = ml.get_weight(name.c_str());
++
++        // Pinned builders probe fused weights before trying separate gate/up.
++        // An absent optional probe represents no tensor and cannot be streamed.
++        // Present tensors and every required tensor still take strict checks.
++        if(w==nullptr && (flags&TENSOR_NOT_REQUIRED)) return nullptr;
++
++        bool dims_ok = w != nullptr && w->tensor->ne[2] == (int64_t) hparams.n_expert;
++        if (dims_ok) {
++            size_t dim = 0;
++            for (int64_t d : ne) {
++                dims_ok = dims_ok && d == w->tensor->ne[dim++];
++            }
++        }
++
++        if (!dims_ok) throw std::runtime_error("SSD routed tensor cannot be intercepted safely");
++        if (dims_ok) {
++            // register the skip so that the loader tensor accounting stays consistent; returns nullptr
++            ml.create_tensor(
++                hparams, &pimpl->cpu_buft_list, pimpl->dev_input.buft_list, pimpl->dev_output.buft_list, buft_list_layer,
++                tn, ne, flags | TENSOR_STREAMED);
++
++            ggml_backend_buffer_type_t buft = llama_moe_stream_select_buft(hparams, w->tensor, buft_list_layer);
++            if (buft == nullptr) {
++                throw std::runtime_error(format("failed to find a buffer type for streamed tensor %s", name.c_str()));
++            }
++
++            return pimpl->moe_stream->create_cache_tensor(tn.bid, buft, w->tensor, w->idx, w->offs);
++        }
++    }
++
+     return ml.create_tensor(
+         hparams, &pimpl->cpu_buft_list, pimpl->dev_input.buft_list, pimpl->dev_output.buft_list, buft_list_layer,
+         tn, ne, flags);
+@@ -2320,6 +2472,16 @@ bool llama_model::has_tensor_overrides() const {
+     return pimpl->has_tensor_overrides;
+ }
+ 
++llama_moe_stream * llama_model::moe_stream() const {
++    return pimpl->moe_stream.get();
++}
++
++void llama_moe_stream_print_stats(const llama_model * model) {
++    if (model && model->moe_stream()) {
++        model->moe_stream()->print_stats();
++    }
++}
++
+ const ggml_tensor * llama_model::get_tensor(const char * name) const {
+     auto it = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
+             [name](const std::pair<std::string, ggml_tensor *> & it) {
+@@ -2935,12 +3097,17 @@ llama_model_params llama_model_default_params() {
+         /*.progress_callback           =*/ nullptr,
+         /*.progress_callback_user_data =*/ nullptr,
+         /*.kv_overrides                =*/ nullptr,
++        /*.moe_stream_slots            =*/ 0,
++        /*.moe_stream_budget           =*/ 0,
++        /*.moe_stream_io_threads       =*/ 0,
++        /*.moe_stream_direct           =*/ false,
+         /*.vocab_only                  =*/ false,
+         /*.check_tensors               =*/ false,
+         /*.use_extra_bufts             =*/ true,
+         /*.no_host                     =*/ false,
+         /*.no_alloc                    =*/ false,
+         /*.load_mtp                    =*/ false,
++        /*.moe_stream                  =*/ false,
+     };
+ 
+     return result;
+@@ -3386,7 +3553,8 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
+     TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
+     TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL),
+     TENSOR_ALLOW_RESHAPE  (llama_model_loader::TENSOR_ALLOW_RESHAPE),
+-    TENSOR_READ_LAZY      (llama_model_loader::TENSOR_READ_LAZY) {}
++    TENSOR_READ_LAZY      (llama_model_loader::TENSOR_READ_LAZY),
++    TENSOR_STREAMED       (llama_model_loader::TENSOR_STREAMED) {}
+ 
+ ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+     GGML_ASSERT(ml != nullptr);
+diff --git a/src/llama-model.h b/src/llama-model.h
+index 2243377cc..ee1daf097 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -18,6 +18,7 @@ struct llama_cparams;
+ struct llama_ubatch;
+ struct llama_model_loader;
+ struct llama_model;
++struct llama_moe_stream;
+ 
+ // available models
+ enum llm_type {
+@@ -781,6 +782,10 @@ struct llama_model {
+ 
+     bool has_tensor_overrides() const;
+ 
++    // MoE expert SSD streaming state, null when not enabled
++    // the pointee is mutable (residency changes during decode), only the pointer is owned here
++    llama_moe_stream * moe_stream() const;
++
+     const struct ggml_tensor * get_tensor(const char * name) const;
+ 
+     float get_rope_freq_base (const llama_cparams & cparams, int il) const;
+@@ -827,6 +832,7 @@ struct llama_model_base : public llama_model {
+     const int TENSOR_SKIP_IF_VIRTUAL;
+     const int TENSOR_ALLOW_RESHAPE;
+     const int TENSOR_READ_LAZY;
++    const int TENSOR_STREAMED;
+ 
+     explicit llama_model_base(const llama_model_params & params);
+     virtual ~llama_model_base() = default;
+diff --git a/src/llama-moe-stream.cpp b/src/llama-moe-stream.cpp
+new file mode 100644
+index 000000000..55e112165
+--- /dev/null
++++ b/src/llama-moe-stream.cpp
+@@ -0,0 +1,879 @@
++#include "llama-moe-stream.h"
++
++#include "llama-impl.h"
++
++#include "ggml-backend.h"
++#include "ggml-ssd-policy.h"
++#include <chrono>
++#include <sys/stat.h>
++#if defined(__APPLE__)
++#include <sys/mount.h>
++#endif
++
++#include <algorithm>
++#include <cinttypes>
++#include <cstdlib>
++#include <cstring>
++#include <stdexcept>
++
++#ifdef _WIN32
++#include <malloc.h>
++#else
++#include <fcntl.h>
++#include <unistd.h>
++#endif
++
++static const uint32_t MOE_STREAM_IO_THREADS_DEFAULT = 2;
++static const uint32_t MOE_STREAM_IO_THREADS_MAX     = 2;
++static const int64_t  MOE_STREAM_HOT_DECAY_TOKENS   = 64;
++
++// O_DIRECT alignment: 4096 is a multiple of any device logical block size (512/4096), so it is
++// universally valid, and reading a few extra KB of head/tail padding per slab is negligible
++static const size_t MOE_STREAM_DIRECT_ALIGN = 4096;
++
++// saturating increment - route-hotness counters accumulate over a whole run and must not wrap
++static uint32_t sat_inc(uint32_t & c) {
++    if (c < UINT32_MAX - 1) {
++        c++;
++    }
++    return c;
++}
++
++// page-aligned allocation, required both for O_DIRECT reads and for Metal private-buffer uploads
++static void * moe_aligned_alloc(size_t n) {
++#ifdef _WIN32
++    return _aligned_malloc(n, MOE_STREAM_DIRECT_ALIGN);
++#else
++    void * p = nullptr;
++    if (posix_memalign(&p, MOE_STREAM_DIRECT_ALIGN, n) != 0) {
++        p = nullptr;
++    }
++    return p;
++#endif
++}
++
++static void moe_aligned_free(void * p) {
++#ifdef _WIN32
++    _aligned_free(p);
++#else
++    free(p);
++#endif
++}
++
++// read len bytes at file offset offs into staging (thread-safe positional read); staging must have
++// room for len (+ 2*MOE_STREAM_DIRECT_ALIGN when direct). returns a pointer to the len bytes
++// within staging, or nullptr on failure
++static const uint8_t * llama_moe_stream_pread(llama_file & file, uint8_t * staging, size_t len, size_t offs, bool direct) {
++#ifdef _WIN32
++    GGML_UNUSED(direct);
++    // no positional read primitive; serialize the seek+read pairs
++    static std::mutex io_mtx;
++    std::lock_guard<std::mutex> lock(io_mtx);
++    try {
++        file.seek(offs, SEEK_SET);
++        file.read_raw(staging, len);
++        return staging;
++    } catch (...) {
++        return nullptr;
++    }
++#else
++    const int fd = file.file_id();
++
++    if (direct) {
++        // O_DIRECT requires the offset, length, and buffer all block-aligned
++        const size_t a     = MOE_STREAM_DIRECT_ALIGN;
++        const size_t aoffs = offs & ~(a - 1);
++        const size_t head  = offs - aoffs;
++        const size_t total = ((head + len + a - 1)/a)*a;
++        ssize_t r;
++        do {
++            r = pread(fd, staging, total, aoffs);
++        } while (r < 0 && errno == EINTR);
++        if (r < 0 || (size_t) r < head + len) {
++            return nullptr;
++        }
++        return staging + head;
++    }
++
++    if(ggml_ssd_stopped()) return nullptr;
++    uint8_t * p    = staging;
++    size_t    left = len;
++    while (left > 0) {
++        if(ggml_ssd_stopped()) return nullptr;
++        const ssize_t r = pread(fd,p,std::min<size_t>(left,1024*1024),offs);
++        if (r < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            return nullptr;
++        }
++        if (r == 0) {
++            return nullptr; // unexpected EOF
++        }
++        ggml_ssd_progress(3,size_t(r));
++        p    += r;
++        offs += (size_t) r;
++        left -= (size_t) r;
++    }
++    return staging;
++#endif
++}
++
++// true iff all of the given exps tensors are this layer's cache tensors - guards against a second,
++// non-streamed expert group on the same layer index (e.g. grovemoe chexps)
++bool llama_moe_stream_layer::matches(const ggml_tensor * gate, const ggml_tensor * up,
++                                     const ggml_tensor * down, const ggml_tensor * gate_up) const {
++    auto is_cache = [this](const ggml_tensor * t) {
++        for (const auto & w : weights) {
++            if (w.cache == t) {
++                return true;
++            }
++        }
++        return false;
++    };
++
++    size_t n = 0;
++    for (const ggml_tensor * t : { gate, up, down, gate_up }) {
++        if (t == nullptr) {
++            continue;
++        }
++        if (!is_cache(t)) {
++            return false;
++        }
++        n++;
++    }
++
++    return n > 0 && n == weights.size();
++}
++
++// sizes the per-layer table and clamps the I/O thread count; workers are spawned lazily on first use
++llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n_io_threads, bool direct) : n_slots(n_slots) {
++    if(n_layer==0 || n_layer>256 || n_slots==0 || n_slots>4096 || n_io_threads>2)
++        throw std::runtime_error("unsupported SSD stream dimensions or I/O worker count");
++    layers.resize(n_layer);
++
++    this->n_io_threads = n_io_threads <= 0 ? MOE_STREAM_IO_THREADS_DEFAULT : n_io_threads;
++    this->n_io_threads = std::min<int32_t>(this->n_io_threads, MOE_STREAM_IO_THREADS_MAX);
++
++    debug         = std::getenv("LLAMA_MOE_STREAM_DEBUG") != nullptr;
++    use_direct_io = direct;
++}
++
++// stop and join the I/O workers before the cache buffers and files they use are destroyed
++llama_moe_stream::~llama_moe_stream() {
++    if(ggml_ssd_enabled()) ggml_ssd_shutdown();
++    {
++        std::lock_guard<std::mutex> lock(mtx);
++        shutting_down = true;
++        q_demand.clear();
++    }
++    cv_work.notify_all();
++    cv_done.notify_all();
++    for (auto & w : workers) {
++        w.join();
++    }
++}
++
++ggml_tensor * llama_moe_stream::create_cache_tensor(
++        int32_t il, ggml_backend_buffer_type_t buft, const ggml_tensor * meta,
++        uint16_t file_idx, size_t offs) {
++    if(il<0 || size_t(il)>=layers.size() || !meta || !ggml_is_contiguous(meta) ||
++       meta->ne[0]<=0 || meta->ne[1]<=0 || meta->ne[2]<=0 || meta->ne[2]>4096 || meta->ne[3]!=1 ||
++       !n_slots || n_slots>=uint64_t(meta->ne[2])) throw std::runtime_error("invalid SSD tensor dimensions");
++    if(!original_names.insert(meta->name).second) throw std::runtime_error("duplicate SSD routed tensor");
++    GGML_ASSERT(ggml_is_contiguous(meta));
++    GGML_ASSERT(meta->ne[2] > 0 && meta->ne[3] == 1);
++
++    const uint32_t n_expert  = meta->ne[2];
++    const size_t   nb_expert = ggml_nbytes(meta) / n_expert;
++    GGML_ASSERT(nb_expert * n_expert == ggml_nbytes(meta));
++    GGML_ASSERT(n_slots > 0 && n_slots < n_expert);
++
++    ggml_context * ctx = nullptr;
++    for (auto & [cur_buft, cur_ctx] : ctxs) {
++        if (cur_buft == buft) {
++            ctx = cur_ctx.get();
++            break;
++        }
++    }
++    if (ctx == nullptr) {
++        ggml_init_params params = {
++            /*.mem_size   =*/ ggml_tensor_overhead()*(layers.size()*4 + 1),
++            /*.mem_buffer =*/ NULL,
++            /*.no_alloc   =*/ true,
++        };
++        ctx = ggml_init(params);
++        if (ctx == nullptr) {
++            throw std::runtime_error("failed to create ggml context for MoE expert streaming");
++        }
++        ctxs.emplace_back(buft, ctx);
++    }
++
++    ggml_tensor * cache = ggml_new_tensor_3d(ctx, meta->type, meta->ne[0], meta->ne[1], n_slots);
++    ggml_format_name(cache, "%s.stream_cache", meta->name);
++    GGML_ASSERT(ggml_nbytes(cache) == nb_expert * n_slots);
++
++    auto & sl = layers[il];
++    if (!sl) {
++        sl = std::make_unique<llama_moe_stream_layer>();
++        sl->mgr      = this;
++        sl->il       = il;
++        sl->n_expert = n_expert;
++        sl->n_slots  = n_slots;
++        sl->slot_expert  .resize(n_slots, -1);
++        sl->slot_state   .resize(n_slots, LLAMA_MOE_STREAM_SLOT_EMPTY);
++        sl->slot_claimed .resize(n_slots, 0);
++        sl->slot_gen     .resize(n_slots, 0);
++        sl->slot_last_use.resize(n_slots, 0);
++        sl->route_hotness.resize(n_expert, 0);
++        sl->seen         .resize(n_expert, 0);
++        sl->keep         .resize(n_slots, 0);
++    }
++    GGML_ASSERT(sl->n_expert == n_expert);
++
++    sl->weights.push_back({ cache, file_idx, offs, nb_expert });
++
++    max_nb_expert = std::max(max_nb_expert, nb_expert);
++
++    return cache;
++}
++
++void llama_moe_stream::alloc_bufs(bool no_alloc) {
++    ggml_ssd_scope allocation_scope(GGML_SSD_CACHE);
++    for (auto & [buft, ctx_ptr] : ctxs) {
++        ggml_context * ctx = ctx_ptr.get();
++        if (ggml_get_first_tensor(ctx) == nullptr) {
++            continue;
++        }
++
++        ggml_backend_buffer_t buf;
++        if (no_alloc) {
++            buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0); // dummy buffer
++            for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
++                t->buffer = buf;
++            }
++        } else {
++            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
++        }
++        if (buf == nullptr) {
++            throw std::runtime_error(format("unable to allocate %s buffer for MoE expert streaming", ggml_backend_buft_name(buft)));
++        }
++        ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++        bufs.emplace_back(buf);
++
++        LLAMA_LOG_INFO("%s: %12s expert cache size = %8.2f MiB (%u slots per layer)\n",
++                __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0, n_slots);
++    }
++}
++
++void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
++    for (const auto & path : paths) {
++        if (path.empty()) {
++            throw std::runtime_error("MoE expert streaming requires a file-based model (not a stream/file descriptor)");
++        }
++    }
++
++    files.clear(); file_revisions.clear();
++    use_direct_io=false; // Darwin uses audited per-descriptor F_NOCACHE, not Linux O_DIRECT.
++    for (const auto & path : paths) {
++        files.emplace_back(new llama_file(path.c_str(), "rb", false));
++#if defined(__APPLE__)
++        const int fd=files.back()->file_id();
++        struct stat st{}; struct statfs fs{};
++        if(fd<0 || fstat(fd,&st) || !S_ISREG(st.st_mode) || fstatfs(fd,&fs) ||
++           !(fs.f_flags&MNT_LOCAL) || strcmp(fs.f_fstypename,"apfs")!=0 || fcntl(fd,F_NOCACHE,1)<0)
++            throw std::runtime_error("SSD streaming requires validated Darwin F_NOCACHE local APFS files");
++        file_revisions.push_back({uint64_t(st.st_dev),uint64_t(st.st_ino),uint64_t(st.st_size),uint64_t(st.st_mtimespec.tv_sec),uint64_t(st.st_mtimespec.tv_nsec)});
++#else
++        throw std::runtime_error("SSD I/O is not validated on this platform");
++#endif
++    }
++    for(const auto & sl:layers) if(sl) for(const auto & w:sl->weights) {
++        if(w.file_idx>=files.size()) throw std::runtime_error("invalid SSD shard index");
++        struct stat st{};
++        if(fstat(files[w.file_idx]->file_id(),&st) || st.st_size<0 ||
++           w.offs>uint64_t(st.st_size) || w.nb_expert>SIZE_MAX/sl->n_expert ||
++           w.nb_expert*sl->n_expert>uint64_t(st.st_size)-w.offs)
++            throw std::runtime_error("SSD expert tensor range exceeds shard");
++    }
++    ggml_ssd_io_validated();
++
++    // one token drives ~one remap per streamed layer, so decaying every 64 tokens is
++    //   64 * n_streamed_layers remap calls (computed once here, off the hot path)
++    int64_t n_streamed = 0;
++    for (const auto & sl : layers) {
++        n_streamed += sl != nullptr;
++    }
++    hot_decay_interval = MOE_STREAM_HOT_DECAY_TOKENS * n_streamed;
++}
++
++// spawn the I/O thread pool on first use (from the remap callback, under mtx)
++void llama_moe_stream::start_workers_locked() {
++    if (workers_started) {
++        return;
++    }
++    workers_started = true;
++    workers.reserve(n_io_threads);
++    for (int32_t i = 0; i < n_io_threads; i++) {
++        workers.emplace_back([this]() { worker_loop(); });
++    }
++}
++
++// I/O worker: pops a reserved load, reads its expert slab(s) from the GGUF file into the cache
++// slot, and marks the slot RESIDENT (or flags load_failed); stale/duplicate items are skipped
++void llama_moe_stream::worker_loop() {
++    // page-aligned staging (Metal private buffers require page-aligned source + page-multiple
++    // length; O_DIRECT needs the extra head/tail slack for its aligned reads)
++    ggml_ssd_bytes staging_budget(max_nb_expert+2*MOE_STREAM_DIRECT_ALIGN,GGML_SSD_STAGING);
++    uint8_t * staging = (uint8_t *) moe_aligned_alloc(staging_budget.size);
++    GGML_ASSERT(staging != nullptr);
++
++    std::unique_lock<std::mutex> lk(mtx);
++    while (true) {
++        cv_work.wait_for(lk,std::chrono::milliseconds(50),[&]{ return shutting_down || ggml_ssd_stopped() || !q_demand.empty(); });
++        if (shutting_down || ggml_ssd_stopped()) {
++            break;
++        }
++
++        if(q_demand.empty()) continue;
++        llama_moe_stream_work w = q_demand.front();
++        q_demand.pop_front();
++
++        auto & sl = *w.sl;
++        if (w.gen != sl.slot_gen[w.slot] ||
++            sl.slot_state[w.slot] != LLAMA_MOE_STREAM_SLOT_LOADING ||
++            sl.slot_expert[w.slot] != w.expert ||
++            sl.slot_claimed[w.slot]) {
++            continue; // stale or duplicate item
++        }
++        sl.slot_claimed[w.slot] = 1;
++
++        lk.unlock();
++
++        auto unchanged = [&](uint16_t index) {
++#if defined(__APPLE__)
++            struct stat st{};
++            if(index>=files.size() || fstat(files[index]->file_id(),&st)) return false;
++            const std::array<uint64_t,5> now={uint64_t(st.st_dev),uint64_t(st.st_ino),uint64_t(st.st_size),uint64_t(st.st_mtimespec.tv_sec),uint64_t(st.st_mtimespec.tv_nsec)};
++            return now==file_revisions[index];
++#else
++            return false;
++#endif
++        };
++        bool ok = !ggml_ssd_stopped();
++        for (const auto & wt : sl.weights) {
++            if(!ok || ggml_ssd_stopped() || !unchanged(wt.file_idx)) { ok=false; break; }
++            const uint8_t * data = llama_moe_stream_pread(*files[wt.file_idx], staging, wt.nb_expert, wt.offs + (size_t) w.expert*wt.nb_expert, use_direct_io);
++            if (data == nullptr || !unchanged(wt.file_idx)) {
++                ok = false;
++                break;
++            }
++            ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert, wt.nb_expert);
++            if(ggml_ssd_stopped()) { ok=false; break; }
++            ggml_ssd_progress(0,1);
++        }
++
++        lk.lock();
++
++        sl.slot_claimed[w.slot] = 0;
++        if (!ok || ggml_ssd_stopped()) {
++            load_failed = true;
++        } else {
++            sl.slot_state[w.slot] = LLAMA_MOE_STREAM_SLOT_RESIDENT;
++        }
++        cv_done.notify_all();
++    }
++    lk.unlock();
++
++    moe_aligned_free(staging);
++}
++
++// least valuable evictable slot: empty first, then coldest resident (min route hotness, oldest use
++// as tiebreak); LOADING and keep slots are never candidates. returns -1 when no candidate exists
++int32_t llama_moe_stream::pick_victim_locked(llama_moe_stream_layer & sl, const uint8_t * keep) const {
++    int32_t v = -1;
++
++    for (uint32_t s = 0; s < sl.n_slots; s++) {
++        if ((keep && keep[s]) || sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING) {
++            continue;
++        }
++        if (sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_EMPTY) {
++            return s;
++        }
++        if (v < 0) {
++            v = s;
++            continue;
++        }
++        const uint32_t hs = sl.route_hotness[sl.slot_expert[s]];
++        const uint32_t hv = sl.route_hotness[sl.slot_expert[v]];
++        if (hs < hv || (hs == hv && sl.slot_last_use[s] < sl.slot_last_use[v])) {
++            v = s;
++        }
++    }
++
++    return v;
++}
++
++// bind expert -> slot and mark it LOADING: evict the slot's prior occupant, bump slot_gen (so any
++// in-flight load for the old occupant is recognized as stale), and update the expert_slot index
++void llama_moe_stream::enqueue_locked(const llama_moe_stream_work & work) {
++    const size_t bound=size_t(n_slots)*layers.size()*2;
++    if(ggml_ssd_stopped() || q_demand.size()>=bound) GGML_ABORT("SSD work queue cancelled or at bounded capacity");
++    q_demand.push_back(work);
++}
++
++void llama_moe_stream::reserve_slot_locked(llama_moe_stream_layer & sl, int32_t expert, int32_t slot) {
++    if (sl.slot_expert[slot] >= 0) {
++        if (debug) {
++            LLAMA_LOG_DEBUG("%s: layer %d: evict expert %d from slot %d\n", __func__, sl.il, sl.slot_expert[slot], slot);
++        }
++        sl.expert_slot.erase(sl.slot_expert[slot]);
++    }
++
++    ggml_ssd_progress(4,1);
++    sl.slot_expert[slot] = expert;
++    sl.slot_state[slot]  = LLAMA_MOE_STREAM_SLOT_LOADING;
++    sl.slot_gen[slot]++;
++    sl.slot_last_use[slot] = ++sl.use_counter;
++    sl.expert_slot[expert] = slot;
++    sl.seen[expert] = 1;
++}
++
++size_t llama_moe_stream::size_bufs() const {
++    size_t size = 0;
++    for (const auto & buf : bufs) {
++        size += ggml_backend_buffer_get_size(buf.get());
++    }
++    return size;
++}
++
++void llama_moe_stream::print_stats() const {
++    std::lock_guard<std::mutex> lock(mtx);
++
++    const int64_t n_touched = stats.n_hit + stats.n_miss;
++    LLAMA_LOG_INFO("%s: moe stream: remap calls = %" PRId64 ", expert hits = %" PRId64 ", misses = %" PRId64 " (%" PRId64 " cold), hit rate = %.2f%%\n",
++            __func__, stats.n_calls, stats.n_hit, stats.n_miss, stats.n_miss_cold,
++            n_touched > 0 ? 100.0*stats.n_hit/n_touched : 0.0);
++    LLAMA_LOG_INFO("%s: moe stream: load stall = %.2f ms total (%.3f ms per remap call)\n",
++            __func__, stats.t_stall_us/1000.0, stats.n_calls > 0 ? stats.t_stall_us/1000.0/stats.n_calls : 0.0);
++    if (stats.n_wave_calls > 0) {
++        LLAMA_LOG_INFO("%s: moe stream: waves = %" PRId64 " (%" PRId64 " non-empty), preloads issued = %" PRId64 " (ready on arrival = %" PRId64 "), wave stall = %.2f ms\n",
++                __func__, stats.n_wave_calls, stats.n_waves_run, stats.n_preload_issued, stats.n_preload_ready, stats.t_stall_wave_us/1000.0);
++    }
++}
++
++// custom-op callback (single-threaded on ith 0): given the router's expert ids, ensure every touched
++// expert is resident - reserving cache slots and demand-loading misses, stalling until they commit -
++// then rewrite each id to its cache slot. this only relabels ids, so the same experts are computed
++// in the same order; the result matches a non-streamed run (bit-exact when both paths use the same
++// kernels, as on CUDA; a CPU build that repacks the non-streamed weights can differ in the last bits).
++void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) {
++        return;
++    }
++
++    auto * sl  = (llama_moe_stream_layer *) userdata;
++    auto * mgr = sl->mgr;
++
++    GGML_ASSERT(a->type == GGML_TYPE_I32);
++    GGML_ASSERT(ggml_is_contiguous(a));
++    GGML_ASSERT(ggml_are_same_shape(a, dst));
++
++    const int64_t n = ggml_nelements(a);
++
++    const int32_t * ids = (const int32_t *) a->data;
++          int32_t * out = (int32_t *) dst->data;
++
++    std::unique_lock<std::mutex> lk(mgr->mtx);
++
++    if (mgr->load_failed || mgr->shutting_down || ggml_ssd_stopped()) {
++        GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
++    }
++
++    mgr->stats.n_calls++;
++    mgr->start_workers_locked();
++
++    // distinct experts touched by this ubatch, in first-use order
++    sl->touched.assign(sl->n_expert, 0);
++    sl->uniq.clear();
++    for (int64_t i = 0; i < n; i++) {
++        const int32_t e = ids[i];
++        GGML_ASSERT(e >= 0 && (uint32_t) e < sl->n_expert);
++        if (!sl->touched[e]) {
++            sl->touched[e] = 1;
++            sl->uniq.push_back(e);
++        }
++    }
++
++    if (sl->uniq.size() > sl->n_slots) {
++        GGML_ABORT("MoE expert streaming: layer %d needs %zu distinct experts but the cache has only %u slots; "
++                   "increase --moe-stream-cache or reduce the ubatch size (-ub)",
++                sl->il, sl->uniq.size(), sl->n_slots);
++    }
++
++    // route hotness for eviction; halved periodically so a formerly-hot expert ages out
++    for (const int32_t e : sl->uniq) {
++        sat_inc(sl->route_hotness[e]);
++    }
++    if (mgr->hot_decay_interval > 0 && mgr->stats.n_calls % mgr->hot_decay_interval == 0) {
++        for (auto & sl2 : mgr->layers) {
++            if (sl2) {
++                for (auto & h : sl2->route_hotness) {
++                    h >>= 1;
++                }
++            }
++        }
++    }
++
++    // classify the touched experts; reserve and enqueue demand loads in deterministic order
++    std::fill(sl->keep.begin(), sl->keep.end(), 0);
++    sl->demand_slots.clear();
++
++    bool waited = false;
++    for (const int32_t e : sl->uniq) {
++        const auto it = sl->expert_slot.find(e);
++        if (it != sl->expert_slot.end()) {
++            const int32_t s = it->second;
++            if (sl->slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING) {
++                mgr->enqueue_locked({ sl, e, s, sl->slot_gen[s] });
++                mgr->cv_work.notify_one();
++                waited = true;
++            }
++            mgr->stats.n_hit++; ggml_ssd_progress(1,1);
++            sl->keep[s] = 1;
++            sl->demand_slots.push_back(s);
++        } else {
++            int32_t v;
++            while ((v = mgr->pick_victim_locked(*sl, sl->keep.data())) < 0) {
++                // every allowed slot is loading; wait for a commit and retry
++                mgr->cv_done.wait_for(lk,std::chrono::milliseconds(50));
++                if (mgr->load_failed || mgr->shutting_down || ggml_ssd_stopped()) {
++                    GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
++                }
++            }
++            if (!sl->seen[e]) {
++                mgr->stats.n_miss_cold++;
++            }
++            mgr->reserve_slot_locked(*sl, e, v);
++            mgr->enqueue_locked({ sl, e, v, sl->slot_gen[v] });
++            mgr->cv_work.notify_one();
++            mgr->stats.n_miss++;
++            waited = true;
++            sl->keep[v] = 1;
++            sl->demand_slots.push_back(v);
++        }
++    }
++
++    if (waited) {
++        const int64_t t0 = ggml_time_us();
++        auto ready = [&]{
++            if (mgr->load_failed || mgr->shutting_down || ggml_ssd_stopped()) {
++                return true;
++            }
++            for (const int32_t s : sl->demand_slots) {
++                if (sl->slot_state[s] != LLAMA_MOE_STREAM_SLOT_RESIDENT) {
++                    return false;
++                }
++            }
++            return true;
++        };
++        while(!ready()) mgr->cv_done.wait_for(lk,std::chrono::milliseconds(50));
++        if (mgr->load_failed || mgr->shutting_down || ggml_ssd_stopped()) {
++            GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
++        }
++        mgr->stats.t_stall_us += ggml_time_us() - t0;
++    }
++
++    for (int64_t i = 0; i < n; i++) {
++        const int32_t s = sl->expert_slot.at(ids[i]);
++        sl->slot_last_use[s] = ++sl->use_counter;
++        out[i] = s;
++    }
++}
++
++// stable per-wave userdata; grows lazily and records the per-wave expert capacity (set at build)
++llama_moe_stream_wave * llama_moe_stream_layer::wave_userdata(int32_t wave, uint32_t capacity) {
++    GGML_ASSERT(capacity >= 1 && capacity <= n_slots);
++    plan_capacity = capacity;
++    while ((size_t) wave >= wave_ud.size()) {
++        auto ud = std::make_unique<llama_moe_stream_wave>();
++        ud->sl   = this;
++        ud->wave = (int32_t) wave_ud.size();
++        wave_ud.push_back(std::move(ud));
++    }
++    return wave_ud[wave].get();
++}
++
++// wave 0 of a ubatch: record the distinct touched experts (sl.uniq, first-use order) and split them
++// into consecutive groups of plan_capacity, one group per wave (sl.expert_wave[e] = e's wave)
++void llama_moe_stream::plan_waves_locked(llama_moe_stream_layer & sl, const int32_t * ids, int64_t n) {
++    stats.n_calls++;
++    start_workers_locked();
++
++    sl.touched.assign(sl.n_expert, 0);
++    sl.uniq.clear();
++    for (int64_t i = 0; i < n; i++) {
++        const int32_t e = ids[i];
++        GGML_ASSERT(e >= 0 && (uint32_t) e < sl.n_expert);
++        if (!sl.touched[e]) {
++            sl.touched[e] = 1;
++            sl.uniq.push_back(e);
++        }
++    }
++
++    GGML_ASSERT(sl.plan_capacity > 0);
++    sl.expert_wave.assign(sl.n_expert, 0xff);
++    for (size_t i = 0; i < sl.uniq.size(); i++) {
++        GGML_ASSERT(i/sl.plan_capacity < 0xff);
++        sl.expert_wave[sl.uniq[i]] = (uint8_t) (i/sl.plan_capacity);
++    }
++    sl.plan_n_waves   = (uint32_t) ((sl.uniq.size() + sl.plan_capacity - 1)/sl.plan_capacity);
++    sl.plan_next_wave = 0;
++}
++
++// make wave w's expert slice (uniq[w*cap .. +count)) resident, waiting for its loads, and best-effort
++// preload the next wave so its loads overlap this wave's compute. leaves sl.demand_slots = this wave's
++// slots and sl.plan_pool = the resident parking pool (>= n_ids slots) the emit draws masked pairs from
++void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llama_moe_stream_layer & sl, int32_t w, uint32_t n_ids) {
++    const size_t first = (size_t) w*sl.plan_capacity;
++    const size_t count = first < sl.uniq.size() ? std::min<size_t>(sl.plan_capacity, sl.uniq.size() - first) : 0;
++
++    std::fill(sl.keep.begin(), sl.keep.end(), 0);
++    sl.demand_slots.clear();
++
++    // a small final wave has fewer than n_ids own slots; borrow the rest from the previous wave's
++    //   pool so every token row has n_ids distinct resident parking slots for its masked pairs
++    std::vector<int32_t> borrowed;
++    if (count < n_ids) {
++        GGML_ASSERT(sl.plan_pool.size() >= n_ids - count);
++        for (size_t i = 0; i < n_ids - count; i++) {
++            borrowed.push_back(sl.plan_pool[i]);
++            sl.keep[sl.plan_pool[i]] = 1; // parking slots must survive this wave's loads
++        }
++    }
++
++    // protect the next wave's already-resident experts so this wave's victims do not evict them
++    const size_t nfirst = first + sl.plan_capacity;
++    const size_t ncount = nfirst < sl.uniq.size() ? std::min<size_t>(sl.plan_capacity, sl.uniq.size() - nfirst) : 0;
++    for (size_t i = nfirst; i < nfirst + ncount; i++) {
++        const auto it = sl.expert_slot.find(sl.uniq[i]);
++        if (it != sl.expert_slot.end()) {
++            sl.keep[it->second] = 1;
++        }
++    }
++
++    // reserve and demand-load this wave's experts (per-expert, same path as the decode remap)
++    bool waited = false;
++    if (count > 0) {
++        stats.n_waves_run++; ggml_ssd_progress(2,1);
++        for (size_t i = first; i < first + count; i++) {
++            const int32_t e  = sl.uniq[i];
++            const auto    it = sl.expert_slot.find(e);
++            if (it != sl.expert_slot.end()) {
++                // already in the cache (resident, or still loading from the previous wave's preload)
++                const int32_t s = it->second;
++                if (sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING) {
++                    enqueue_locked({ &sl, e, s, sl.slot_gen[s] }); // promote to demand, wait for it
++                    cv_work.notify_one();
++                    waited = true;
++                } else {
++                    stats.n_preload_ready++; // resident from the previous wave's preload
++                }
++                stats.n_hit++; ggml_ssd_progress(1,1);
++                sl.keep[s] = 1;
++                sl.demand_slots.push_back(s);
++            } else {
++                // miss: evict a non-kept slot and queue the load
++                int32_t v;
++                while ((v = pick_victim_locked(sl, sl.keep.data())) < 0) {
++                    cv_done.wait_for(lk,std::chrono::milliseconds(50));
++                    if (load_failed || shutting_down || ggml_ssd_stopped()) {
++                        GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
++                    }
++                }
++                if (!sl.seen[e]) {
++                    stats.n_miss_cold++;
++                }
++                reserve_slot_locked(sl, e, v);
++                enqueue_locked({ &sl, e, v, sl.slot_gen[v] });
++                cv_work.notify_one();
++                stats.n_miss++;
++                waited = true;
++                sl.keep[v] = 1;
++                sl.demand_slots.push_back(v);
++            }
++        }
++    }
++
++    // best-effort preload of the next wave so its loads overlap this wave's compute; never waits,
++    //   whatever cannot be reserved now simply becomes the next wave's demand load
++    if (std::getenv("LLAMA_MOE_STREAM_NO_PRELOAD") == nullptr) {
++        for (size_t i = nfirst; i < nfirst + ncount; i++) {
++            const int32_t e = sl.uniq[i];
++            if (sl.expert_slot.find(e) != sl.expert_slot.end()) {
++                continue;
++            }
++            const int32_t v = pick_victim_locked(sl, sl.keep.data());
++            if (v < 0) {
++                continue;
++            }
++            if (!sl.seen[e]) {
++                stats.n_miss_cold++;
++            }
++            reserve_slot_locked(sl, e, v);
++            sl.keep[v] = 1;
++            enqueue_locked({ &sl, e, v, sl.slot_gen[v] });
++            cv_work.notify_one();
++            stats.n_preload_issued++;
++        }
++    }
++
++    if (waited) {
++        const int64_t t0 = ggml_time_us();
++        auto ready = [&]{
++            if (load_failed || shutting_down || ggml_ssd_stopped()) {
++                return true;
++            }
++            for (const int32_t s : sl.demand_slots) {
++                if (sl.slot_state[s] != LLAMA_MOE_STREAM_SLOT_RESIDENT) {
++                    return false;
++                }
++            }
++            return true;
++        };
++        while(!ready()) cv_done.wait_for(lk,std::chrono::milliseconds(50));
++        if (load_failed || shutting_down || ggml_ssd_stopped()) {
++            GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
++        }
++        stats.t_stall_wave_us += ggml_time_us() - t0;
++    }
++
++    // parking pool: this wave's own resident slots plus the borrowed ones (all keep-protected;
++    //   the next same-layer reservation is ordered after this wave's GEMMs by the graph)
++    sl.plan_pool = sl.demand_slots;
++    sl.plan_pool.insert(sl.plan_pool.end(), borrowed.begin(), borrowed.end());
++    GGML_ASSERT(sl.plan_pool.size() >= n_ids);
++}
++
++// write out[i] = the cache slot the GEMM should index for each (token, expert) pair of wave w, one
++// token row at a time: pairs whose expert is in this wave get its real slot; the rest park on distinct
++// resident pool slots (pool_used prevents a repeat within the row, required by the Metal kernel)
++void llama_moe_stream::emit_wave_slots(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out,
++        int32_t w, uint32_t n_ids, int64_t n_tok) {
++    for (int64_t t = 0; t < n_tok; t++) {
++        sl.pool_used.clear();
++
++        // pass 1: pairs whose expert belongs to this wave -> that expert's real (resident) slot
++        for (uint32_t kk = 0; kk < n_ids; kk++) {
++            const int64_t i = t*n_ids + kk;
++            const int32_t e = ids[i];
++            GGML_ASSERT(sl.expert_wave[e] != 0xff);
++            if (sl.expert_wave[e] == (uint8_t) w) {
++                const int32_t s = sl.expert_slot.at(e);
++                GGML_ASSERT(sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_RESIDENT);
++                sl.slot_last_use[s] = ++sl.use_counter;
++                out[i] = s;
++                sl.pool_used.push_back(s);
++            }
++        }
++
++        // pass 2: the remaining (masked) pairs -> the next pool slot not yet used in this row
++        size_t pi = 0;
++        for (uint32_t kk = 0; kk < n_ids; kk++) {
++            const int64_t i = t*n_ids + kk;
++            if (sl.expert_wave[ids[i]] == (uint8_t) w) {
++                continue;
++            }
++            while (std::find(sl.pool_used.begin(), sl.pool_used.end(), sl.plan_pool[pi]) != sl.pool_used.end()) {
++                pi++;
++                GGML_ASSERT(pi < sl.plan_pool.size());
++            }
++            GGML_ASSERT(sl.slot_state[sl.plan_pool[pi]] == LLAMA_MOE_STREAM_SLOT_RESIDENT);
++            out[i] = sl.plan_pool[pi];
++            sl.pool_used.push_back(sl.plan_pool[pi]);
++            pi++;
++        }
++    }
++}
++
++// Custom-op callback for one pass of multi-pass prefill. When a ubatch touches more experts than the
++// cache holds, build_moe_ffn runs the expert GEMMs in several waves; this runs once per wave (single-
++// threaded on ith 0), in wave order. For wave w it makes that wave's expert slice resident (preloading
++// the next wave), then writes the slot ids the GEMM indexes - see plan_waves_locked / stage_wave_locked
++// / emit_wave_slots. The router's expert choice is untouched, so the output matches a non-streamed run.
++void llama_moe_stream_wave_ids(ggml_tensor * dst, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) {
++        return;
++    }
++
++    auto * ud  = (llama_moe_stream_wave *) userdata;
++    auto * sl  = ud->sl;
++    auto * mgr = sl->mgr;
++
++    const int32_t w = ud->wave;
++
++    const ggml_tensor * a = dst->src[0]; // contiguous selected ids
++    GGML_ASSERT(a->type == GGML_TYPE_I32);
++    GGML_ASSERT(ggml_is_contiguous(a));
++    GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(a));
++    GGML_ASSERT(dst->data != a->data); // the emit must not clobber the ids other waves read
++
++    const int64_t   n   = ggml_nelements(a);
++    const int32_t * ids = (const int32_t *) a->data;
++          int32_t * out = (int32_t *) dst->data;
++
++    std::unique_lock<std::mutex> lk(mgr->mtx);
++
++    if (mgr->load_failed || mgr->shutting_down || ggml_ssd_stopped()) {
++        GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
++    }
++
++    mgr->stats.n_wave_calls++;
++
++    if (w == 0) {
++        mgr->plan_waves_locked(*sl, ids, n);
++    }
++    GGML_ASSERT(sl->plan_next_wave == w); // waves must run in order (enforced by the graph ordering token)
++
++    const uint32_t n_ids = (uint32_t) a->ne[0]; // experts per token (n_expert_used)
++
++    mgr->stage_wave_locked(lk, *sl, w, n_ids); // make this wave resident, preload the next, build the pool
++    sl->plan_next_wave = w + 1;
++
++    mgr->emit_wave_slots(*sl, ids, out, w, n_ids, a->ne[1]);
++}
++
++// multi-pass prefill: 1.0 for pairs whose expert belongs to wave w, 0.0 otherwise; multiplied into
++// this wave's expert GEMM output so the masked-out (parked) pairs contribute nothing to the sum
++void llama_moe_stream_wave_mask(ggml_tensor * dst, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) {
++        return;
++    }
++
++    auto * ud  = (llama_moe_stream_wave *) userdata;
++    auto * sl  = ud->sl;
++    auto * mgr = sl->mgr;
++
++    const int32_t w = ud->wave;
++
++    const ggml_tensor * a = dst->src[0]; // contiguous selected ids
++    GGML_ASSERT(a->type == GGML_TYPE_I32);
++    GGML_ASSERT(ggml_is_contiguous(a));
++    GGML_ASSERT(dst->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(a));
++
++    const int64_t   n   = ggml_nelements(a);
++    const int32_t * ids = (const int32_t *) a->data;
++          float   * out = (float *) dst->data;
++
++    std::lock_guard<std::mutex> lock(mgr->mtx);
++
++    GGML_ASSERT(sl->plan_next_wave > w); // this wave's ids op has already run
++
++    for (int64_t i = 0; i < n; i++) {
++        out[i] = sl->expert_wave[ids[i]] == (uint8_t) w ? 1.0f : 0.0f;
++    }
++}
+diff --git a/src/llama-moe-stream.h b/src/llama-moe-stream.h
+new file mode 100644
+index 000000000..ce72b3960
+--- /dev/null
++++ b/src/llama-moe-stream.h
+@@ -0,0 +1,207 @@
++#pragma once
++
++#include "llama-mmap.h"
++
++#include "ggml-cpp.h"
++
++#include <condition_variable>
++#include <array>
++#include <cstdint>
++#include <deque>
++#include <memory>
++#include <mutex>
++#include <set>
++#include "ggml-ssd-policy.h"
++#include <string>
++#include <thread>
++#include <unordered_map>
++#include <utility>
++#include <vector>
++
++// SSD streaming of MoE routed expert weights
++//
++// Streamed layers do not materialize their ffn_*_exps tensors; instead each weight gets a
++// device-side cache tensor of n_slots expert slabs, filled on demand from the GGUF file by an
++// id-remapping custom op that runs on the CPU right after the router top-k. The remap only
++// changes which cache slot an expert id resolves to - it never changes which experts the router
++// selected, so streaming affects latency, not outputs.
++//
++// Missing experts are loaded by a pool of I/O threads while the remap op waits; eviction is by
++// decaying route hotness with an LRU tiebreak. Reads are buffered by default, or O_DIRECT with
++// LLAMA_MOE_STREAM_DIRECT=1 (bypasses the page cache; recommended when the model far exceeds RAM).
++//
++// note: multiple contexts decoding the same streamed model concurrently are not supported -
++// one context can evict slots referenced by the other's in-flight graph.
++
++struct llama_moe_stream;
++
++enum llama_moe_stream_slot_state : uint8_t {
++    LLAMA_MOE_STREAM_SLOT_EMPTY    = 0,
++    LLAMA_MOE_STREAM_SLOT_LOADING  = 1, // reserved, load queued or in flight
++    LLAMA_MOE_STREAM_SLOT_RESIDENT = 2,
++};
++
++// one streamed weight tensor (gate/up/down or fused gate_up) of one layer
++struct llama_moe_stream_weight {
++    ggml_tensor * cache = nullptr; // cache tensor {ne0, ne1, n_slots}
++
++    uint16_t file_idx  = 0; // GGUF split file index
++    size_t   offs      = 0; // file offset of the full exps tensor data
++    size_t   nb_expert = 0; // bytes per expert slab
++};
++
++struct llama_moe_stream_layer;
++
++// userdata of one wave's custom ops (multi-pass prefill): identifies which pass this is
++struct llama_moe_stream_wave {
++    llama_moe_stream_layer * sl   = nullptr;
++    int32_t                  wave = -1;
++};
++
++// per-layer streaming state - also the userdata of the id-remapping custom op
++struct llama_moe_stream_layer {
++    llama_moe_stream * mgr = nullptr;
++
++    int32_t  il       = -1;
++    uint32_t n_expert = 0;
++    uint32_t n_slots  = 0;
++
++    std::vector<llama_moe_stream_weight> weights; // 2 (fused gate_up + down) or 3 entries
++
++    // residency state, guarded by mgr->mtx
++    std::vector<int32_t>                 slot_expert;   // [n_slots] expert id or -1
++    std::vector<uint8_t>                 slot_state;    // [n_slots] llama_moe_stream_slot_state
++    std::vector<uint8_t>                 slot_claimed;  // [n_slots] a worker owns the load
++    std::vector<uint64_t>                slot_gen;      // [n_slots] reservation generation
++    std::vector<int64_t>                 slot_last_use; // [n_slots] LRU stamps
++    std::unordered_map<int32_t, int32_t> expert_slot;   // RESIDENT and LOADING entries
++
++    std::vector<uint32_t> route_hotness; // [n_expert] decayed selection counts, for eviction
++    std::vector<uint8_t>  seen;          // [n_expert] for cold-miss attribution
++    int64_t use_counter = 0;
++
++    // scratch for the remap callback
++    std::vector<int32_t> uniq;
++    std::vector<uint8_t> touched;
++    std::vector<uint8_t> keep;         // [n_slots] slots the current call must not evict
++    std::vector<int32_t> demand_slots; // slots the current call waits on
++
++    // wave plan for multi-pass prefill (guarded by mgr->mtx): the touched experts are split into
++    // plan_n_waves passes of at most plan_capacity experts each, run one pass at a time
++    uint32_t plan_capacity  = 0;  // experts per wave, set at graph build
++    uint32_t plan_n_waves   = 0;  // waves of the current call
++    int32_t  plan_next_wave = -1; // wave expected to run next (ordering guard)
++    std::vector<uint8_t> expert_wave; // [n_expert] wave each touched expert belongs to, 0xff = untouched
++    std::vector<int32_t> plan_pool;   // resident slots the masked-out pairs of this wave park on
++    std::vector<int32_t> pool_used;   // scratch: pool slots already used in the current token row
++
++    std::vector<std::unique_ptr<llama_moe_stream_wave>> wave_ud; // stable per-wave op userdata
++
++    // stable userdata for wave w (grows lazily); called at graph build time only
++    llama_moe_stream_wave * wave_userdata(int32_t wave, uint32_t capacity);
++
++    // whether the exps tensors passed to build_moe_ffn are this layer's cache tensors
++    // (e.g. grovemoe evaluates a second, unstreamed expert group on the same layer index)
++    bool matches(const ggml_tensor * gate, const ggml_tensor * up,
++                 const ggml_tensor * down, const ggml_tensor * gate_up) const;
++};
++
++// one queued expert load
++struct llama_moe_stream_work {
++    llama_moe_stream_layer * sl = nullptr;
++
++    int32_t  expert = -1;
++    int32_t  slot   = -1;
++    uint64_t gen    = 0; // stale unless it matches slot_gen[slot]
++};
++
++struct llama_moe_stream {
++    uint32_t n_slots      = 0; // expert cache slots per streamed layer
++    int32_t  n_io_threads = 0;
++
++    std::vector<std::unique_ptr<llama_moe_stream_layer>> layers; // [n_layer], null = not streamed
++
++    llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n_io_threads, bool direct);
++    ~llama_moe_stream();
++
++    llama_moe_stream_layer * layer(int32_t il) const {
++        return il >= 0 && (size_t) il < layers.size() ? layers[il].get() : nullptr;
++    }
++
++    // registers a streamed weight of layer il and returns its cache tensor
++    ggml_tensor * create_cache_tensor(
++            int32_t il, ggml_backend_buffer_type_t buft, const ggml_tensor * meta,
++            uint16_t file_idx, size_t offs);
++
++    // allocate the cache tensor buffers (after all create_cache_tensor calls)
++    void alloc_bufs(bool no_alloc);
++
++    // reopen the GGUF files for streaming reads
++    void open_files(const std::vector<std::string> & paths);
++
++    size_t size_bufs() const;
++
++    void print_stats() const;
++
++    bool use_direct_io = false; // O_DIRECT streaming reads (LLAMA_MOE_STREAM_DIRECT), no page cache
++
++    std::set<std::string> original_names;
++    std::vector<std::array<uint64_t,5>> file_revisions;
++    llama_files files; // privately reopened GGUF files, same indices as the loader's
++
++    size_t  max_nb_expert      = 0;
++    int64_t hot_decay_interval = 0; // remap calls between route-hotness halvings (0 = no decay)
++
++    std::vector<std::pair<ggml_backend_buffer_type_t, ggml_context_ptr>> ctxs; // one per buft
++    std::vector<ggml_backend_buffer_ptr> bufs;
++
++    // load pool (queue and all layer residency state guarded by mtx)
++    mutable std::mutex      mtx;
++    std::condition_variable cv_work; // queued work or shutdown
++    std::condition_variable cv_done; // a load committed or failed
++
++    std::deque<llama_moe_stream_work> q_demand;
++
++    std::vector<std::thread> workers;
++    bool workers_started = false;
++    bool shutting_down   = false;
++    bool load_failed     = false;
++
++    bool debug = false;
++
++    struct {
++        int64_t n_calls     = 0; // remap invocations
++        int64_t n_hit       = 0; // touched experts already resident or loading
++        int64_t n_miss      = 0; // demand loads issued
++        int64_t n_miss_cold = 0; // first-ever touch of an expert
++        int64_t t_stall_us  = 0; // wait time in miss handling
++
++        int64_t n_wave_calls     = 0; // wave-ids invocations (>= n_calls under multi-pass prefill)
++        int64_t n_waves_run      = 0; // non-empty waves
++        int64_t n_preload_issued = 0; // next-wave loads started during a wave's compute
++        int64_t n_preload_ready  = 0; // wave experts already resident from the previous preload
++        int64_t t_stall_wave_us  = 0; // wait time in wave miss handling
++    } stats;
++
++    // internals
++    void start_workers_locked();
++    void worker_loop();
++    int32_t pick_victim_locked(llama_moe_stream_layer & sl, const uint8_t * keep) const;
++    void reserve_slot_locked(llama_moe_stream_layer & sl, int32_t expert, int32_t slot);
++    void enqueue_locked(const llama_moe_stream_work & work);
++
++    // multi-pass prefill helpers (called by llama_moe_stream_wave_ids, all under mtx)
++    void plan_waves_locked(llama_moe_stream_layer & sl, const int32_t * ids, int64_t n); // wave 0: build the plan
++    void stage_wave_locked(std::unique_lock<std::mutex> & lk, llama_moe_stream_layer & sl, int32_t w, uint32_t n_ids); // make wave w resident + preload next
++    void emit_wave_slots(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int32_t w, uint32_t n_ids, int64_t n_tok); // write the slot ids
++};
++
++// callback of the id-remapping custom op inserted by build_moe_ffn
++void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * userdata);
++
++// callbacks of the multi-pass prefill custom ops inserted by build_moe_ffn when a ubatch touches
++// more experts than the cache holds; each src[0] is the contiguous selected ids
++//   wave_ids:  makes wave w's expert slice resident and emits slot ids (masked pairs park on a pool)
++//   wave_mask: emits 1.0 for pairs belonging to wave w, 0.0 otherwise
++void llama_moe_stream_wave_ids (ggml_tensor * dst, int ith, int nth, void * userdata);
++void llama_moe_stream_wave_mask(ggml_tensor * dst, int ith, int nth, void * userdata);
+diff --git a/src/llama.cpp b/src/llama.cpp
+index 9beb14841..b5612fd4d 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -316,6 +316,8 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
+ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
+         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
+     try {
++        if (params.moe_stream) params.load_mode = LLAMA_LOAD_MODE_NONE;
++
+         llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
+             params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
+ 
+diff --git a/tests/test-ssd-native.cpp b/tests/test-ssd-native.cpp
+new file mode 100644
+index 000000000..43fb64f38
+--- /dev/null
++++ b/tests/test-ssd-native.cpp
+@@ -0,0 +1,238 @@
++#include "llama-moe-stream.h"
++#include "llama-model.h"
++#include "llama-memory-recurrent.h"
++#include "ggml-backend.h"
++#include "ggml-cpu.h"
++#include "ggml-ssd-policy.h"
++#include <cmath>
++#include <array>
++#include <cstdio>
++#include <cstring>
++#include <cstdlib>
++#include <fstream>
++#include <stdexcept>
++#include <string>
++#include <unistd.h>
++#include <chrono>
++#include <thread>
++static int checks=0;
++static void check(bool pass,const char * label) { if(!pass) throw std::runtime_error(label); checks++; }
++static void floors() {
++    check(ggml_ssd_slots(128,8,100,2400,0)==24,"Gemma floor");
++    check(ggml_ssd_slots(512,10,100,3000,0)==30,"Qwen floor");
++    for(auto args: {std::array<uint64_t,5>{128,8,100,2399,0}, {512,10,100,2999,0},
++                   {128,8,100,2400,23}, {128,8,100,2400,25}, {128,8,100,12800,128},
++                   {0,8,100,2400,0}, {128,0,100,2400,0}}) {
++        bool rejected=false;
++        try { ggml_ssd_slots(args[0],args[1],args[2],args[3],args[4]); }
++        catch(const std::exception &) { rejected=true; }
++        check(rejected,"invalid cache floor rejected");
++    }
++}
++static void cache_test(bool use_metal) {
++    char temp[]="/tmp/free-local-ssd-test-XXXXXX";
++    int fd=mkstemp(temp); if(fd<0) throw std::runtime_error("fixture create failed");
++    close(fd);
++    auto * ctx=ggml_init({1024*1024,nullptr,false});
++    check(ctx!=nullptr,"synthetic context");
++    auto * cpu=ggml_backend_cpu_buffer_type();
++    ggml_backend_t metal=nullptr;
++    if(use_metal) {
++        auto * dev=ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
++        if(!dev) throw std::runtime_error("no native Metal device");
++        metal=ggml_backend_dev_init(dev,nullptr); if(!metal) throw std::runtime_error("Metal device unavailable"); cpu=ggml_backend_dev_buffer_type(dev);
++    }
++    {
++        llama_moe_stream mgr(1,6,2,false);
++        std::ofstream file(temp,std::ios::binary);
++        const char * names[]={"blk.0.ffn_gate_exps.weight","blk.0.ffn_up_exps.weight","blk.0.ffn_down_exps.weight"};
++        std::vector<ggml_tensor *> original_weights;
++        size_t offset=0;
++        for(int w=0;w<3;w++) {
++            auto * meta=ggml_new_tensor_3d(ctx,GGML_TYPE_F32,32,4,12);
++            ggml_set_name(meta,names[w]); original_weights.push_back(meta);
++            auto * data=(float *)meta->data;
++            for(int e=0;e<12;e++) for(int j=0;j<128;j++) data[e*128+j]=float(w*1000+e*10+j)/100;
++            file.write((char *)data,ggml_nbytes(meta));
++            mgr.create_cache_tensor(0,cpu,meta,0,offset); offset+=ggml_nbytes(meta);
++        }
++        file.close(); mgr.alloc_bufs(false); mgr.open_files({temp});
++        check(mgr.n_io_threads==2,"bounded two I/O workers");
++        auto * sl=mgr.layer(0);
++        auto * ids=ggml_new_tensor_2d(ctx,GGML_TYPE_I32,2,1);
++        auto * slots=ggml_dup_tensor(ctx,ids);
++        auto * iv=(int32_t *)ids->data;
++        auto verify=[&](ggml_tensor * out,ggml_tensor * original,ggml_tensor * mask=nullptr) {
++            for(int i=0;i<ggml_nelements(out);i++) {
++                if(mask && ((float *)mask->data)[i]==0) continue;
++                int slot=((int32_t *)out->data)[i], expert=((int32_t *)original->data)[i];
++                for(int w=0;w<3;w++) {
++                    alignas(4096) float slab[128];
++                    ggml_backend_tensor_get(sl->weights[w].cache,slab,slot*512,512);
++                    for(int j=0;j<128;j++) check(slab[j]==float(w*1000+expert*10+j)/100,"exact raw expert bytes after slot remap");
++                }
++            }
++        };
++        iv[0]=0; iv[1]=1;
++        llama_moe_stream_remap(slots,ids,0,1,sl); verify(slots,ids);
++        auto misses=mgr.stats.n_miss;
++        llama_moe_stream_remap(slots,ids,0,1,sl); verify(slots,ids);
++        check(mgr.stats.n_miss==misses,"resident cache hit has no duplicate read");
++        for(int e=2;e<12;e+=2) { iv[0]=e;iv[1]=e+1;llama_moe_stream_remap(slots,ids,0,1,sl);verify(slots,ids); }
++        check(sl->expert_slot.size()<=6,"eviction remains bounded");
++        check(sl->expert_slot.count(2)==0,"cold expert evicted while hot experts survive");
++        auto * many=ggml_new_tensor_2d(ctx,GGML_TYPE_I32,2,4);
++        auto * wave_slots=ggml_dup_tensor(ctx,many); wave_slots->src[0]=many;
++        auto * mask=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,2,4);mask->src[0]=many;
++        for(int i=0;i<8;i++) ((int32_t *)many->data)[i]=i;
++        float counts[8]{};
++        ggml_backend_t compute=use_metal ? nullptr : ggml_backend_cpu_init();
++        auto * input=ggml_new_tensor_3d(ctx,GGML_TYPE_F32,32,2,4);
++        for(int i=0;i<256;i++) ((float *)input->data)[i]=float(i%13-6)/17;
++        auto * baseline=ggml_mul_mat_id(ctx,original_weights[0],input,many);
++        auto * streamed=ggml_mul_mat_id(ctx,sl->weights[0].cache,input,wave_slots);
++        float summed[32]{};
++        if(compute) {
++            auto * graph=ggml_new_graph(ctx);ggml_build_forward_expand(graph,baseline);
++            check(ggml_backend_graph_compute(compute,graph)==GGML_STATUS_SUCCESS,"ordinary expert graph computes");
++        }
++        // Four waves of capacity two preserve the selected expert set with a six-slot cache.
++        for(int w=0;w<4;w++) {
++            auto * ud=sl->wave_userdata(w,2);
++            llama_moe_stream_wave_ids(wave_slots,0,1,ud);
++            llama_moe_stream_wave_mask(mask,0,1,ud);
++            verify(wave_slots,many,mask);
++            if(compute) {
++                auto * graph=ggml_new_graph(ctx);ggml_build_forward_expand(graph,streamed);
++                check(ggml_backend_graph_compute(compute,graph)==GGML_STATUS_SUCCESS,"streamed expert graph computes");
++                for(int i=0;i<32;i++) summed[i]+=((float *)streamed->data)[i]*((float *)mask->data)[i/4];
++            }
++            for(int i=0;i<8;i++) counts[i]+=((float *)mask->data)[i];
++        }
++        if(compute) {
++            for(int i=0;i<32;i++) check(std::fabs(summed[i]-((float *)baseline->data)[i])<1e-5,"waved real matmul numerically matches ordinary experts");
++            ggml_backend_free(compute);
++        }
++        for(auto count:counts) check(count==1,"each routed pair contributes exactly once across waves");
++        check(sl->expert_slot.size()<=6,"waved prefill cache remains bounded");
++        check(mgr.workers.size()==2,"no extra workers spawned");
++    }
++    if(metal) ggml_backend_free(metal);
++    ggml_free(ctx); unlink(temp);
++}
++static void ledger_test() {
++    ggml_ssd_start(512ull*1024*1024,4ull*1024*1024*1024,5000);
++    auto before=std::string(ggml_ssd_snapshot());
++    check(before.find("physicalFootprintBytes\":null")==std::string::npos,"native footprint measured at boot");
++    check(before.find("cpuKernel\":\"unknown\"")!=std::string::npos,"kernel is unknown before model buffers are assigned");
++    ggml_ssd_cpu_kernel(false,0);
++    ggml_ssd_cpu_threads(4,4);
++    check(std::string(ggml_ssd_snapshot()).find("decodeThreads\":4")!=std::string::npos &&
++          std::string(ggml_ssd_snapshot()).find("batchThreads\":4")!=std::string::npos,"actual context thread counts are reported");
++    bool rejected=false;try { ggml_ssd_cpu_threads(65,4); }catch(const std::runtime_error &) { rejected=true; }
++    check(rejected,"thread count beyond planned workspace bound rejected");
++    auto standard=std::string(ggml_ssd_snapshot());
++    check(standard.find("cpuKernel\":\"standard\"")!=std::string::npos && standard.find("useExtraBufts\":false")!=std::string::npos &&
++          standard.find("cpuRepackTensorCount\":0")!=std::string::npos,"standard CPU proof reports actual no-repack configuration");
++    rejected=false;try { ggml_ssd_cpu_kernel(false,1); }catch(const std::runtime_error &) { rejected=true; }
++    check(rejected,"no-repack request rejects repacked model tensors");
++    check(std::string(ggml_ssd_snapshot()).find("cpuRepackTensorCount\":0")!=std::string::npos,"rejected kernel proof does not replace settled configuration");
++    ggml_ssd_cpu_kernel(true,3);
++    check(std::string(ggml_ssd_snapshot()).find("cpuKernel\":\"default\"")!=std::string::npos &&
++          std::string(ggml_ssd_snapshot()).find("cpuRepackTensorCount\":3")!=std::string::npos,"default kernel reports observed repack tensors without claiming standard equivalence");
++    ggml_ssd_cpu_kernel(false,0);
++    check(!ggml_ssd_reserve(SIZE_MAX,GGML_SSD_CACHE),"oversized allocation denied before allocation");
++    ggml_ssd_cache_budget(2*1024*1024);
++    check(!ggml_ssd_reserve(3*1024*1024,GGML_SSD_CACHE),"separate expert cache byte ceiling enforced");
++    auto * cpu_dev=ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
++    auto * extra=(ggml_backend_dev_get_extra_bufts_t)ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cpu_dev),"ggml_backend_dev_get_extra_bufts");
++    if(extra) {
++        auto ** types=extra(cpu_dev);
++        for(int i=0;types && types[i];i++) if(std::string(ggml_backend_buft_name(types[i]))=="CPU_REPACK") {
++            ggml_ssd_scope scope(GGML_SSD_DENSE);
++            auto * b=ggml_backend_buft_alloc_buffer(types[i],1024*1024);
++            check(b!=nullptr,"repack wrapper allocates through CPU");
++            check(std::string(ggml_ssd_snapshot()).find("denseBytes\":1048576")!=std::string::npos,"nested repack allocation charged exactly once");
++            ggml_backend_buffer_free(b);
++            check(std::string(ggml_ssd_snapshot()).find("denseBytes\":0")!=std::string::npos,"nested repack release balances ledger");
++        }
++    }
++    auto * buft=ggml_backend_cpu_buffer_type();
++    {
++        ggml_ssd_scope scope(GGML_SSD_CACHE);
++        auto * b=ggml_backend_buft_alloc_buffer(buft,1024*1024);
++        check(b!=nullptr,"allowed backend allocation");
++        check(std::string(ggml_ssd_snapshot()).find("expertCacheBytes\":0")==std::string::npos,"backend charged to cache ledger");
++        ggml_backend_buffer_free(b);
++    }
++    check(std::string(ggml_ssd_snapshot()).find("expertCacheBytes\":0")!=std::string::npos,"freed backend allocation released");
++    check(!ggml_ssd_deadline(8ull*60*60*1000+1),"excessive deadline rejected");
++    ggml_ssd_stage("ready");
++    check(!ggml_ssd_deadline_armed(),"startup deadline disarmed after loading");
++    check(ggml_ssd_deadline(200),"per-request deadline arms independently of worker age");
++    check(ggml_ssd_deadline_armed(),"per-request deadline armed");
++    ggml_ssd_idle();
++    check(!ggml_ssd_deadline_armed(),"approval/idle wait has no worker lifetime deadline");
++    std::this_thread::sleep_for(std::chrono::milliseconds(350));
++    check(!ggml_ssd_stopped(),"idle wait does not consume previous request deadline");
++    ggml_ssd_finish();
++}
++static void recurrent_test() {
++    ggml_ssd_start(512ull*1024*1024,4ull*1024*1024*1024,5000);
++    auto mp=llama_model_default_params();
++    std::unique_ptr<llama_model> model(llama_model_create(LLM_ARCH_QWEN3NEXT,mp));
++    check(model!=nullptr,"synthetic recurrent metadata model");
++    auto & hp=model->hparams;
++    hp.n_layer_all=2;hp.ssm_d_conv=4;hp.ssm_d_inner=32;hp.ssm_d_state=16;hp.ssm_n_group=4;
++    hp.no_alloc=true;
++    size_t planned=0;
++    auto buffers=[](const llama_memory_recurrent & memory) {
++        std::set<ggml_backend_buffer_t> unique;
++        for(const auto * tensor:memory.r_l)if(tensor)unique.insert(tensor->buffer);
++        for(const auto * tensor:memory.s_l)if(tensor)unique.insert(tensor->buffer);
++        return unique;
++    };
++    {
++        llama_memory_recurrent memory(*model,GGML_TYPE_F32,GGML_TYPE_F32,false,2,1,0,{});
++        for(const auto & item:memory.memory_breakdown())planned+=item.second;
++        check(planned>0,"no_alloc recurrent size remains planned");
++        for(auto * buffer:buffers(memory)) {
++            check(ggml_backend_buffer_get_size(buffer)==0,"dummy recurrent buffer has zero size");
++            check(ggml_backend_buffer_get_base(buffer)==nullptr,"dummy recurrent buffer has no address");
++        }
++        for(const auto * tensor:memory.r_l)if(tensor)check(tensor->data==nullptr,"recurrent convolution data remains absent");
++        for(const auto * tensor:memory.s_l)if(tensor)check(tensor->data==nullptr,"recurrent state data remains absent");
++        memory.clear(true);
++        check(std::string(ggml_ssd_snapshot()).find("recurrentBytes\":0,")!=std::string::npos,"no recurrent allocation or zeroing in no_alloc path");
++    }
++    hp.no_alloc=false;
++    {
++        llama_memory_recurrent memory(*model,GGML_TYPE_F32,GGML_TYPE_F32,false,2,1,0,{});
++        size_t allocated=0;
++        for(auto * buffer:buffers(memory)) {
++            const auto size=ggml_backend_buffer_get_size(buffer);allocated+=size;
++            auto * bytes=static_cast<uint8_t*>(ggml_backend_buffer_get_base(buffer));
++            check(bytes && size>0,"ordinary recurrent buffer allocated");
++            for(size_t i=0;i<size;i++)check(bytes[i]==0,"ordinary recurrent payload zero initialized");
++            bytes[0]=1;memory.clear(true);check(bytes[0]==0,"ordinary recurrent clear still writes payload");
++        }
++        check(allocated==planned,"ordinary recurrent allocation preserves planned size");
++    }
++    check(std::string(ggml_ssd_snapshot()).find("recurrentBytes\":0,")!=std::string::npos,"ordinary recurrent ledger released");
++    model.reset();ggml_ssd_finish();
++}
++int main(int argc,char ** argv) {
++    try {
++        ggml_backend_load_all();
++        const std::string mode=argc>1?argv[1]:"cache";
++        if(mode=="cancel" || mode=="deadline") {
++            ggml_ssd_start(512ull*1024*1024,4ull*1024*1024*1024,mode=="deadline"?200:5000);
++            if(mode=="cancel") ggml_ssd_cancel("cancelled");
++            std::this_thread::sleep_for(std::chrono::seconds(3)); return 2;
++        }
++        if(mode=="ledger") ledger_test();
++        else if(mode=="recurrent") recurrent_test();
++        else { floors(); cache_test(mode=="metal"); }
++        printf("SSD_NATIVE_TEST %s passed %d checks\n",mode.c_str(),checks); return 0;
++    } catch(const std::exception & e) { fprintf(stderr,"SSD_NATIVE_TEST failed: %s\n",e.what()); return 1; }
++}
+diff --git a/tools/server/server-http.cpp b/tools/server/server-http.cpp
+index 33cbb156c..dd57edbe5 100644
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -1,6 +1,7 @@
+ #include "common.h"
+ #include "http.h"
+ #include "server-http.h"
++#include "ggml-ssd-policy.h"
+ #include "server-common.h"
+ #include "ui.h"
+ 
+@@ -108,6 +109,13 @@ struct gcp_params {
+     }
+ };
+ 
++static bool ssd_inference_path(const std::string & path) {
++    return path=="/v1/chat/completions" || path=="/chat/completions" || path=="/v1/completions" ||
++           path=="/completion" || path=="/completions" || path=="/v1/responses" || path=="/responses" ||
++           path=="/v1/messages" || path=="/embedding" || path=="/embeddings" || path=="/v1/embeddings" ||
++           path=="/infill" || path=="/rerank" || path=="/reranking" || path=="/v1/rerank";
++}
++
+ bool server_http_context::init(const common_params & params) {
+     const gcp_params gcp;
+ 
+@@ -306,7 +314,7 @@ bool server_http_context::init_listener(const common_params & params) {
+ 
+     auto middleware_server_state = [this](const httplib::Request & req, httplib::Response & res) {
+         if (!is_ready.load()) {
+-            if (frontend_paths.count(req.path)) {
++            if (req.path=="/ssd/status" || req.path=="/ssd/control" || frontend_paths.count(req.path)) {
+                 return true; // frontend asset, allow it to load and show "loading"
+             }
+             // no endpoints are allowed to be accessed when the server is not ready
+@@ -357,6 +365,11 @@ bool server_http_context::init_listener(const common_params & params) {
+         if (!middleware_validate_api_key(req, res)) {
+             return httplib::Server::HandlerResponse::Handled;
+         }
++        if(ggml_ssd_enabled() && req.method=="POST" && ssd_inference_path(req.path) && !ggml_ssd_deadline_armed()) {
++            res.status=409;
++            res.set_content("{\"error\":\"arm an authenticated SSD request deadline first\"}","application/json");
++            return httplib::Server::HandlerResponse::Handled;
++        }
+         return httplib::Server::HandlerResponse::Unhandled;
+     });
+ 
+@@ -630,6 +643,7 @@ static std::string build_query_string(const httplib::Request & req) {
+ }
+ 
+ // using unique_ptr for request to allow safe capturing in lambdas
++
+ using server_http_req_ptr = std::unique_ptr<server_http_req>;
+ 
+ static void process_handler_response(server_http_req_ptr && request, server_http_res_ptr & response, httplib::Response & res) {
+@@ -660,6 +674,7 @@ static void process_handler_response(server_http_req_ptr && request, server_http
+         };
+         const auto on_complete = [request = q_ptr, response = r_ptr](bool) mutable {
+             response->on_complete();
++            if(ggml_ssd_enabled() && ssd_inference_path(request->path)) ggml_ssd_idle();
+             response.reset();
+             request.reset();
+         };
+@@ -669,6 +684,7 @@ static void process_handler_response(server_http_req_ptr && request, server_http
+         set_headers(res, response->headers);
+         res.set_content(response->data, response->content_type);
+         response->on_complete();
++        if(ggml_ssd_enabled() && ssd_inference_path(request->path)) ggml_ssd_idle();
+     }
+ }
+ 
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 6e2d8ff9d..bba71f01c 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -1,4 +1,5 @@
+ #include "server-context.h"
++#include "ggml-ssd-policy.h"
+ #include "server-http.h"
+ #include "server-models.h"
+ #include "server-cors-proxy.h"
+@@ -113,6 +114,32 @@ int llama_server(int argc, char ** argv) {
+         return 1;
+     }
+ 
++    if (!params.ssd_require_streaming || !params.moe_stream || params.n_parallel!=1 ||
++        params.load_mode!=LLAMA_LOAD_MODE_NONE || params.moe_stream_io_threads!=2 ||
++        params.model.path.empty() || !params.model.hf_repo.empty() || !params.model.url.empty() ||
++        !params.model.docker_repo.empty() || !params.api_keys.size() ||
++        params.hostnames!=std::vector<std::string>{"127.0.0.1"}) {
++        SRV_ERR("%s", "SSD worker requires local authenticated one-slot mode, no mmap, and exactly two I/O workers\n"); return 1;
++    }
++    if(!params.lora_adapters.empty() || !params.server_tools.empty() || !params.server_tools_runtime.empty() || !params.speculative.draft.mparams.path.empty()) {
++        SRV_ERR("%s", "SSD worker does not support adapters, speculative drafts, or built-in tools\n"); return 1;
++    }
++    if(!params.api_prefix.empty() || !params.mcp_servers_config.empty() || !params.mcp_servers_json.empty()) {
++        SRV_ERR("%s", "SSD worker does not register MCP or engine tools\n"); return 1;
++    }
++    params.offline=true;
++    params.ui=false;
++    params.ui_mcp_proxy=false;
++    params.no_mmproj=true;
++    params.mmproj={};
++    params.models_autoload=false;
++    params.cache_ram_mib=0;
++    params.n_ctx_checkpoints=0;
++    params.fit_params=false;
++    params.warmup=false;
++    try { ggml_ssd_start(params.ssd_allocation_budget,params.ssd_resident_limit,params.ssd_deadline_ms); }
++    catch (const std::exception & e) { SRV_ERR("SSD policy: %s\n",e.what()); return 1; }
++    ggml_ssd_cache_budget(params.moe_stream_budget);
+     SRV_INF("%s", "initializing ...\n");
+ 
+     llama_backend_init();
+@@ -262,6 +289,19 @@ int llama_server(common_params & params, int argc, char ** argv, server_child &
+ 
+     ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
+     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
++    ctx_http.get("/ssd/status", ex_wrapper([](const server_http_req &) {
++        auto res=std::make_unique<server_http_res>(); res->data=ggml_ssd_snapshot(); return res;
++    }));
++    ctx_http.post("/ssd/control", ex_wrapper([](const server_http_req & req) {
++        auto res=std::make_unique<server_http_res>(); auto data=json::parse(req.body);
++        if(data.contains("cancel") && data.at("cancel").get<bool>()) ggml_ssd_cancel("cancelled");
++        if(data.contains("idle") && data.at("idle").get<bool>()) ggml_ssd_idle();
++        if(data.contains("deadlineMs")) {
++            if(!data.at("deadlineMs").is_number_integer() || data.at("deadlineMs").get<int64_t>()<=0 || !ggml_ssd_deadline(data.at("deadlineMs").get<uint64_t>()))
++                throw std::invalid_argument("invalid or settled SSD deadline");
++        }
++        res->data=ggml_ssd_snapshot(); return res;
++    }));
+     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
+     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
+     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
+@@ -438,6 +478,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child &
+             SRV_ERR("%s", "exiting due to HTTP server error\n");
+             return 1;
+         }
++        ggml_ssd_stage("ready");
+         ctx_http.is_ready.store(true);
+ 
+         shutdown_handler = [&](int) {
+@@ -466,6 +507,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child &
+             // stop the session GC first, it finalizes live sessions and wakes pending readers
+             server_stream_session_manager_stop();
+             ctx_http.stop();
++            ggml_ssd_shutdown();
+             ctx_server.terminate();
+             mcp_mgr.shutdown();
+             llama_backend_free();
+@@ -493,6 +535,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child &
+         }
+ 
+         routes.update_meta(ctx_server);
++        ggml_ssd_stage("ready");
+         ctx_http.is_ready.store(true);
+ 
+         SRV_INF("%s", "model loaded\n");

@@ -1,4 +1,14 @@
 import type { AgentEvent, PermissionRequest, PermissionSnapshot } from './renderer/types.ts';
+import { RuntimeError } from '../runtime/errors.ts';
+
+/** Expiry is a host timeout, not a human denial. Never affect a newer turn. */
+export function stopTurnOnApprovalExpiry(event: AgentEvent,
+  turn: { sessionId: string; turnId: string; controller: AbortController } | undefined): boolean {
+  if (event.type !== 'permission_resolved' || event.resolution !== 'expired' || !turn
+    || event.sessionId !== turn.sessionId || event.turnId !== turn.turnId || turn.controller.signal.aborted) return false;
+  turn.controller.abort(new RuntimeError('APPROVAL_EXPIRED', 'The approval expired before it was answered. No permission was granted. Completed actions are preserved; send a new request to continue.'));
+  return true;
+}
 
 type Resolution = 'approved' | 'denied' | 'cancelled' | 'expired';
 interface PendingApproval { sessionId: string; turnId: string; request: PermissionRequest; settle(resolution: Resolution): void }

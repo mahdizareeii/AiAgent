@@ -99,6 +99,9 @@ jobs:
         run: node scripts/prepare-backend.mjs
       - name: Prepare bundled local inference
         run: node scripts/prepare-inference.mjs
+      - name: Build experimental Apple Silicon SSD worker
+        if: matrix.target == 'darwin-arm64'
+        run: npm run prepare:ssd
       - name: Build native research sidecar
         run: node scripts/prepare-research.mjs
       - name: Build desktop and action bridge

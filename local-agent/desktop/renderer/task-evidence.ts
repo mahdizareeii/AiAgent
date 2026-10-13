@@ -1,4 +1,8 @@
-import type { TaskOutcome } from './types';
+import type { Mode, TaskOutcome } from './types';
+
+export function showOutcome(mode: Mode, outcome: TaskOutcome) {
+  return mode !== 'assistant' || outcome.status !== 'completed' || outcome.checks.length > 0;
+}
 
 /** Labels depend on saved host checks, never on the assistant's completion prose. */
 export function outcomePresentation(outcome: TaskOutcome) {

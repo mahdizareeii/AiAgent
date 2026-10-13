@@ -1,11 +1,11 @@
-import { cpus, freemem, totalmem } from 'node:os';
+import { cpus, freemem, totalmem, release } from 'node:os';
 import { statfs } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CuratedModel } from './catalog.ts';
 export const GIB = 1024 ** 3;
 export interface GPUInfo { name:string; backend:string; totalMemoryBytes:number; freeMemoryBytes:number; unifiedMemory:boolean; }
-export interface HardwareInfo { platform:NodeJS.Platform; architecture:string; cpuModel:string; cpuCores:number; totalMemoryBytes:number; availableMemoryBytes:number; freeDiskBytes:number|null; gpus:GPUInfo[]; }
+export interface HardwareInfo { platform:NodeJS.Platform; architecture:string; osRelease?:string; cpuModel:string; cpuCores:number; totalMemoryBytes:number; availableMemoryBytes:number; freeDiskBytes:number|null; gpus:GPUInfo[]; }
 export type ModelFit = 'recommended'|'slow'|'insufficient';
 export interface FitResult { fit:ModelFit; fitReason:string; workingMemoryGB:number; memoryEstimate:{weightsBytes:number;contextBytes:number;scratchBytes:number;osReserveBytes:number;systemBudgetBytes:number;gpuBudgetBytes:number}; }
 export function operatingSystemReserve(bytes:number):number { return Math.max(3*GIB,bytes*0.2); }
@@ -22,7 +22,7 @@ export async function probeHardware(directory:string, options:{totalMemoryBytes?
   const platform=options.platform??process.platform;let available=options.availableMemoryBytes??freemem();
   if(platform==='darwin'&&options.availableMemoryBytes===undefined){try{const result=await promisify(execFile)('/usr/bin/vm_stat',[],{timeout:2000,maxBuffer:65536,env:{LANG:'C'}});available=parseMacAvailableMemory(result.stdout)??available;}catch{}}
   let free:number|null=null;try{free=options.freeDiskBytes?await options.freeDiskBytes(directory):await statfs(directory).then(s=>Number(s.bavail)*Number(s.bsize));}catch{}
-  return {platform,architecture:options.architecture??process.arch,cpuModel:processors[0]?.model??'Unknown CPU',cpuCores:processors.length||1,totalMemoryBytes:total,availableMemoryBytes:Math.min(total,available),freeDiskBytes:free,gpus:[]};
+  return {platform,osRelease:platform===process.platform?release():undefined,architecture:options.architecture??process.arch,cpuModel:processors[0]?.model??'Unknown CPU',cpuCores:processors.length||1,totalMemoryBytes:total,availableMemoryBytes:Math.min(total,available),freeDiskBytes:free,gpus:[]};
 }
 export function parseDevices(text:string, backend:string, platform:NodeJS.Platform):GPUInfo[] {
   return text.split('\n').flatMap(line=>{const match=line.match(/^\s*([^:]+):\s*(.+)\s+\((\d+) MiB, (\d+) MiB free\)/);if(!match||/^(CPU|BLAS|AMX)\b/i.test(match[1].trim()))return [];

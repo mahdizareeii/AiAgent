@@ -214,6 +214,9 @@ test('Careful execution fixes step and provider bounds while leaving control dea
   assert.equal(careful.GOOSE_MAX_TURNS, '40');
   assert.equal(careful.OPENAI_TIMEOUT, '3600');
   assert.equal(backendEnvironment(options).OPENAI_TIMEOUT, '3600');
+  assert.equal(backendEnvironment({ ...options, executionBudgetMs: 4 * 3_600_000 }).OPENAI_TIMEOUT, '14400');
+  assert.equal(backendEnvironment({ ...options, executionBudgetMs: 8 * 3_600_000 }).OPENAI_TIMEOUT, '28800');
+  assert.throws(() => backendEnvironment({ ...options, executionBudgetMs: 8 * 3_600_000 + 1 }));
   assert.equal(backendExtensions({ ...options, taskEffort: 'careful' })[0].timeout, 180);
   const prompt = agentPrompt({ ...options, taskEffort: 'careful' }, 'Make a useful CLI.');
   assert.match(prompt, /Plan → Implement → Verify → Repair → Final/);

@@ -401,7 +401,7 @@ test('disconnected active and queued gateway requests cannot continue or start g
 test('legacy settings migrate without losing chats/grants and web is off by default', () => {
   const session = { id: randomUUID(), title: 'Saved chat', updatedAt: '2026-10-07', mode: 'coding', projectPath: '/project', messages: [{ role: 'user', content: 'Keep me' }], files: [{ name: 'file.txt', path: '/project/file.txt' }] };
   const state = migrateState({ selectedModel: 'qwen3.5:4b', executablePath: '/old/ollama', mode: 'coding', sessions: [session] });
-  assert.equal(state.version, 4); assert.deepEqual(state.sessions, [session]); assert.equal(state.utilities.webResearch, false); assert.equal(state.plugins.taskResearch, false); assert.ok(!('executablePath' in state));
+  assert.equal(state.version, 5); assert.deepEqual(state.sessions, [{ ...session, executionBudgetMs: 3_600_000 }]); assert.equal(state.utilities.webResearch, false); assert.equal(state.plugins.taskResearch, false); assert.ok(!('executablePath' in state));
   assert.equal(effectiveUtilities('assistant', DEFAULT_UTILITIES).terminal, false);
   assert.throws(() => migrateState({ ...state, version: 999 }));
 });

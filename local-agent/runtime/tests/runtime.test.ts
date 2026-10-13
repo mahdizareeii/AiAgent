@@ -54,6 +54,7 @@ test('private offline inference strips inherited secrets and reuses a verified i
   assert.equal(env.flags[env.flags.indexOf('--predict')+1],'2048');assert.equal(env.flags[env.flags.indexOf('--ctx-size')+1],'8192');
   assert.equal(env.flags[env.flags.indexOf('--reasoning')+1],'auto');assert.equal(env.flags[env.flags.indexOf('--reasoning-format')+1],'deepseek');
   assert.equal(env.flags[env.flags.indexOf('--reasoning-budget')+1],'1024');
+  for(const flag of ['--no-repack','--threads','--threads-batch'])assert.equal(env.flags.includes(flag),false,'Normal engine kernel and thread defaults remain unchanged.');
   assert.equal(env.calibrationThinking,false,'The bounded tool calibration must continue to request thinking off explicitly.');
   assert.equal((await fetch(`${prepared.baseUrl}/props`)).status,401);assert.deepEqual((await readdir(directory)).filter(f=>f.startsWith('.inference-key-')),[]);
   const again=await runtime.prepareModel(spec.id);assert.equal(again.baseUrl,prepared.baseUrl);assert.equal((await runtime.requestJson<{pid:number}>('/env')).pid,env.pid);assert.equal(launches.filter(a=>a.includes('--model')).length,1);
@@ -77,6 +78,16 @@ test('cancelling a runtime download leaves first-run onboarding ready and resume
   const verified=await runtime.pullModel(spec.id);assert.equal(verified.digest,spec.sha256);assert.equal(downloads,2);assert.equal(runtime.getStatus().downloadingModel,null);
   assert.deepEqual(await readdir(path.join(directory,'models')),[spec.filename]);assert.equal((await runtime.listModels())[0].installed,true);
   await runtime.prepareModel(spec.id);assert.equal(runtime.getStatus().loadedModel,spec.id);assert.equal(launches.filter(args=>args.includes('--version')).length,1);
+});
+
+test('an active download does not block the already usable different model or replay its load',async t=>{
+  const other={...spec,id:'fixture:other',filename:'fixture-other.gguf'};let startedResolve:()=>void=()=>{},cancelled=false;const started=new Promise<void>(r=>startedResolve=r),nativeFetch=fetch;
+  const fetcher:typeof fetch=async(input,init)=>String(input).startsWith('http://127.0.0.1:')?nativeFetch(input,init):new Response(new ReadableStream<Uint8Array>({start(stream){stream.enqueue(bytes.subarray(0,41));},cancel(){cancelled=true;}}));
+  const {runtime,directory,launches}=await fixture(t,{},hardware,fetcher,{runtimeSettings:{catalog:[spec,other]}});await runtime.start();const initial=await runtime.prepareModel(spec.id),pid=(await runtime.requestJson<{pid:number}>('/env')).pid;
+  const pulling=runtime.pullModel(other.id,{onProgress:p=>{if((p.completed??0)>0)startedResolve();}}),rejected=assert.rejects(pulling,{name:'AbortError'});await started;
+  assert.equal(runtime.getStatus().downloadingModel,other.id);await assert.rejects(runtime.prepareModel(other.id),{code:'DOWNLOAD_BUSY'});assert.equal((await runtime.prepareModel(spec.id)).baseUrl,initial.baseUrl);
+  assert.equal((await runtime.requestJson<{choices:{message:{content:string}}[]}>('/v1/chat/completions',{messages:[{role:'user',content:'Reply with OK.'}]})).choices[0].message.content,'OK');assert.equal((await runtime.requestJson<{pid:number}>('/env')).pid,pid);
+  runtime.cancelPull();await rejected;assert(cancelled);assert.deepEqual(await readFile(path.join(directory,'models',other.filename+'.part')),bytes.subarray(0,41));assert.equal(runtime.getStatus().loadedModel,spec.id);assert.equal(launches.filter(a=>a.includes('--model')).length,1);
 });
 
 test('an interrupted runtime download stays unavailable and retry reuses its partial instead of discarding other cached files',async t=>{
@@ -375,7 +386,7 @@ test('experimental model selection keeps insufficient fit labels without treatin
   const oversized={...spec,workingMemoryGB:40};const {runtime,directory,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[oversized]}});await runtime.start();
   const automatic=(await runtime.listModels())[0];assert.equal(automatic.fit,'insufficient');assert.equal(automatic.blockedReason,automatic.fitReason);
   await runtime.setMemoryMode('experimental-disk');const experimental=(await runtime.listModels())[0];assert.equal(experimental.fit,'insufficient');assert.equal(experimental.fitReason,automatic.fitReason);assert.equal(experimental.blockedReason,null);
-  assert.equal(experimental.digest,spec.sha256);assert.equal(experimental.installed,true);assert.deepEqual(launches,[['--version']],'Selection/listing must not launch an experimental trial.');
+  assert.equal(experimental.digest,null,'Same-sized catalog files are unverified until actual hashing.');assert.equal(experimental.integrity,'unverified');await runtime.inspectModel(spec.id);assert.equal((await runtime.listModels())[0].digest,spec.sha256);assert.equal(experimental.installed,true);assert.deepEqual(launches,[['--version']],'Selection/listing must not launch an experimental trial.');
   const corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;await writeFile(path.join(directory,'models',spec.filename),corrupt);await assert.rejects(runtime.inspectModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});
   const blocked=(await runtime.listModels())[0];assert.equal(blocked.fit,'insufficient');assert.equal(blocked.blockedReason,blocked.verificationError);assert.match(blocked.blockedReason!,/SHA-256/);assert.equal(blocked.digest,null);
   await assert.rejects(runtime.prepareModel(spec.id),{code:'MODEL_DIGEST_MISMATCH'});assert.deepEqual(launches,[['--version']]);
@@ -411,9 +422,11 @@ test('manual calibration synchronizes only the tool probe of the same successful
   const {runtime}=await fixture(t,{FAKE_CALIBRATE_FAIL:'1'},hardware,fetcher,{runtimeSettings:{resourceProbe:async()=>resource()}});await runtime.start();
   const chatOnly=await runtime.startExperimentalTrial(spec.id);assert.equal(chatOnly.toolCapable,false);const trial=runtime.getStatus().experimentalTrial!;assert.equal(trial.toolProbePassed,false);
   validToolFormat=true;const calibrated=await runtime.calibrateModel(spec.id);assert.equal(calibrated.toolCapable,true);assert.deepEqual(calibrated.capabilities,['completion','tools']);
-  assert.deepEqual(runtime.getStatus().experimentalTrial,{...trial,toolProbePassed:true},'Calibration must not change Chat probe, identity, state, timing, metrics or task validation.');
+  const promoted=runtime.getStatus().experimentalTrial!,passedProbe=promoted.probes!.tools!;assert.equal(passedProbe.passed,true);assert.equal(passedProbe.toolCallCount,1);assert.deepEqual(passedProbe.toolCalls,[{name:'local_probe',arguments:'{"word":"OK"}'}]);assert.equal(passedProbe.requestedOutputTokens,96);assert.equal(passedProbe.outputTokens,null,'Missing native token usage is not inferred from measured speed.');assert.deepEqual(passedProbe.binding,trial.probes!.tools!.binding);
+  assert.deepEqual(promoted,{...trial,toolProbePassed:true,probes:{...trial.probes,tools:passedProbe}},'Only the actual tool-format diagnostic and tool status may change; Chat evidence, identity, state, timing, metrics and task validation remain unchanged.');
   validToolFormat=false;await assert.rejects(runtime.calibrateModel(spec.id),{code:'MODEL_CALIBRATION_FAILED'});const failed=await runtime.prepareModel(spec.id);assert.equal(failed.toolCapable,false);assert.deepEqual(failed.capabilities,['completion']);
-  assert.deepEqual(runtime.getStatus().experimentalTrial,trial,'A failed tool probe retains the successful Chat-only trial without promoting it.');
+  const failedTrial=runtime.getStatus().experimentalTrial!,failedProbe=failedTrial.probes!.tools!;assert.equal(failedProbe.passed,false);assert.equal(failedProbe.toolCallCount,0);assert.deepEqual(failedProbe.toolCalls,[]);assert.equal(failedProbe.content,'Hello');assert.equal(failedProbe.requestedOutputTokens,96);assert.deepEqual(failedProbe.binding,passedProbe.binding);
+  assert.deepEqual(failedTrial,{...trial,probes:{...trial.probes,tools:failedProbe}},'A failed tool probe retains the successful Chat evidence and exact trial identity without promoting it.');
   await runtime.cancelExperimentalTrial();const cancelled=runtime.getStatus().experimentalTrial;
   validToolFormat=true;await assert.rejects(runtime.calibrateModel(spec.id),{code:'EXPERIMENTAL_TRIAL_REQUIRED'});assert.deepEqual(runtime.getStatus().experimentalTrial,cancelled,'Calibration cannot revive a cancelled trial.');
 });
@@ -427,10 +440,10 @@ test('experimental RAM refresh preserves validated Metal devices for the return 
   const automaticFlags=launches.filter(args=>args.includes('--model')).at(-1)!;assert(!automaticFlags.includes('--device'));assert(!automaticFlags.includes('--n-gpu-layers'));assert.equal(automaticFlags[automaticFlags.indexOf('--fit')+1],'on');
 });
 
-test('execution request timeout is configurable to one hour while control APIs retain short limits',async t=>{
+test('execution request timeout is configurable to eight hours while control APIs retain short limits',async t=>{
   const nativeFetch=fetch;let captured:AbortSignal|undefined;
   const {runtime}=await fixture(t,{},hardware,async(input,init)=>{if(String(input).endsWith('/v1/chat/completions')&&JSON.parse(String(init?.body)).messages?.[0]?.content==='deadline probe'){captured=init?.signal??undefined;return new Promise((_resolve,reject)=>{captured?.addEventListener('abort',()=>reject(captured?.reason),{once:true});});}return nativeFetch(input,init);});
   await runtime.start();await runtime.prepareModel(spec.id);runtime.setExecutionRequestTimeout(1000);
   await assert.rejects(runtime.requestStream('/v1/chat/completions',{messages:[{role:'user',content:'deadline probe'}]}),{name:'TimeoutError'});assert(captured?.aborted);
-  runtime.setExecutionRequestTimeout(3600000);assert.throws(()=>runtime.setExecutionRequestTimeout(3600001),{code:'INVALID_REQUEST_DEADLINE'});assert.equal((await runtime.requestJson<{total_slots:number}>('/props')).total_slots,1);
+  runtime.setExecutionRequestTimeout(28800000);assert.throws(()=>runtime.setExecutionRequestTimeout(28800001),{code:'INVALID_REQUEST_DEADLINE'});assert.equal((await runtime.requestJson<{total_slots:number}>('/props')).total_slots,1);
 });

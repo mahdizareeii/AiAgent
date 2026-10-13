@@ -15,8 +15,8 @@ export default function Utilities({ preferences, mode, toolCapable, projectSelec
     const workspaceReady = !utility.modes || utility.modes.length !== 1 || utility.modes[0] !== 'coding' || projectSelected;
     const modelReady = utility.id === 'fileReading' || calibrated;
     const active = preferences[utility.id] && availableInMode && availableForModel && workspaceReady && modelReady;
-    const scope = utility.modes?.[0] === 'coding' ? 'Agent only' : 'All modes';
-    const availability = preferences[utility.id] ? !availableForModel ? 'Needs an agent model' : !availableInMode ? 'Enabled' : !workspaceReady ? 'Choose workspace' : !modelReady ? 'Check tools & speed' : 'Active' : 'Off';
+    const scope = utility.modes?.[0] === 'coding' ? 'Tasks only' : 'Tasks & chat';
+    const availability = preferences[utility.id] ? !availableForModel ? 'Needs validated model tools' : !availableInMode ? 'Enabled for tasks' : !workspaceReady ? 'Choose workspace' : !modelReady ? 'Tool format unverified' : 'Active' : 'Off';
     return <label className={`utility-card ${active ? 'utility-enabled' : ''}`} key={utility.id}>
       <div className="utility-card-title"><Icon name={utility.icon} size={16} /><span>{utility.label}</span><input type="checkbox" checked={preferences[utility.id]} disabled={disabled} onChange={(event) => void onChange({ ...preferences, [utility.id]: event.target.checked })} aria-label={`Enable ${utility.label.toLowerCase()} (${scope.toLowerCase()})`} /><span className="toggle-track" aria-hidden="true" /></div>
       <p>{utility.description}</p><span className={`utility-scope ${active ? 'utility-active' : ''}`}>{scope} · {availability}</span>{utility.review && <span className="utility-approval">Approval for every action</span>}

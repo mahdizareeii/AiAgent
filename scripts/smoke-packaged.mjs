@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { sha256File, validateNativeEngine, verifyInferenceResources } from './prepare-inference.mjs';
+import { verifySSDInferenceResources } from './prepare-ssd-inference.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createActionHost } from '../local-agent/desktop/action-host.ts';
@@ -51,6 +52,12 @@ assert.equal(await sha256File(gooseExecutable), gooseManifest.sha256, 'Packaged 
 const inferenceManifest = await verifyInferenceResources(inferenceDirectory);
 const nativeValidation = validateNativeEngine(inferenceDirectory, inferenceManifest);
 assert.equal(nativeValidation.executed, true, 'Run package smoke on the target operating system.');
+if (platform === 'darwin' && process.arch === 'arm64') {
+  const ssdRoot = path.join(resourceDirectory, 'ssd-inference', 'darwin-arm64');
+  const ssd = await verifySSDInferenceResources(ssdRoot);
+  assert.equal(ssd.engine, 'llama.cpp-ssd-experts');
+  assert.equal(ssd.target, 'darwin-arm64');
+}
 
 function environment(extra) {
   const safe = {};
@@ -113,7 +120,7 @@ try {
     const transport = new StdioClientTransport({ command, args, env, cwd: directory, stderr: 'pipe' });
     let stderr = '';
     transport.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
-    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.4.0-alpha.4' });
+    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.5.0-alpha.1' });
     connections.push({ client, transport });
     try { await bounded(client.connect(transport), `${label} initialization`); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}${stderr ? `\n${stderr}` : ''}`); }

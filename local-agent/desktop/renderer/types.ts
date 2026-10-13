@@ -1,6 +1,6 @@
 export type Mode = 'coding' | 'research' | 'assistant';
 export type TaskEffort = 'standard' | 'careful';
-export type MemoryMode = 'automatic' | 'low-memory' | 'experimental-disk';
+export type MemoryMode = 'automatic' | 'low-memory' | 'experimental-disk' | 'ssd-experts';
 export interface TaskCheck { id: string; title: string; status: 'passed' | 'failed' | 'unverified'; detail: string; toolId?: string;
   evidence?: { operation?: string; path?: string; sha256?: string; changed?: boolean; actionId?: string; complete?: boolean }; }
 export interface TaskOutcome {
@@ -9,9 +9,45 @@ export interface TaskOutcome {
   model?: { id: string; digest: string; runtime: string; contextTokens: number; backend: string; memoryMode: MemoryMode };
 }
 export interface ExperimentalTrialView {
-  state: string; modelId: string; reason?: string; startedAt?: string; profileSignature?: string;
+  probes?: { chat?: FixedProbeDiagnostic; tools?: FixedProbeDiagnostic };
+  id?: string; state: string; modelId: string; reason?: string; startedAt?: string; finishedAt?: string; profileSignature?: string;
+  error?: { code: string; message: string } | null; errorCode?: string;
+  progress?: { stage: 'verifying' | 'planning' | 'loading' | 'probing'; message?: string; completedBytes?: number; totalBytes?: number };
+  mode?: MemoryMode; digest?: string; artifactSetDigest?: string; templateDigest?: string; engineDigest?: string;
+  backendValidation?: 'cpu-baseline' | 'validated' | 'qa-unvalidated';
+  parityReportDigest?: string;
+  probePassed?: boolean; toolProbePassed?: boolean;
   mappedBytes?: number; lazyEligibleBytes?: number; rssBytes?: number; peakRssBytes?: number; limitBytes?: number;
+  physicalFootprintBytes?: number; peakPhysicalFootprintBytes?: number;
+  cacheBytes?: number; cacheHits?: number; cacheMisses?: number; bytesRead?: number;
+  streaming?: { cacheBytes?: number; cacheHits?: number; cacheMisses?: number; bytesRead?: number; residentBytes?: number; expertGroups?: number; expectedExpertGroups?: number; slotsPerLayer?: number; ioMode?: string;
+    cpuKernel?: 'unknown' | 'standard' | 'default'; useExtraBufts?: boolean | null; cpuRepackTensorCount?: number | null; decodeThreads?: number | null; batchThreads?: number | null };
   pressure?: 'normal' | 'warning' | 'critical'; availableMemoryBytes?: number;
+}
+/** Bounded responses from the runtime's fixed local checks, never user tasks. */
+export interface FixedProbeDiagnostic {
+  kind: 'chat' | 'tools'; passed: boolean; requestedOutputTokens: number; thinkingDisabled: true;
+  finishReason: string | null; content: string | null; reasoning: string | null;
+  outputTokens: number | null; reasoningTokens: number | null;
+  toolCalls: { name: string | null; arguments: string | null }[]; toolCallCount: number; truncated: boolean;
+  binding: { model: string; digest?: string; templateHash?: string; runtime?: string; profileSignature?: string; trialId?: string };
+}
+/** Durable diagnostics only; these records never confer model readiness. */
+export interface SSDTrialHistoryEntry {
+  id: string; mode: 'ssd-experts'; model: string;
+  state: 'loading' | 'calibrating' | 'passed' | 'failed' | 'cancelled' | 'stopped' | 'incomplete';
+  startedAt: string; finishedAt?: string; profileSignature: string;
+  artifactSetDigest?: string; templateDigest?: string; engineDigest?: string; patchDigest?: string;
+  backendValidation?: ExperimentalTrialView['backendValidation']; parityReportDigest?: string;
+  checks: { chat: 'passed' | 'failed' | 'unverified'; tools: 'passed' | 'failed' | 'unverified' };
+  error: { code: string; message: string } | null;
+  progress?: ExperimentalTrialView['progress']; probes?: ExperimentalTrialView['probes'];
+  resources?: {
+    residentBudgetBytes: number | null; allocationBudgetBytes?: number;
+    measurements?: { sampledAt: string; residentBytes: number; physicalFootprintBytes?: number | null; rssBytes?: number; availableMemoryBytes: number; pressure: 'normal' | 'warning' | 'critical' } | null;
+    streaming?: { expectedGroups: number; streamedGroups: number; cacheSlotsPerLayer: number; expertCacheBytes: number; bytesRead?: number; cacheMisses?: number; waves?: number;
+      cpuKernel?: 'unknown' | 'standard' | 'default'; useExtraBufts?: boolean | null; cpuRepackTensorCount?: number | null; decodeThreads?: number | null; batchThreads?: number | null };
+  };
 }
 export interface ModelValidationRecord {
   id: string; modelId: string; digest: string; templateHash: string; runtime: string; profileSignature: string;
@@ -73,16 +109,34 @@ export interface LocalModel {
     gpuBudgetBytes: number;
   };
   toolCapable: boolean;
+  toolValidationEligible?: boolean;
+  historicalBindingVerified?: boolean;
+  needsPreparation?: boolean;
   measuredTokensPerSecond?: number;
   sourceUrl?: string;
   digest?: string;
+  templateHash?: string;
+  integrity?: 'unverified' | 'verified' | 'failed';
+  artifacts?: { filename: string; sizeBytes?: number; estimatedDownloadBytes?: number; sha256: string }[];
+  acquisitionBlocker?: { code: string; message: string } | null;
+  useBlocker?: { code: string; message: string } | null;
+  trialBlocker?: { code: string; message: string } | null;
+  ssdEligibility?: { supported: boolean; reason: string; minimumSlotsPerLayer: number | null; engineReady: boolean };
+  taskGuidance?: { id: 'coding' | 'websites' | 'automation' | 'documents' | 'research'; label: string; icon: string; description: string; examples: string[] }[];
+  chatProbe?: ModelProbe;
+  toolProbe?: ModelProbe;
+  emitsThinking?: boolean;
 }
+
+export interface ModelProbe { status: 'passed' | 'failed' | 'unverified'; detail?: string; digest?: string; templateHash?: string; runtime?: string; profileSignature?: string; }
 
 export interface SessionSummary {
   id: string;
   title: string;
   updatedAt: string | number;
   resumable?: boolean;
+  mode?: Mode;
+  taskEffort?: TaskEffort;
 }
 
 export interface AgentStatus {
@@ -92,6 +146,7 @@ export interface AgentStatus {
     version?: string;
     error?: string;
     errorCode?: string;
+    engineIdentity?: string;
   };
   modelsError?: string;
   storage?: { profile: 'regular' | 'isolated'; path: string; modelCachePath: string };
@@ -102,10 +157,15 @@ export interface AgentStatus {
   slowMode: boolean;
   memoryMode?: MemoryMode;
   defaultTaskEffort?: TaskEffort;
+  ssdTaskHours?: 4 | 8;
   experimentalTrial?: ExperimentalTrialView;
+  trialHistory?: SSDTrialHistoryEntry[];
+  trialHistoryError?: { code: string; message: string } | null;
   validationRecords?: ModelValidationRecord[];
   activeSessionId?: string;
   activeTurnId?: string;
+  downloadingModel?: string | null;
+  downloadProgress?: DownloadProgress | null;
   models: LocalModel[];
   recommendation: string | null;
   selectedModel: string | null;
@@ -192,9 +252,10 @@ export interface LocalAgentBridge {
   setUtilities(preferences: UtilityPreferences): Promise<void>;
   setPlugins(preferences: PluginPreferences): Promise<void>;
   setSlowMode(enabled: boolean): Promise<void>;
-  setExecutionPreferences(options: { memoryMode?: MemoryMode; taskEffort?: TaskEffort }): Promise<void>;
+  setExecutionPreferences(options: { memoryMode?: MemoryMode; taskEffort?: TaskEffort; ssdTaskHours?: 4 | 8 }): Promise<void>;
+  startModelTrial?(id: string, route: 'ssd-experts'): Promise<void>;
   tryExperimentalModel(id: string): Promise<void>;
-  cancelModelTrial(): Promise<void>;
+  cancelModelTrial(trialId: string): Promise<void>;
   createModelValidationTask(id: string): Promise<{ sessionId: string; prompt: string }>;
   downloadModel(id: string): Promise<void>;
   cancelDownload(): Promise<void>;

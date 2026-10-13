@@ -21,7 +21,7 @@ export default function Plugins({ status, disabled, onEnable, onWebResearch }: P
       </div>
       <p className="plugin-description">Research a task before acting. Check project versions, compare official documentation and release notes, and include sources in the result. The agent then continues with the task using your enabled tools.</p>
       <label className="plugin-setting">
-        <span><strong>Enable Research</strong><span>Use this research workflow in Agent and Research tasks.</span></span>
+        <span><strong>Enable Research</strong><span>Research your task before the agent acts.</span></span>
         <input type="checkbox" aria-label="Enable Research" checked={enabled} disabled={disabled || !status} onChange={(event) => void onEnable(event.target.checked)} />
         <span className="toggle-track" aria-hidden="true" />
       </label>

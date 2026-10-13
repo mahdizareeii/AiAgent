@@ -54,7 +54,7 @@ export class StagedWork {
       PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', TEMP: process.env.TEMP ?? '', TMPDIR: process.env.TMPDIR ?? '',
       LOCAL_AGENT_MODE: 'assistant', LOCAL_AGENT_GRANTED_ROOTS: JSON.stringify(this.options.roots), LOCAL_AGENT_GRANTED_FILES: JSON.stringify(this.options.files),
       LOCAL_AGENT_UTILITIES: JSON.stringify({ ...this.options.utilities, projectSearch: false, webResearch: false }), LOCAL_AGENT_TOOL_RESULT_CHARS: '3000' } });
-    this.client = new Client({ name: 'local-agent-stages', version: '0.4.0-alpha.4' });
+    this.client = new Client({ name: 'local-agent-stages', version: '0.5.0-alpha.1' });
     this.cancelRead = () => { void this.client?.close().catch(() => {}); void this.transport?.close().catch(() => {}); };
     this.options.signal.addEventListener('abort', this.cancelRead, { once: true });
     this.options.signal.throwIfAborted();

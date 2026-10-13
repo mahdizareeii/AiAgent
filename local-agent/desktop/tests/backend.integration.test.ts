@@ -16,6 +16,7 @@ import { taskInstructions } from '../agent-policy.ts';
 import { LocalActions, type ActionPermission } from '../actions.ts';
 import { createActionHost } from '../action-host.ts';
 import { DEFAULT_PLUGINS, effectiveUtilities } from '../state.ts';
+import { emptyToolHistory, restoreToolHistory, updateToolHistory } from '../tool-history.ts';
 import type { AgentEvent, Mode, PluginPreferences, UtilityPreferences } from '../renderer/types.ts';
 
 // These tests use the actual downloaded Goose binary and frozen research sidecar.
@@ -35,6 +36,7 @@ const maxTokensPrompt = 'OUTPUT_LIMIT_FIXTURE';
 const hangPrompt = 'WAIT_FOR_CANCELLATION_FIXTURE';
 const failedEditPrompt = 'FAIL_IDENTICAL_EDIT_FIXTURE';
 const timedCommandPrompt = 'TIMEOUT_COMMAND_FIXTURE';
+const commandOutputPrompt = 'COMMAND_OUTPUT_FIXTURE';
 const failedLogReadPrompt = 'MISUSE_CREATION_ID_FOR_LOG_FIXTURE';
 const unsupportedReadPrompt = 'READ_UNSUPPORTED_LOCAL_FIXTURE';
 const errorSourceReadPrompt = 'READ_ERROR_JSON_SOURCE_FIXTURE';
@@ -239,6 +241,7 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
         const wantsMaxTokens = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(maxTokensPrompt));
         const wantsHang = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(hangPrompt));
         const wantsTimedCommand = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(timedCommandPrompt));
+        const wantsCommandOutput = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(commandOutputPrompt));
         const wantsFailedLogRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(failedLogReadPrompt));
         const wantsUnsupportedRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(unsupportedReadPrompt));
         const wantsErrorSourceRead = messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes(errorSourceReadPrompt));
@@ -269,6 +272,17 @@ async function fixture(mode: Mode, overrides: Partial<UtilityPreferences> = {}, 
             const logTool = chat.tools.find(tool => /(?:^|__)read_command_output$/.test(tool.function.name));
             if (!id || !logTool) sendStream(response, { content: 'CREATION_RECEIPT_OR_LOG_TOOL_MISSING' });
             else sendFragmentedToolStream(response, logTool.function.name, JSON.stringify({ id, offset: 0 }), `misused-action-log-${toolMessages.length}`);
+          }
+        }
+        else if (wantsCommandOutput) {
+          if (messages.some(message => message.role === 'tool')) sendStream(response, { content: 'COMMAND_OUTPUT_VERIFIED' });
+          else {
+            const commandTool = chat.tools.find(tool => /(?:^|__)run_command$/.test(tool.function.name));
+            const executable = process.platform === 'win32' ? `"${process.execPath}"` : `'${process.execPath.replace(/'/g, `'"'"'`)}'`;
+            if (!commandTool) sendStream(response, { content: 'COMMAND_TOOL_MISSING' });
+            else sendFragmentedToolStream(response, commandTool.function.name, JSON.stringify({
+              command: `${executable} command-output-fixture.cjs`, cwd: '.', timeout_ms: 5000,
+            }), 'actual-command-output');
           }
         }
         else if (wantsTimedCommand) {
@@ -525,6 +539,53 @@ test('real Goose stops on a structured approved-command timeout and never repeat
       assert.equal(run.chats.filter(chat => chat.tools?.length).length, 1);
       assert.ok(run.events.some(event => event.type === 'tool' && event.status === 'failed' && JSON.stringify(event.output).includes('COMMAND_TIMEOUT')));
       assert.equal(await readFile(run.selectedFile, 'utf8'), `${fixtureText}\n`);
+      assert.deepEqual(run.errors, []);
+    } finally { await run.cleanup(); }
+  });
+
+test('real Goose retains actual bounded command output in Working without adding it again to provider context or replaying execution',
+  { skip: skipReason('coding'), timeout: 120_000 }, async () => {
+    const run = await fixture('coding', { fileEditing: false }, true);
+    try {
+      const digest = createHash('sha256').update(await readFile(run.selectedFile)).digest('hex');
+      const stdout = `PASS valid\r\nPASS empty\r\nPASS malformed\r\nPASS nonnumeric — سلام 😀\r\nSHA-256: ${digest}\n`;
+      const outputFile = path.join(run.project, 'command-output.txt');
+      const scriptFile = path.join(run.project, 'command-output-fixture.cjs');
+      await writeFile(outputFile, stdout);
+      await writeFile(scriptFile, "process.stdout.write(require('node:fs').readFileSync('command-output.txt', 'utf8'));\n");
+      assert.equal((await run.backend.prompt(commandOutputPrompt)).stopReason, 'end_turn');
+      assert.equal(run.permissions.length, 1, 'The actual command must pass the normal approval host exactly once.');
+      assert.match(run.permissions[0].command!, / command-output-fixture\.cjs$/);
+      assert.equal(run.permissions[0].arguments.timeout_ms, 5000);
+      const receipt = mutationReceipt(run.events, 'run_command');
+      assert.equal(receipt.ok, true);
+      assert.equal(receipt.exit_code, 0);
+      assert.equal(receipt.output_complete, true);
+      assert.equal(receipt.next_offset, null);
+      assert.match(String(receipt.durable_id), /^[a-f0-9-]{36}$/);
+      assert.ok(String(receipt.output_text).includes(stdout), 'Working must retain the real stdout from the ACP text content.');
+      const completed = run.events.find(event => event.type === 'tool' && event.status === 'completed' && event.output === receipt);
+      assert.ok(completed && completed.type === 'tool');
+      const history = run.events.filter(event => event.type === 'tool').reduce((state, event) => {
+        if (event.type !== 'tool') return state;
+        return updateToolHistory(state, event);
+      }, emptyToolHistory());
+      const saved = restoreToolHistory(JSON.parse(JSON.stringify(history.tools)));
+      assert.deepEqual(saved.tools.find(tool => tool.id === completed.id)?.output, receipt, 'Saved Working must retain stdout and receipt after reopening.');
+      const chats = run.chats.filter(chat => chat.tools?.length);
+      assert.equal(chats.length, 2, 'One actual command result must return to Goose before the final answer; no replay is permitted.');
+      const toolResults = chats[1].messages?.filter(message => message.role === 'tool') ?? [];
+      assert.equal(toolResults.length, 1);
+      const providerResult = JSON.stringify(toolResults[0].content);
+      assert.equal(providerResult.split('PASS valid').length - 1, 1, 'Display enrichment must not duplicate command stdout in model context.');
+      assert.ok(providerResult.includes(digest));
+      assert.ok(!providerResult.includes('output_text'), 'The UI-only field must never enter provider/MCP content.');
+      const logs = path.join(path.dirname(run.project), 'history', 'command-logs');
+      assert.deepEqual((await readdir(logs)).sort(), [`${receipt.durable_id}.json`, `${receipt.durable_id}.log`], 'Only one durable command log and its metadata may be created.');
+      assert.equal(await readFile(path.join(logs, `${receipt.durable_id}.log`), 'utf8'), stdout);
+      assert.equal(createHash('sha256').update(await readFile(run.selectedFile)).digest('hex'), digest);
+      assert.equal(await readFile(outputFile, 'utf8'), stdout);
+      assert.equal(run.events.filter(event => event.type === 'message' && !event.thinking).map(event => event.type === 'message' ? event.text : '').join(''), 'COMMAND_OUTPUT_VERIFIED');
       assert.deepEqual(run.errors, []);
     } finally { await run.cleanup(); }
   });

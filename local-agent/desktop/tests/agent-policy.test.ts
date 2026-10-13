@@ -88,6 +88,14 @@ test('Careful tasks require evidence-backed checks and bounded repair cycles wit
   assert.doesNotMatch(careful, /WordPress|docker|MariaDB/i);
 });
 
+test('task instructions reflect the frozen SSD active budget', () => {
+  for (const hours of [4, 8]) {
+    const policy = taskInstructions('coding', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful', hours * 60 * 60_000);
+    assert.match(policy, new RegExp(`40-step and ${hours * 60}-minute active execution`));
+    assert.doesNotMatch(policy, /60-minute active execution/);
+  }
+});
+
 test('concise Agent policy keeps exact source, network, approvals and failure boundaries together', () => {
   const instructions = taskInstructions('coding', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful');
   assert.match(instructions, /exact UTF-8.*BOM, CRLF, trailing newlines and Unicode/);

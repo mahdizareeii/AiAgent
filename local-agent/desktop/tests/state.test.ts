@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULT_PLUGINS, DEFAULT_UTILITIES, effectiveUtilities, emptyState, migrateState, pluginSchema } from '../state.ts';
 import { MAX_THINKING_BYTES } from '../thinking.ts';
+import { NORMAL_TASK_BUDGET_MS } from '../execution-policy.ts';
 
-test('v3 migration preserves existing task behavior and v4 retains outcomes and execution preferences', () => {
+test('legacy migration preserves task behavior and v5 retains outcomes and execution preferences', () => {
   const session = { id: '596c9bc7-bacc-44bf-9f43-9eb5108acb5d', title: 'Retained task', updatedAt: '2026-10-10T00:00:00Z', mode: 'coding', projectPath: '/project', files: [{ name: 'notes.txt', path: '/project/notes.txt' }], messages: [{ role: 'assistant', content: 'Readback retained.' }] };
   const migrated = migrateState({ version: 3, selectedModel: 'qwen3.5:4b', mode: 'coding', sessions: [session] });
-  assert.deepEqual(migrated.sessions, [session]); assert.equal(migrated.sessions[0].taskEffort ?? 'standard', 'standard');
+  assert.deepEqual(migrated.sessions, [{ ...session, executionBudgetMs: NORMAL_TASK_BUDGET_MS }]); assert.equal(migrated.sessions[0].taskEffort ?? 'standard', 'standard');
   assert.equal(migrated.defaultTaskEffort, 'careful'); assert.equal(migrated.memoryMode, 'automatic');
   const outcome = { status: 'timed-out', finishReason: 'active deadline', checks: [{ id: 'read:1', title: 'read_file', status: 'passed', detail: 'Literal 1: text\r\n', evidence: { operation: 'read_file', path: '/project/notes.txt', sha256: 'a'.repeat(64), complete: true } }] };
   const current = { ...migrated, memoryMode: 'low-memory', defaultTaskEffort: 'standard', sessions: [{ ...session, taskEffort: 'careful', messages: [{ role: 'assistant', content: 'Completed changes preserved.', outcome }] }] };
@@ -23,7 +24,7 @@ test('web research requires both the plugin and web permission and stays unavail
   assert.equal(DEFAULT_UTILITIES.webResearch, false);
   assert.deepEqual(emptyState().plugins, { taskResearch: false });
   assert.deepEqual(DEFAULT_PLUGINS, { taskResearch: false });
-  assert.equal(emptyState().version, 4);
+  assert.equal(emptyState().version, 5);
 });
 
 test('legacy explicit web consent migrates to the plugin while preserving model, project, chats and attachments', () => {
@@ -34,7 +35,7 @@ test('legacy explicit web consent migrates to the plugin while preserving model,
   const { plugins: _legacyMissingPlugins, ...legacy } = existing;
   for (const version of [undefined, 1, 2]) {
     const migrated = migrateState({ ...legacy, version });
-    assert.deepEqual(migrated, { ...existing, plugins: { taskResearch: true } });
+    assert.deepEqual(migrated, { ...existing, plugins: { taskResearch: true }, sessions: existing.sessions.map(session => ({ ...session, executionBudgetMs: NORMAL_TASK_BUDGET_MS })) });
     assert.equal(effectiveUtilities('coding', migrated.utilities, migrated.plugins).webResearch, true);
     assert.equal(effectiveUtilities('assistant', migrated.utilities, migrated.plugins).webResearch, false);
   }
@@ -93,7 +94,7 @@ test('saved local-model thoughts stay separate from answers and older chats rema
     ] };
   for (const version of [1, 2, 3]) {
     const migrated = migrateState({ ...emptyState(), version, sessions: [session] });
-    assert.deepEqual(migrated.sessions, [session]);
+    assert.deepEqual(migrated.sessions, [{ ...session, executionBudgetMs: NORMAL_TASK_BUDGET_MS }]);
     const legacyMessage = { role: 'assistant', content: 'An older reply without thoughts' };
     const older = migrateState({ ...emptyState(), version, sessions: [{ ...session, messages: [legacyMessage] }] });
     assert.deepEqual(older.sessions[0].messages, [legacyMessage]);

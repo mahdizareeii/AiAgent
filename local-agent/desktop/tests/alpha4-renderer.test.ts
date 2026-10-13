@@ -76,7 +76,7 @@ test('conversation, navigation and details use scalable semantic typography at e
   assert.match(css, /\.markdown, \.composer textarea \{ font-size: var\(--font-conversation\)/);
 });
 
-const model: LocalModel = { id: 'weights', name: 'Weights', installed: true, fit: 'insufficient', fitReason: 'Too large', toolCapable: true, digest: 'digest', downloadGB: 20, description: '', license: '', quantization: 'Q4', workingMemoryGB: 24 };
+const model: LocalModel = { id: 'weights', name: 'Weights', installed: true, fit: 'insufficient', fitReason: 'Too large', toolCapable: true, digest: 'digest', templateHash: 'template', integrity: 'verified', downloadGB: 20, description: '', license: '', quantization: 'Q4', workingMemoryGB: 24 };
 const status = { runtime: { ready: true, state: 'ready', version: 'v0.6.0' }, selectedModel: model.id, models: [model], slowMode: false } as AgentStatus;
 
 test('experimental readiness requires the explicit matching successful trial', () => {
@@ -99,7 +99,7 @@ test('low-memory mode permits slow profiles but still refuses insufficient weigh
   assert.equal(modelFitAllowsUse({ ...status, models: [{ ...model, fit: 'slow' }] }, model.id), false);
   assert.equal(modelFitAllowsUse({ ...status, memoryMode: 'low-memory', models: [{ ...model, fit: 'slow' }] }, model.id), true);
   assert.equal(measuredMemory(undefined), 'Unknown');
-  assert.equal(measuredMemory(0), '0.00 GB');
+  assert.equal(measuredMemory(0), '0.00 GiB');
 });
 
 test('task results require recorded passed evidence rather than completion claims', () => {

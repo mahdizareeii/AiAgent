@@ -17,16 +17,23 @@ export function desktopRuntimeStatus(current: RuntimeStatus, missingComponents?:
   const error = current.error?.code === 'MODEL_NOT_FOUND' ? undefined : current.error;
   return { ready: current.state === 'ready' && !missingComponents,
     state: missingComponents ? 'error' : current.state, version: current.version ?? undefined,
+    engineIdentity: current.engineIdentity,
     error: missingComponents ?? error?.message,
     errorCode: missingComponents ? 'AGENT_COMPONENTS_MISSING' : error?.code };
 }
 
 function desktopModel(row: AvailableModel): LocalModel {
   return { id: row.id, name: row.title,
-    downloadGB: (row.estimatedDownloadBytes ?? row.sizeBytes) / 1e9, description: row.description,
+    downloadGB: (row.estimatedDownloadBytes ?? row.sizeBytes) / 1024 ** 3, description: row.description,
     installed: row.installed, blockedReason: row.blockedReason ?? undefined, verificationError: row.verificationError, fit: row.fit, fitReason: row.fitReason,
     license: row.license, quantization: row.quantization, workingMemoryGB: row.workingMemoryGB, memoryEstimate: row.memoryEstimate,
-    toolCapable: row.toolCapable, measuredTokensPerSecond: row.measuredTokensPerSecond, sourceUrl: row.sourceUrl, digest: row.digest ?? undefined };
+    toolCapable: row.toolCapable, toolValidationEligible: row.toolValidationEligible, measuredTokensPerSecond: row.measuredTokensPerSecond, sourceUrl: row.sourceUrl, digest: row.digest ?? undefined,
+    integrity: row.integrity, artifacts: row.artifacts?.map(artifact => ({ ...artifact })),
+    acquisitionBlocker: row.acquisitionBlocker, useBlocker: row.useBlocker, trialBlocker: row.trialBlocker,
+    ssdEligibility: row.ssdEligibility, chatProbe: row.chatProbe, toolProbe: row.toolProbe,
+    historicalBindingVerified: row.historicalBindingVerified, needsPreparation: row.needsPreparation,
+    templateHash: row.templateHash ?? row.chatProbe?.templateHash ?? row.toolProbe?.templateHash,
+    taskGuidance: row.taskGuidance?.map(guidance => ({ ...guidance, examples: [...guidance.examples] })), emitsThinking: row.emitsThinking };
 }
 
 /** A discovery failure must not look like a successfully discovered empty library. */

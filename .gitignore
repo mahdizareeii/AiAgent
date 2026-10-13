@@ -1,8 +1,10 @@
 node_modules/
+.DS_Store
 dist/
 release/
 resources/goose/
 resources/inference/
+resources/ssd-inference/
 .cache/
 *.tar.gz
 *.tar.bz2

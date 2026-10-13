@@ -1,6 +1,6 @@
 # Architecture and trust boundaries
 
-Free Local Agent 0.4.0-alpha.3 uses a custom Electron/React desktop, the Goose v1.53.0 agent
+Free Local Agent 0.5.0-alpha.1 uses a custom Electron/React desktop, the Goose v1.53.0 agent
 engine, a bundled llama.cpp server, and a native research/file sidecar. Goose is
 built from the vendored source with default features disabled and only
 `rustls-tls,disable-update`; online model metadata and telemetry features are not
@@ -16,8 +16,11 @@ flowchart TD
   MAIN -->|ACP stdio| GOOSE[Offline Goose build]
   GOOSE --> GATEWAY[Local token-budget gateway]
   STAGES --> GATEWAY
-  GATEWAY -->|loopback| ENGINE[Bundled llama.cpp server]
+  GATEWAY -->|authenticated loopback| ENGINE[Normal bundled llama.cpp]
+  GATEWAY -->|explicit verified SSD profile| SSD[Separate bounded expert worker]
   ENGINE --> WEIGHTS[Verified local GGUF]
+  SSD --> CACHE[Resident expert cache]
+  CACHE --> SHARDS[Verified local APFS model shards]
   GOOSE -->|MCP stdio| READS[Bundled file and research tools]
   READS --> GRANTS[Selected files and project]
   READS -->|Research plugin plus web permission| WEB[DuckDuckGo and public pages]
@@ -27,15 +30,19 @@ flowchart TD
 
 ## Desktop workspace
 
-The desktop uses a neutral, Codex-inspired task workspace: a saved-task sidebar,
-centered conversation, and bottom composer. **New task** starts in Agent mode;
-the composer exposes mode, workspace, model, and tool controls. **Plugins** is a
-separate page for optional abilities. **Read-only research** is offered when the
-Research plugin is enabled, while legacy saved research tasks remain accessible
-with it disabled. This interface does not imply Codex-equivalent model quality.
+The desktop has one primary **New task** workflow and a separate **New chat**
+action. Planning, implementation, checking, and repair happen automatically.
+Execution overrides, memory controls, calibration, and diagnostics live under
+Advanced. One Workspace control offers Choose folder and Create folder; one
+Models button opens cards before hardware details. Native fonts and shared tokens
+set conversation/composer text to 15 px, code/thinking to 14 px, and controls to
+13 px, with persisted 90–125% scaling.
+
 Research activation and web permission live in Plugins; the composer has no
-duplicate Research toggle. **Find files & text** in Tools is local workspace
-search and retains the existing `projectSearch` preference.
+duplicate Research toggle. **Find files & text** means local workspace search and
+retains the existing `projectSearch` preference. Legacy saved Agent, Chat, and
+research sessions retain their behavior. This interface does not imply equivalent
+model quality to any hosted product.
 
 ## Inference and model fit
 
@@ -79,7 +86,8 @@ and free storage. Working-memory estimates reserve room for the operating system
 and classify models as recommended, slow, or insufficient. Slow mode permits a
 bounded CPU/offload profile; it does not shrink weights or permit a model beyond
 the hardware budget. A small active-parameter count in an expert model still
-requires all stored weights. The four-bit catalog variants lower weight precision
+requires the complete verified stored weights. The separate SSD route changes
+resident placement, while preserving those weights and every selected expert. The four-bit catalog variants lower weight precision
 to reduce storage and memory, with a quality tradeoff. Read stages reduce context,
 not weight memory. Calibration checks native tool calling and measures this
 computer's generation speed; task quality remains a separate manual evaluation.
@@ -87,18 +95,71 @@ Model cards disclose weight, 8K-context, scratch, operating-system reserve, and
 system/GPU budget components. The loaded profile reports its actual context
 capacity; these components remain estimates rather than observed peak memory.
 
-Curated downloads use pinned publisher revisions and file SHA-256 values, bounded
-approved artifact hosts, resumable partial files, and verified completion before
-activation. GGUF import hashes the local file and validates bounded metadata,
+Curated downloads use pinned publisher revisions and per-artifact SHA-256 values,
+bounded approved artifact hosts, resumable partial files, and verified completion
+before activation. Download blockers concern disk/integrity/acquisition; ordinary
+use blockers separately concern available memory and template/backend support.
+Qwen3-Coder-Next has four required pinned shards. All parts, their ordering, split
+metadata, total size, and hashes are verified before use; curated split imports
+require selecting the exact complete file set. GGUF import hashes the local file and validates bounded metadata,
 architecture, and embedded chat template; unsupported variants can be rejected.
 Imported models have their own publisher/license responsibility and start as
 chat-only models. Native template support and a passing local tool-call probe are
 required before tool use is enabled. A curated model's declared capability is
 also provisional until its native template and calibration pass; a failed probe
-leaves chat available with agent tools disabled. Calibration results are currently
-held in memory for the runtime session and do not survive its restart.
+leaves chat available with agent tools disabled. Runtime calibration results are scoped to the loaded session/profile. Persisted
+task validation and SSD consent are separately bound to actual weights, template,
+engine inventory, and profile. Stored consent requires fresh preparation; it is
+not a loaded-model readiness claim.
 Inference is local and offline. First catalogue downloads require the internet;
 copying an imported local GGUF does not. Explicitly enabled web tools are separate.
+
+## Experimental SSD worker
+
+The app retains the normal engine and fallback model. The separate worker
+backports routed-expert streaming and waved prefill from commits
+`4260e460832f5e95c41d8b6d8b2aea98007df524` and
+`db5268ffac4c3ddacd7edcf62e78e3a1ba8d8191` onto the pinned base. Its tracked patch,
+build script, full native inventory, retained licenses, and synthetic provenance
+are separate resources. The upstream proposal is unmerged; this is an experimental
+app-specific build. See [worker notes](../scripts/ssd-inference/BUILD.md).
+
+Attention, routers, shared experts, context/recurrent state, and working buffers
+remain resident. Cold routed experts are read into bounded per-layer caches.
+Read/upload completion precedes publication of a usable entry; failed uploads,
+cancelled waits, and incomplete reads cannot publish resident entries. Wave masks
+partition prefill computation while every selected expert is evaluated with its
+original quantized values. All expected routed groups must confirm streaming;
+silent full-model fallback is rejected. Gemma requires 24 slots/layer and Qwen 30.
+Only descriptor-local Darwin cache bypass on a local APFS volume is accepted.
+
+One model/context/slot, 4K context, 1K output allowance, batch 64, microbatch 16,
+F16 context cache, and two I/O workers bound the initial profile. CPU is the
+baseline. Production Metal selection requires a manifest-covered numerical and
+real-task validation record for the exact model/template/engine/profile; trusted
+isolated QA overrides cannot persist successful production consent. Backends
+never switch during a task. macOS 14+ ARM64 is required; other systems retain the
+normal engine.
+
+Before a trial, main guards active work and unloads its preceding owned model.
+The resident stop threshold is below `min(total RAM − OS reserve, available RAM −
+1 GiB)`, with additional process headroom deducted for allocation. OS reserve is
+at least 2 GiB or 20% of RAM. The native ledger separately guards dense weights,
+cache, context/recurrent state, graphs, staging/uploads, output/arenas, and
+reserved overhead before major allocations. Footprint and RSS are measured
+independently, never summed as unified memory. Two-second monitoring is serialized;
+missing monitoring, unsafe memory/pressure, deadlines, and cancellation stop the
+owned worker. These are sampled protections, not an instantaneous OS memory cap.
+
+Loading and shared probes each allow 30 minutes. Authenticated short control
+requests arm the remaining deadline for each inference, and response completion
+or idle approval waits disarm it. Local HTTP streaming avoids an implicit
+five-minute transport limit; health, metadata and token-count requests stay short.
+The trusted fatal-worker event aborts its task and settles pending approvals
+before another action can execute. A worker stop cannot authorize action replay.
+Failure/cancellation restores the preceding usable configuration and preserves
+drafts; activation requires matching model digest, template, profile, engine,
+Chat and tool probes. Old mmap results cannot validate this worker.
 
 ## Model thinking and working activity
 
@@ -124,7 +185,7 @@ approvals remain separate main-process decisions.
 
 ## Workspace selection
 
-**Add folder** uses a native existing-directory picker. **Create folder** accepts
+**Choose folder** uses a native existing-directory picker. **Create folder** accepts
 a validated single folder name and opens a native parent-directory picker. On
 macOS both pickers explicitly clear native file-type restrictions while keeping
 `openDirectory`, so their selection remains folder-only. The
@@ -212,10 +273,11 @@ outcomes and precise observed blockers, respect denied actions, and avoid replay
 completed commands or edits. WordPress is a task-verification example, with no
 dedicated generator, tool, or policy branch.
 
-Saved state version 3 persists plugin and web preferences independently. Missing
+Saved state version 5 persists plugin/web preferences, task budgets, text scale,
+and execution settings independently. Missing
 plugin settings in version 1/2 or unversioned legacy stores preserve prior explicit
 web consent by enabling Research during migration. Missing plugin settings in a
-version 3 store default off. Explicit saved plugin choices always win, including
+version 3 or later store default off. Explicit saved plugin choices always win, including
 false with web consent true. Migration preserves conversations, attachments,
 model selection, project paths, and the existing model and undo stores. Settings
 changes are rejected while a task is running; failed persistence restores the
@@ -226,6 +288,24 @@ arguments and a diff or command. Denial leaves the action unexecuted; approval
 applies once. Unknown/consumed requests cannot grant later access. Writes are
 bounded to the selected project and have pre-edit snapshots. Saved coding chats
 restore their per-chat undo history.
+
+New tasks use the bounded Plan → Implement → Verify → Repair → Final policy,
+with 40 model steps and three repair cycles. Standard remains an Advanced
+compatibility override. Task budgets freeze at creation: normal/migrated tasks
+retain one hour, new SSD tasks get four or eight active hours. Approval waits
+pause the active clock without extending approval expiry. Remaining time and
+cancellation propagate through preparation, stages, compaction, native inference,
+Goose transport and shutdown. Expiry records evidence and needs explicit
+continuation; no agent turn is automatically replayed.
+
+Exact UTF-8 file text is separate from line/location metadata. Mutation results
+state changed/unchanged and the verified digest; edit arguments are never silently
+stripped of prefixes. Two identical failed edits against unchanged input stop
+that loop. Backend completion reasons become completed, blocked, cancelled,
+timed-out or incomplete outcomes. If a non-cancelled turn returns no answer,
+at most one bounded tools-disabled finalization can describe retained evidence.
+Checks are Passed/Failed/Unverified based on readbacks or command results rather
+than the model's success claim.
 
 Each proposed command includes its execution time limit in the reviewed arguments.
 The default is `timeout_ms: 60000`; an explicit integer from 100 to 600000 ms
@@ -285,7 +365,8 @@ Tests of fake providers and mocked networks establish protocol/permission behavi
 not actual model competence, GPU allocation, or complete-agent speed. Native
 resource smoke tests validate pinned offline manifests, engine version, packaged
 MCP controls, and denied writes without loading an LLM or contacting a public site.
-See [current verification status](build-verification.md), the
+See the [alpha.5 model/package report](alpha5-validation.md),
+[current verification status](build-verification.md), the
 [Working/folder record](working-folders-validation.md), the previous
 [workspace and plugin record](workspace-plugin-validation.md), and the
 [real-model rubric](alpha-validation.md).

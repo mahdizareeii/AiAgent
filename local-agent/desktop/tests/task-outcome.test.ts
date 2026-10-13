@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { checksFromReadTools, checkFromHostAction, outcomeStatus } from '../task-outcome.ts';
+import { checksFromReadTools, checkFromHostAction, outcomeStatus, shouldFinalizeTask } from '../task-outcome.ts';
 import { TaskClock } from '../task-clock.ts';
+
+test('an interrupted task needs closing evidence even when it streamed progress prose', () => {
+  assert.equal(shouldFinalizeTask({ hasAnswer: true, aborted: false, finishReason: 'CONTEXT_LIMIT', error: 'Context full' }), true);
+  assert.equal(shouldFinalizeTask({ hasAnswer: true, aborted: false, finishReason: 'max_tokens' }), true);
+  assert.equal(shouldFinalizeTask({ hasAnswer: false, aborted: false, finishReason: 'end_turn' }), true);
+  assert.equal(shouldFinalizeTask({ hasAnswer: true, aborted: false, finishReason: 'end_turn' }), false);
+  assert.equal(shouldFinalizeTask({ hasAnswer: true, aborted: true, finishReason: 'CONTEXT_LIMIT', error: 'Stopped' }), false);
+});
 
 test('verification uses actual host receipt and read metadata rather than model success claims', () => {
   const result = checkFromHostAction({ id: 'a', title: 'Write file', status: 'completed', output: { structuredContent: { ok: true, changed: true, sha256: 'a'.repeat(64) }, content: [] } });

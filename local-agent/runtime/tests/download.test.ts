@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test';
 import type { CuratedModel } from '../catalog.ts';
 import { downloadModel, type PullProgress } from '../download.ts';
 import { readGGUFMetadata } from '../gguf.ts';
+import { RuntimeError } from '../errors.ts';
 
 const uint32 = (value: number) => { const bytes = Buffer.alloc(4); bytes.writeUInt32LE(value); return bytes; };
 const uint64 = (value: number | bigint) => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64LE(BigInt(value)); return bytes; };
@@ -78,6 +79,17 @@ test('streams a pinned HTTPS artifact and verifies its SHA and GGUF before publi
   assert.equal(metadata.name, 'دانلود آزمایشی');
   assert.equal(metadata.contextLength, 2048);
   assert.equal(metadata.tensorCount, 1);
+});
+
+test('app-owned checksum readers verify completed downloads and reused artifacts without changing pinned identity',async t=>{
+  const root=await directory(t),files:string[]=[];const hashFile=async(file:string)=>{files.push(path.basename(file));return createHash('sha256').update(await readFile(file)).digest('hex');};
+  await downloadModel(spec,root,{fetch:async()=>new Response(bytes),hashFile});await downloadModel(spec,root,{fetch:async()=>{throw new Error('The verified file should be reused.');},hashFile});assert.deepEqual(files,[spec.filename+'.part',spec.filename]);
+});
+
+test('an operational checksum-reader failure preserves a completed shard without redownloading it',async t=>{
+  const root=await directory(t);await writeFile(path.join(root,spec.filename),bytes);let contacted=false;
+  await assert.rejects(downloadModel(spec,root,{fetch:async()=>{contacted=true;return new Response(bytes);},hashFile:async()=>{throw new RuntimeError('SSD_HASH_RESOURCE_UNAVAILABLE','Not enough current headroom.');}}),{code:'SSD_HASH_RESOURCE_UNAVAILABLE'});
+  assert.equal(contacted,false);assert.deepEqual(await readFile(path.join(root,spec.filename)),bytes);assert.deepEqual(await readdir(root),[spec.filename]);
 });
 
 test('resumes a pinned partial file using Range and appends exactly the missing bytes', async t => {
@@ -189,6 +201,97 @@ test('an interrupted stream retains bytes for retry instead of publishing an inc
   await assert.rejects(downloadModel(spec, root, { fetch: fetcher }), { code: 'DOWNLOAD_INTERRUPTED' });
   assert.deepEqual(await readFile(path.join(root, `${spec.filename}.part`)), bytes.subarray(0, 97));
   assert.deepEqual(await readdir(root), [`${spec.filename}.part`]);
+});
+
+function downloadSplit(index:number,count:number,extra:Buffer[]=[],includeShared=index===0):Buffer{
+  const number=(key:string,value:number)=>Buffer.concat([ggufString(key),uint32(4),uint32(value)]);
+  const records=[...(includeShared?[stringMetadata('general.architecture','llama'),stringMetadata('tokenizer.chat_template','{{ messages | tojson }}')]:[]),number('split.no',index),number('split.count',count),number('split.tensors.count',count),...extra];
+  const header=Buffer.concat([Buffer.from('GGUF'),uint32(3),uint64(1),uint64(records.length),...records,ggufString(`fixture.${index}.weight`),uint32(2),uint64(8),uint64(1),uint32(0),uint64(0)]);
+  return Buffer.concat([header,Buffer.alloc((32-header.length%32)%32),Buffer.alloc(32,index)]);
+}
+function groupedSpec(count=2,prefix='group'):CuratedModel {
+  const artifacts=Array.from({length:count},(_,index)=>{const payload=downloadSplit(index,count),filename=`${prefix}-${String(index+1).padStart(5,'0')}-of-${String(count).padStart(5,'0')}.gguf`;return {filename,remotePath:`${prefix}/${filename}`,sizeBytes:payload.length,sha256:createHash('sha256').update(payload).digest('hex')};});
+  return {...spec,filename:artifacts[0].filename,sha256:artifacts[0].sha256,estimatedDownloadBytes:artifacts.reduce((n,a)=>n+a.sizeBytes,0),artifacts};
+}
+const groupData=(group:CuratedModel,index:number)=>downloadSplit(index,group.artifacts!.length);
+const requestedArtifact=(group:CuratedModel,input:string|URL|Request)=>{const name=decodeURIComponent(new URL(String(input)).pathname.split('/').at(-1)!);const index=group.artifacts!.findIndex(a=>a.filename===name);assert(index>=0);return index;};
+
+test('grouped downloads accept metadata-only secondary shards and resume only the interrupted shard',async t=>{
+  const root=await directory(t),group=groupedSpec(),events:PullProgress[]=[],first=groupData(group,0),second=groupData(group,1);await writeFile(path.join(root,group.artifacts![0].filename),first);
+  const fetcher:typeof fetch=async(input)=>{assert.equal(requestedArtifact(group,input),1);return response(second.subarray(0,97));};
+  await assert.rejects(downloadModel(group,root,{fetch:fetcher,onProgress:p=>events.push(p)}),{code:'DOWNLOAD_INTERRUPTED'});
+  assert.deepEqual(await readdir(root),[group.artifacts![0].filename,group.artifacts![1].filename+'.part']);assert(!events.some(e=>e.status==='success'));
+  let resumed=0;const retry:typeof fetch=async(input,init)=>{resumed++;assert.equal(requestedArtifact(group,input),1);assert.equal(new Headers(init?.headers).get('range'),'bytes=97-');return response(second.subarray(97),206,{'Content-Range':`bytes 97-${second.length-1}/${second.length}`});};
+  await downloadModel(group,root,{fetch:retry,onProgress:p=>events.push(p)});assert.equal(resumed,1);assert.equal(events.at(-1)?.status,'success');assert.equal(events.at(-1)?.completed,group.estimatedDownloadBytes);
+  assert.deepEqual(await readFile(path.join(root,group.artifacts![0].filename)),first);assert.deepEqual(await readFile(path.join(root,group.artifacts![1].filename)),second);
+});
+
+test('shared metadata can be omitted only by the exact expected secondary split',async t=>{
+  const root=await directory(t),secondary=path.join(root,'secondary.gguf'),missingFirst=path.join(root,'first.gguf'),unsplit=path.join(root,'unsplit.gguf');await writeFile(secondary,downloadSplit(1,2));await writeFile(missingFirst,downloadSplit(0,2,[],false));
+  const header=Buffer.concat([Buffer.from('GGUF'),uint32(3),uint64(1),uint64(0),ggufString('fixture.weight'),uint32(2),uint64(8),uint64(1),uint32(0),uint64(0)]);await writeFile(unsplit,Buffer.concat([header,Buffer.alloc((32-header.length%32)%32),Buffer.alloc(32)]));
+  await assert.rejects(readGGUFMetadata(secondary),{code:'INVALID_GGUF'});await assert.rejects(readGGUFMetadata(secondary,undefined,{split:{index:0,count:2}}),{code:'MODEL_SHARD_MISMATCH'});await assert.rejects(readGGUFMetadata(missingFirst,undefined,{split:{index:0,count:2}}),{code:'INVALID_GGUF'});
+  await assert.rejects(readGGUFMetadata(unsplit),{code:'INVALID_GGUF'});await assert.rejects(readGGUFMetadata(unsplit,undefined,{split:{index:1,count:2}}),{code:'MODEL_SHARD_MISMATCH'});const parsed=await readGGUFMetadata(secondary,undefined,{split:{index:1,count:2}});assert.equal(parsed.architecture,'');assert.equal(parsed.chatTemplate,'');
+});
+
+test('complete pinned shards cannot publish success when declared shared metadata contradicts the first shard',async t=>{
+  for(const extra of [[stringMetadata('general.architecture','different')],[stringMetadata('tokenizer.chat_template','different template')]]){const root=await directory(t),group=groupedSpec(),payloads=[groupData(group,0),downloadSplit(1,2,extra)],artifacts=group.artifacts!.map((a,i)=>({...a,sizeBytes:payloads[i].length,sha256:createHash('sha256').update(payloads[i]).digest('hex')})),events:PullProgress[]=[];const invalid={...group,artifacts,estimatedDownloadBytes:payloads.reduce((n,p)=>n+p.length,0)};
+    await assert.rejects(downloadModel(invalid,root,{fetch:async input=>response(payloads[requestedArtifact(invalid,input)]),onProgress:p=>events.push(p)}),{code:'MODEL_SHARD_MISMATCH'});assert(!events.some(e=>e.status==='success'));
+  }
+});
+
+test('a corrupt later shard cannot become ready and preserves unrelated verified shard bytes',async t=>{
+  const root=await directory(t),group=groupedSpec(),first=groupData(group,0),corrupt=groupData(group,1);await writeFile(path.join(root,group.artifacts![0].filename),first);corrupt[corrupt.length-1]^=1;
+  await assert.rejects(downloadModel(group,root,{fetch:async(input)=>{assert.equal(requestedArtifact(group,input),1);return response(corrupt);}}),{code:'MODEL_DIGEST_MISMATCH'});
+  assert.deepEqual(await readdir(root),[group.artifacts![0].filename]);assert.deepEqual(await readFile(path.join(root,group.artifacts![0].filename)),first);
+});
+
+test('group acquisition reserves remaining disk for every shard before making a request',async t=>{
+  const root=await directory(t),group=groupedSpec();let requests=0;
+  await assert.rejects(downloadModel(group,root,{freeDiskBytes:async()=>512*1024**2+group.artifacts![0].sizeBytes,fetch:async()=>{requests++;return response(bytes);}}),{code:'INSUFFICIENT_STORAGE'});assert.equal(requests,0);assert.deepEqual(await readdir(root),[]);
+});
+
+test('independent shard downloads use at most four streams and publish one complete group',async t=>{
+  const root=await directory(t),group=groupedSpec(6,'parallel'),initial:{stream:ReadableStreamDefaultController<Uint8Array>;payload:Buffer}[]=[];let active=0,maximum=0,requests=0;
+  const fetcher:typeof fetch=async input=>{active++;maximum=Math.max(maximum,active);requests++;const payload=groupData(group,requestedArtifact(group,input));return new Response(new ReadableStream<Uint8Array>({start(stream){const finish=()=>{stream.enqueue(payload);stream.close();active--;};if(requests<=4){initial.push({stream,payload});if(initial.length===4)setTimeout(()=>{for(const selected of initial){selected.stream.enqueue(selected.payload);selected.stream.close();active--;}},20);}else setTimeout(finish,20);}}));};
+  const events:PullProgress[]=[];await downloadModel(group,root,{fetch:fetcher,onProgress:p=>events.push(p)});assert.equal(maximum,4);assert.equal(requests,6);assert.equal(events.filter(e=>e.status==='success').length,1);assert.equal(events.at(-1)?.completed,group.estimatedDownloadBytes);for(let i=0;i<group.artifacts!.length;i++)assert.deepEqual(await readFile(path.join(root,group.artifacts![i].filename)),groupData(group,i));
+});
+
+test('cancelling a parallel group drains all four streams and resumes their exact pinned ranges',async t=>{
+  const root=await directory(t),group=groupedSpec(4,'parallel'),controller=new AbortController();let cancelled=0,requested=0;
+  const fetcher:typeof fetch=async input=>{requested++;const payload=groupData(group,requestedArtifact(group,input));return new Response(new ReadableStream<Uint8Array>({start(stream){stream.enqueue(payload.subarray(0,41));},cancel(){cancelled++;}}));};
+  await assert.rejects(downloadModel(group,root,{fetch:fetcher,signal:controller.signal,onProgress:p=>{if(p.status==='downloading'&&(p.completed??0)>=4*41)controller.abort();}}),{name:'AbortError'});assert.equal(requested,4);assert.equal(cancelled,4);
+  for(let i=0;i<group.artifacts!.length;i++)assert.deepEqual(await readFile(path.join(root,group.artifacts![i].filename+'.part')),groupData(group,i).subarray(0,41));
+  let resumed=0;await downloadModel(group,root,{fetch:async(input,init)=>{resumed++;const payload=groupData(group,requestedArtifact(group,input));assert.equal(new Headers(init?.headers).get('range'),'bytes=41-');return response(payload.subarray(41),206,{'Content-Range':`bytes 41-${payload.length-1}/${payload.length}`});}});assert.equal(resumed,4);assert.equal((await readdir(root)).filter(name=>name.endsWith('.part')).length,0);
+});
+
+function requestedRange(init:RequestInit|undefined){const match=new Headers(init?.headers).get('range')?.match(/^bytes=(\d+)-(\d+)$/);assert(match);return [Number(match[1]),Number(match[2])];}
+
+test('bounded ranges continue valid shorter 206 replies until the complete pinned hash verifies',async t=>{
+  const root=await directory(t),requests:number[][]=[];const fetcher:typeof fetch=async(_input,init)=>{const [start,end]=requestedRange(init);requests.push([start,end]);const actualEnd=Math.min(end,start+47);return response(bytes.subarray(start,actualEnd+1),206,{'Content-Range':`bytes ${start}-${actualEnd}/${bytes.length}`,'Content-Length':String(actualEnd-start+1)});};
+  const file=await downloadModel(spec,root,{fetch:fetcher,rangeWindowBytes:64,retryDelayMs:0});assert.deepEqual(await readFile(file),bytes);assert(requests.length>Math.ceil(bytes.length/64));assert(requests.every(([start,end])=>end-start+1<=64));
+});
+
+test('truncated bounded responses resume their written prefix automatically without replaying bytes',async t=>{
+  const root=await directory(t),ranges:number[][]=[],events:PullProgress[]=[];let first=true;
+  const fetcher:typeof fetch=async(_input,init)=>{const [start,end]=requestedRange(init);ranges.push([start,end]);const body=bytes.subarray(start,first?start+23:end+1);first=false;return response(body,206,{'Content-Range':`bytes ${start}-${end}/${bytes.length}`,'Content-Length':String(end-start+1)});};
+  const file=await downloadModel(spec,root,{fetch:fetcher,rangeWindowBytes:64,retryDelayMs:0,onProgress:p=>events.push(p)});assert.deepEqual(await readFile(file),bytes);assert.equal(ranges[1][0],23);assert(events.some(e=>e.status==='retrying'&&e.completed===23));
+});
+
+test('network retries are bounded and never hide integrity or invalid-range failures',async t=>{
+  const root=await directory(t);let requests=0;
+  await assert.rejects(downloadModel(spec,root,{rangeWindowBytes:64,retryDelayMs:0,maxConsecutiveRetries:2,fetch:async()=>{requests++;throw new TypeError('network disconnected');}}),{code:'DOWNLOAD_INTERRUPTED'});assert.equal(requests,3);
+  requests=0;await assert.rejects(downloadModel(spec,root,{rangeWindowBytes:64,retryDelayMs:0,fetch:async()=>{requests++;return response(bytes.subarray(0,64),206,{'Content-Range':`bytes 1-64/${bytes.length}`});}}),{code:'INVALID_DOWNLOAD_RANGE'});assert.equal(requests,1);
+});
+
+test('a ranged publisher cannot reset an existing large-transfer prefix by ignoring Range',async t=>{
+  const root=await directory(t),prefix=bytes.subarray(0,23);await writeFile(path.join(root,spec.filename+'.part'),prefix);
+  await assert.rejects(downloadModel(spec,root,{rangeWindowBytes:64,retryDelayMs:0,fetch:async()=>response(bytes,200)}),{code:'INVALID_DOWNLOAD_RANGE'});assert.deepEqual(await readFile(path.join(root,spec.filename+'.part')),prefix);
+});
+
+test('cancellation interrupts bounded retry backoff and retains the exact prefix',async t=>{
+  const root=await directory(t),controller=new AbortController();let requested=0;
+  const fetcher:typeof fetch=async(_input,init)=>{requested++;const [start,end]=requestedRange(init);return response(bytes.subarray(start,start+23),206,{'Content-Range':`bytes ${start}-${end}/${bytes.length}`});};
+  await assert.rejects(downloadModel(spec,root,{fetch:fetcher,signal:controller.signal,rangeWindowBytes:64,retryDelayMs:1000,onProgress:p=>{if(p.status==='retrying')controller.abort();}}),{name:'AbortError'});assert.equal(requested,1);assert.deepEqual(await readFile(path.join(root,spec.filename+'.part')),bytes.subarray(0,23));
 });
 
 function tensorDescriptor(name: string, dimensions: Array<number | bigint>, type = 0, offset: number | bigint = 0) {

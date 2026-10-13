@@ -34,7 +34,7 @@ for (const platform of ['darwin', 'win32', 'linux'] as const) {
       standalone: async received => {
         calls.push('standalone');
         assert.equal(received, options);
-        assert.equal(state.focuses, 0, 'Focus is restored only after the native panel settles.');
+        assert.equal(state.focuses, 1, 'Focus the owner before presenting a standalone macOS panel.');
         return selection;
       },
       parented: async (receivedOwner, received) => {
@@ -48,7 +48,7 @@ for (const platform of ['darwin', 'win32', 'linux'] as const) {
     }, platform);
     assert.deepEqual(calls, [platform === 'darwin' ? 'standalone' : 'parented']);
     assert.equal(result, selection, 'Selection data must not be reconstructed or modified.');
-    assert.equal(state.focuses, 1);
+    assert.equal(state.focuses, platform === 'darwin' ? 2 : 1);
   });
 }
 
@@ -60,7 +60,7 @@ test('canceling a native panel preserves the exact cancellation result and resto
     parented: async () => { throw new Error('macOS panels must use the standalone overload.'); },
   }, 'darwin');
   assert.equal(result, canceled);
-  assert.equal(state.focuses, 1);
+  assert.equal(state.focuses, 2);
 });
 
 test('native dialog errors are rethrown unchanged after restoring the owner focus', async () => {
@@ -71,7 +71,7 @@ test('native dialog errors are rethrown unchanged after restoring the owner focu
       standalone: async () => { throw failure; },
       parented: async () => { throw failure; },
     }, platform), error => error === failure);
-    assert.equal(state.focuses, 1, platform);
+    assert.equal(state.focuses, platform === 'darwin' ? 2 : 1, platform);
   }
 });
 
@@ -97,7 +97,7 @@ test('an unavailable owner rejects before any native panel can open', async () =
   assert.equal(racing.state.focuses, 0);
 });
 
-test('focus returns to the original live owner only after a pending panel completes', async () => {
+test('a standalone panel focuses its original owner before opening and after completion', async () => {
   const original = windowFixture(), replacement = windowFixture();
   const pending = deferred<{ canceled: false; filePath: string }>();
   let activeWindow = original.owner;
@@ -106,13 +106,13 @@ test('focus returns to the original live owner only after a pending panel comple
     parented: async () => pending.promise,
   }, 'darwin');
   activeWindow = replacement.owner;
-  assert.equal(original.state.focuses, 0);
+  assert.equal(original.state.focuses, 1);
   assert.equal(replacement.state.focuses, 0);
   const selection = { canceled: false as const, filePath: '/screenshots/working.png' };
   pending.resolve(selection);
   assert.equal(await dialog, selection);
   assert.equal(activeWindow, replacement.owner);
-  assert.equal(original.state.focuses, 1);
+  assert.equal(original.state.focuses, 2);
   assert.equal(replacement.state.focuses, 0, 'A newly active window must not replace the original owner.');
 });
 
@@ -160,6 +160,78 @@ test('a focus race cannot replace a successful selection or the original dialog 
     if (fails) await assert.rejects(dialog, error => error === nativeError);
     else assert.equal(await dialog, selection);
   }
+});
+
+test('an open panel prevents another open or save panel for the same owner until settlement', async () => {
+  const { owner, state } = windowFixture();
+  const pending = deferred<{ canceled: boolean }>();
+  let panels = 0;
+  const first = runNativeDialog(owner, { title: 'Import GGUF' }, {
+    standalone: async () => { panels++; return pending.promise; },
+    parented: async () => { throw new Error('Unexpected parented dialog.'); },
+  }, 'darwin');
+  assert.equal(panels, 1);
+  await assert.rejects(runNativeDialog(owner, { title: 'Save screenshot' }, {
+    standalone: async () => { panels++; return { canceled: true }; },
+    parented: async () => { panels++; return { canceled: true }; },
+  }, 'darwin'), /finish the open native dialog/i);
+  assert.equal(panels, 1, 'An overlapping request must not reach the native API.');
+  assert.equal(state.focuses, 1, 'A rejected request must not steal focus from the open panel.');
+  pending.resolve({ canceled: true });
+  await first;
+  await runNativeDialog(owner, { title: 'Save screenshot' }, {
+    standalone: async () => { panels++; return { canceled: true }; },
+    parented: async () => { throw new Error('Unexpected parented dialog.'); },
+  }, 'darwin');
+  assert.equal(panels, 2);
+  assert.equal(state.focuses, 4);
+});
+
+test('dialog ownership is isolated for independent windows', async () => {
+  const first = windowFixture(), second = windowFixture();
+  const pending = deferred<null>();
+  const opening = runNativeDialog(first.owner, {}, {
+    standalone: async () => pending.promise, parented: async () => pending.promise,
+  }, 'darwin');
+  const selection = { canceled: false, filePaths: ['/models/second.gguf'] };
+  assert.equal(await runNativeDialog(second.owner, {}, {
+    standalone: async () => selection, parented: async () => selection,
+  }, 'darwin'), selection);
+  assert.equal(first.state.focuses, 1);
+  assert.equal(second.state.focuses, 2);
+  pending.resolve(null);
+  await opening;
+});
+
+test('the ownership guard releases after native rejection or a synchronous throw', async () => {
+  for (const synchronous of [false, true]) {
+    const { owner } = windowFixture();
+    const failure = new Error('Native dialog failed.');
+    const failing = () => { if (synchronous) throw failure; return Promise.reject(failure); };
+    await assert.rejects(runNativeDialog(owner, {}, {
+      standalone: failing, parented: failing,
+    }, 'darwin'), error => error === failure);
+    const selection = { canceled: false, filePath: '/screenshots/working.png' };
+    assert.equal(await runNativeDialog(owner, {}, {
+      standalone: async () => selection, parented: async () => selection,
+    }, 'darwin'), selection);
+  }
+});
+
+test('owner disposal during pre-open focus prevents presenting a panel and releases ownership', async () => {
+  const { owner, state } = windowFixture();
+  owner.focus = () => { state.focuses++; state.destroyed = true; };
+  let panels = 0;
+  const handlers = {
+    standalone: async () => { panels++; return null; },
+    parented: async () => { panels++; return null; },
+  };
+  await assert.rejects(runNativeDialog(owner, {}, handlers, 'darwin'), /window is unavailable/i);
+  assert.equal(panels, 0);
+  state.destroyed = false;
+  owner.focus = () => { state.focuses++; };
+  assert.equal(await runNativeDialog(owner, {}, handlers, 'darwin'), null);
+  assert.equal(panels, 1);
 });
 
 test('focus restoration skips unavailable windows and tolerates disposal-check races', () => {
