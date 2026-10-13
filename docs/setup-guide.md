@@ -6,7 +6,34 @@ research sidecar; model weights are downloaded or imported separately. Start
 with the [project overview](../README.md) for features, screenshots, and current
 platform support.
 
-This guide describes the alpha.4 R7 macOS ARM64 package. It passed 315 automated
+This guide describes the alpha.4 R9 macOS ARM64 package. R9 clarifies the Agent's
+attachment-read paths separately from relative project-mutation paths, without
+changing file grants or approval boundaries. It passed 328 automated checks,
+TypeScript and actual packaged smoke under macOS-enforced public-network denial;
+a fresh native cross-workspace attachment read passed. One completed read returned
+the exact file text/digest and a nonempty final answer, with no edits, commands
+or approvals.
+Fresh R9 Chat also returned only `42` without tools, and normal quit/relaunch
+restored its saved answer, Chat mode and 100% text setting.
+The final R9 app is open in the regular profile without an override. A normal
+Careful → Standard → Careful preference change saved its v4 migration; all five
+original chats, messages/attachments/project paths, six undo records and Qwen's
+full digest were retained. The final regular speed/tool calibration passed and
+measured 11.1 tokens/sec initially and 11.0 after the final reopening, on Metal
+with 8K context, separately from the earlier
+R8/R7 measurements.
+
+The preceding R8 updates native dialog
+handling and focus restoration. It passed 327 automated checks and TypeScript
+under macOS-enforced public-network denial, plus actual packaged offline smoke.
+Native R8 checks passed empty setup, attachment selection, local model import
+without restarting, Chat `42` and saved Chat reopening, screenshot focus recovery,
+and workspace creation. Working's mouse/Enter/Space controls passed during a read
+task that used an incorrect relative path and was stopped; that attempt completed
+no file readback. A separate request in the correct workspace passed one read and
+completed a final text/digest answer without edits, commands or approvals. R8's separate short
+calibration measured 15.2 tokens/sec on Metal with 8K context. The
+preceding R7 package passed 315 automated
 checks under macOS-enforced public-network denial, TypeScript, offline packaged
 smoke, 94 Python source tests, and 8 frozen
 sidecar protocol tests. Native Qwen calibration measured 28.9 tokens/sec on
@@ -14,22 +41,36 @@ Metal with 8K context. Its app-applied Node CLI repair passed four independent
 input checks and shows its completed answer/readback. Fresh file and ordinary
 Chat checks also passed: exact approved create/read/edit/read, read-only retained
 file text, and visible `42` with zero tools/approvals. Reopening restored that
-Chat, its mode and 125% text setting. Empty/regular-profile verification remains
-visually unverified while the Mac is locked; the regular app process is reopened.
-Read-only checks preserved its 5 chats, 6 undo records and verified Qwen weights;
-the persisted store remains v3 until a save, so live v4 migration is unverified.
+Chat, its mode and 125% text setting. R7's follow-up startup checks on 2026-10-13
+visibly confirmed the regular workspace, five saved tasks and selected Qwen model.
+A fresh empty profile displayed Choose model without a generic runtime error;
+opening and closing setup preserved its draft and attachment while Send remained
+disabled. No model was imported or inference run in that empty-profile check.
+Read-only checks preserved the regular profile's 5 chats, 6 undo records and
+verified Qwen weights. That earlier R7 audit captured a v3 store before any
+save-triggered migration; the final R9 normal-save migration passed separately
+with the retained original data verified.
 The preview's persisted data/partial-download size is retained; its unsent draft
 is not established by those file checks.
 The verified Gemma download reached an explicit final R7
 experimental load, which the app stopped at its sampled resident-memory budget
 before Chat or tool probes. The preceding R4 failed the Qwen validation and Node
 CLI task, including an outcome-classification defect. See the
-[draft report](alpha4-validation.md) for artifact identity, retained failures,
-narrower passes, and pending empty/regular-profile checks. Screenshots and records retain
-their original payload scope.
+[validation report](alpha4-validation.md) for artifact identity, retained failures,
+narrower passes, the cancelled R8 read attempt and the separate successful R8
+readback. Screenshots and records retain
+their original payload scope. The R9 instruction change does not reclassify the
+R8 failed attachment read or rename its successful explicit-path readback.
 
 The native real-model UI tests ran with normal networking available. The final
 contract suite and packaged smoke separately enforced public-network denial.
+A separate R9 real-Qwen check used the current runtime/backend source and actual
+packaged engine, Goose and frozen reader under the same macOS denial policy.
+Chat returned `42`, and one actual read-only tool returned a complete granted
+attachment outside its workspace. Its original harness exited 1 on a tool-title
+assertion; read-only post-validation confirmed the already completed model/tool
+results without replay. This establishes offline component execution, rather
+than full Electron GUI acceptance under that policy.
 An attempted native denied-network launcher failed before UI during Electron's
 nested sandbox initialization; it did not establish empty-model onboarding or
 offline real-model UI acceptance, and no protections were disabled.
@@ -123,7 +164,7 @@ To try Experimental disk:
 2. Choose **Experimental disk**, then **Try Experimental disk mode** on its card. The original
    **Recommended**, **Slow mode**, or **Insufficient memory** estimate stays visible.
 3. Review the loading/probing state and metrics. **Mapped weights** and **Lazy
-   eligible** come from engine logs and are distinct from measured **Resident now**.
+   eligible** come from engine logs and are distinct from measured **Last resident sample**.
    Available memory, memory pressure, and resident limit are shown separately.
    Unavailable measurements say **Unknown**, rather than zero.
 4. A passed Chat probe permits local inference for that matching loaded
@@ -191,8 +232,10 @@ creation/read/edit/read task passed its actual operations and readback, with a
 period-boundary limitation. Final R7's separate exact-file sequence, general CLI
 repair and Chat/reopen passed their recorded checks; they do not reclassify the
 failed built-in validation. See the [model-specific report](alpha4-validation.md).
-Broader model quality remains unverified; the remaining visible delivery checks
-are empty-profile onboarding and regular-profile reopening.
+Broader model quality remains unverified. R7 empty-profile onboarding and regular
+profile reopening passed their follow-up visible checks. R8's startup/import,
+Chat/reopen and native-dialog results have their separate current-payload scope;
+the earlier R7 file/CLI/Gemma results retain their original identity.
 
 ## Workspace folders
 
@@ -213,6 +256,16 @@ A saved task keeps its original workspace. **Add folder** and **Create folder**
 are unavailable for that task; start **New task** before choosing a different
 workspace. Folder selection and creation are also unavailable during a running
 task, and the host prevents a task from starting while the picker is open.
+
+R8 uses standalone native panels on macOS for workspace selection, attachments,
+GGUF imports and screenshot export. It restores focus to the original live app
+window after selection, cancellation or a dialog error. Windows/Linux keep
+parented panels. Native R8 checks confirmed attachment and import selection with
+enabled Open controls, screenshot export returning focus, and creation/selection
+of `alpha4-r8-dialog-workspace` through an enabled Create folder here control.
+After Qwen import, the draft and attachment remained intact and Send became
+enabled without restarting. Earlier Agent/file/CLI/Gemma results retain their
+R7 payload identity.
 
 ## Working details
 

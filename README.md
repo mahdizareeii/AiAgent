@@ -12,10 +12,35 @@ model server is required. Model weights are a separate download or local GGUF
 import. Once a compatible model is installed, chat and local file work can run
 offline.
 
-**Current version: 0.4.0-alpha.4, R7.** The macOS ARM64 package passed
-**315/315 automated checks with public networking denied by macOS**, TypeScript,
-offline packaged smoke, **94 Python
-source tests**, and **8 frozen-sidecar protocol tests**. Native Qwen tests passed
+**Current version: 0.4.0-alpha.4, R9.** R9 clarifies how the Agent reads granted
+attachments using their supplied paths while keeping project mutations relative
+to the selected workspace. It passed **328/328 automated checks with public
+networking denied by macOS**, TypeScript and actual packaged offline smoke.
+A fresh native cross-workspace attachment read passed: one completed read,
+the exact file text and verified digest in its final answer, and no edits,
+commands or approvals.
+Fresh R9 Chat also answered only `42` with no tools; a normal quit/relaunch
+restored that saved Chat and the 100% text setting.
+The regular profile is open again with its original five tasks, workspace and
+Qwen ready. A normal preference save migrated it to v4 while preserving chats,
+attachments, project paths, six undo records and the model digest. Its separate
+short Metal/8K calibration samples measured **11.1 and 11.0 tokens/sec**.
+
+The preceding R8 package updates native file/folder dialogs and restores focus
+when a dialog closes. It passed **327/327 automated checks with
+public networking denied by macOS**, TypeScript, and an actual packaged offline
+smoke check. In a fresh native profile, setup preserved the draft and attachment,
+importing the verified Qwen model enabled Send without restarting, and Chat
+answered exactly `42` with zero tools; reopening restored that answer. Native
+folder creation and screenshot export also passed. Working expanded by mouse,
+Enter and Space during a read task that used an incorrect relative path and was
+stopped; that task did not complete. A separate request in the correct workspace
+completed one read and returned the exact file text and tool-reported digest.
+R8's separate short calibration measured **15.2 tokens/sec** on Metal with 8K
+context.
+
+The preceding R7 package passed **315/315 automated checks**, **94 Python source
+tests**, and **8 frozen-sidecar protocol tests**. Its native Qwen tests passed
 CLI repair with four input cases, exact-file work, retained-file readback, and
 Chat `42` without tools or approvals. Chat mode and 125% text size survived
 reopening. Working expansion was checked by mouse, Enter and Space; calibration
@@ -23,13 +48,17 @@ measured **28.9 tokens/sec** on Metal with 8K context.
 
 Gemma 4 26B downloaded and passed integrity verification, but its R7 disk-mode
 trial stopped during loading at the sampled memory budget, before Chat/tools.
-Returning to Automatic restored Qwen Metal inference. **Empty-profile onboarding
-and the reopened regular app's visible state remain unverified while the Mac is
-locked.** Read-only checks confirmed 5 regular chats, 6 undo records and the
-verified Qwen model remain intact. The preview's unsent draft remains unverified.
-Native model tests used normal networking; offline contract tests/smoke
-have separate scope. See
-the [draft evidence report](docs/alpha4-validation.md) for hashes, genuine
+Returning to Automatic restored Qwen Metal inference. On **2026-10-13**, visible
+R7 startup checks confirmed the regular profile's five tasks, workspace and
+selected Qwen model, plus empty-profile onboarding with no generic engine error.
+Opening and closing model setup retained the empty profile's draft and attachment;
+sending stayed disabled without a model. Read-only checks confirmed 5 regular
+chats, 6 undo records and the verified Qwen model remain intact. The preview's
+unsent draft remains unverified.
+The graphical model tests used normal networking. A separate real-Qwen component
+check passed Chat and an actual file-tool read with public networking denied by
+macOS; full Electron GUI execution under that policy remains unverified. See
+the [validation report](docs/alpha4-validation.md) for hashes, genuine
 screenshots, retained failures and each check's scope. Windows/Linux native
 execution and broader model quality remain unverified.
 
@@ -96,6 +125,57 @@ execution and broader model quality remain unverified.
 
 ## Workspace
 
+![Free Local Agent alpha.4 R9 expanded thinking and absolute attachment read](docs/screenshots/free-local-agent-alpha4-tools-r9.png)
+
+*Actual R9 model thinking and completed read_file input. The supplied absolute
+path reads the granted attachment outside the selected workspace. This general
+read-only task made one tool call and required no edit or command approval.*
+
+![Free Local Agent alpha.4 R9 final attachment readback](docs/screenshots/free-local-agent-alpha4-final-readback-r9.png)
+
+*Actual R9 final answer visibly shows `Local agents can build tools.` and its
+verified SHA-256 after that single completed read. The earlier failed R8
+attachment attempt remains recorded separately.*
+
+![Free Local Agent alpha.4 R9 ordinary Chat](docs/screenshots/free-local-agent-alpha4-chat-r9.png)
+
+*Actual R9 answer `42`, Chat mode and completed outcome with zero tool checks.
+After a normal quit/relaunch, the saved answer, mode and 100% text setting were
+visibly restored in the same test profile.*
+
+![Free Local Agent alpha.4 R9 restored regular profile](docs/screenshots/free-local-agent-alpha4-regular-profile-r9.png)
+
+*Actual R9 regular profile after the verified v4 save migration and speed/tool
+calibration. Its five original tasks, test workspace, Qwen selection, dark theme,
+100% text size and Careful new-task default are retained. The calibration banner
+is gone; earlier task and model failures remain in the validation report.*
+
+![Free Local Agent alpha.4 R8 empty-model startup](docs/screenshots/free-local-agent-alpha4-empty-model-r8.png)
+
+*Actual R8 fresh profile before model import, with its draft and attachment
+retained, Choose model available and Send disabled. A normal native file-picker
+selection worked, and saving this genuine capture returned focus to the app.*
+
+![Free Local Agent alpha.4 R8 ordinary Chat after local model import](docs/screenshots/free-local-agent-alpha4-chat-r8.png)
+
+*Actual R8 Chat after importing the verified local Qwen model without restarting.
+The exact answer is `42`, with no tool calls or approvals. A normal quit/relaunch
+restored the saved Chat and its visible answer.*
+
+![Free Local Agent alpha.4 R8 Working during an unsuccessful read task](docs/screenshots/free-local-agent-alpha4-working-r8.png)
+
+*Actual R8 model thinking with Working expanded. The underlying task chose an
+incorrect relative path, repeatedly failed to read it, and was stopped with an
+explicit cancelled outcome. Mouse, Enter and Space disclosure checks passed;
+this capture does not show successful file readback.*
+
+![Free Local Agent alpha.4 R8 completed file read with expanded tool details](docs/screenshots/free-local-agent-alpha4-readback-r8.png)
+
+*Actual R8 completed read in the correct workspace, with model thinking and
+read_file inputs/results expanded. Its saved final answer contains
+`Local agents can build tools.` and the verified digest; no file edits, commands
+or approvals occurred. This separate task preserves the earlier failed attempt.*
+
 ![Free Local Agent alpha.4 R7 Working expanded during a real CLI repair](docs/screenshots/free-local-agent-alpha4-working-r7.png)
 
 *Actual final R7 app, ASAR `f01867ce…90b7`, using Qwen3.5 4B in its isolated
@@ -114,6 +194,18 @@ and readback; this is evidence for this task, not a universal quality guarantee.
 *Actual final R7 Chat answered only `42`, with zero tool calls or approvals.
 The 125% text-size control demonstrates the larger text layout. After a graceful
 quit/relaunch, the saved `42`, Chat mode and 125% setting were visibly restored.*
+
+![Free Local Agent alpha.4 R7 reopened regular profile](docs/screenshots/free-local-agent-alpha4-regular-profile-r7.png)
+
+*Actual R7 regular profile on 2026-10-13, showing the five retained tasks,
+selected workspace and Qwen model. The separate tool-calibration banner remains
+visible; this startup capture does not establish a fresh Agent task.*
+
+![Free Local Agent alpha.4 R7 empty-model startup](docs/screenshots/free-local-agent-alpha4-empty-model-r7.png)
+
+*Actual R7 fresh profile with no model. Choose model opens setup; returning to
+the composer retained the draft and attachment while Send stayed disabled.
+This verifies empty-model setup behavior, without an import or inference run.*
 
 ![Free Local Agent alpha.4 R7 stopped Gemma experimental trial](docs/screenshots/free-local-agent-alpha4-gemma-trial-r7.png)
 
@@ -143,7 +235,7 @@ period; this is narrower operation evidence, not full semantic task acceptance.*
 
 *Actual final R4 answer/outcome view, exported through the app's File menu.
 **Recorded checks passed** describes four operation checks; the UI asks the user
-to review request fulfillment. See the [draft report](docs/alpha4-validation.md)
+to review request fulfillment. See the [validation report](docs/alpha4-validation.md)
 for the failed built-in model validation and remaining acceptance checks.*
 
 ![Free Local Agent R10 showing expanded thinking and named tools during validation](docs/screenshots/free-local-agent-working-thinking-r10.png)
@@ -387,13 +479,23 @@ is retained to preserve existing installations. The app adds no disk encryption.
 ## Validation and current limits
 
 Alpha.4's approval reconciliation, task outcomes, Careful workflow, memory modes,
-and model-validation controls are implemented. R7 passed **315/315 automated
+and model-validation controls are implemented. R9 passed **328/328 automated
+checks**, TypeScript and actual packaged smoke under macOS-enforced public-network
+denial. A fresh native task read a granted attachment outside the selected
+workspace and completed its exact text/digest answer with one read-only tool.
+R8 passed **327/327 automated
+checks**, TypeScript and actual packaged smoke under macOS-enforced public-network
+denial. Native empty setup, local model import, Chat/reopen, folder creation and
+screenshot focus recovery passed. Working controls passed during a read task
+that used the wrong relative path and was cancelled. A separate request in the
+correct workspace passed one read and completed its exact text/digest answer.
+R7 passed **315/315 automated
 checks**, TypeScript, offline packaged smoke, 94 Python source tests and 8 frozen
 protocol tests. Final R7 CLI repair, exact-file work, retained-file readback and
 ordinary Chat passed their recorded checks; Chat/preferences survived reopening.
-Empty/regular-profile verification remains pending. Reader/gateway/context fixes, model failures,
+R7 empty/regular-profile startup checks also passed visibly. Reader/gateway/context fixes, model failures,
 narrower file success, captures, and artifact hashes are separated in the
-[alpha.4 draft report](docs/alpha4-validation.md). Gemma's R7 loading stop has
+[alpha.4 validation report](docs/alpha4-validation.md). Gemma's R7 loading stop has
 app-owned readings and independent owned-process samples/exit observation;
 mapped/lazy sizes and absolute peak remain unknown, and inference/task quality
 was not measured. The following results describe
@@ -424,7 +526,7 @@ the cached image digests, and created `RUNNING.md`
 with stop/restart instructions. Independent read-only checks confirmed both
 uploads directories writable as the web-server user. Browser media upload was
 not tested. Ordinary Chat and final control checks were not established for
-that historical R12 payload; current R7 Chat/reopen passed above. Its general
+that historical R12 payload; R7 Chat/reopen passed above. Its general
 file check applied the exact approved correction
 and independent readback found `Local agents can build tools.`; the final
 assistant readback state was not captured after the native approval surface
@@ -442,7 +544,7 @@ in the [component](docs/general-agent-components.json) and
 
 The final alpha.3 source passed **210/210 app/runtime tests**, strict TypeScript,
 and offline packaged smoke. Those historical checks retain their own scope;
-the current R7 full-suite OS-enforced offline result is recorded above. The
+the current R9 full-suite OS-enforced offline result is recorded above. The
 recorded alpha.3 Apple Silicon ZIP is **216,988,256 bytes** in
 `release/general-agent-delivery/`; exact archive, app, and backend checksums are
 in the [delivery record](docs/general-agent-package.json). The earlier **14

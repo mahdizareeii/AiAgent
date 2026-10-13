@@ -1,11 +1,28 @@
-# Alpha.4 validation — draft evidence record
+# Alpha.4 validation record
 
-Date: **2026-10-12**. Version: **0.4.0-alpha.4**. **R7 packaging, 315 offline
-automated tests, TypeScript, packaged smoke, 94 Python source tests and 8 frozen
-protocol tests passed. R7 CLI repair, exact-file work, retained-file readback and
+Updated: **2026-10-13**. Version: **0.4.0-alpha.4**. **Current delivery: R9.**
+R9 passed **328/328 automated checks**, TypeScript and actual packaged smoke
+with macOS-enforced public-network denial. Its narrow attachment-path instruction
+change passed a fresh native cross-workspace attachment read: one completed tool,
+exact text/digest and a nonempty final answer with no mutations. Fresh R9 Chat
+returned only `42` without tools; normal quit/relaunch restored that answer,
+Chat mode and 100% text size. Final regular-profile restoration, normal-save v4
+migration and regular speed/tool calibration passed; the original five chats,
+six undo records and verified Qwen weights were retained.
+The preceding
+R8 passed **327/327 automated checks**, TypeScript and actual packaged smoke
+with macOS-enforced public-network denial. Native empty setup, attachment/model
+selection, import without restarting, Chat `42` and reopening, screenshot focus
+recovery, and folder creation passed. Working mouse/Enter/Space checks passed
+during a read task that used an incorrect relative path and was cancelled after
+failed calls. That readback did not pass. A separate request in the correct
+workspace completed one read and an exact text/digest answer without mutations.
+The R7 package passed **315 offline
+automated tests**, TypeScript, packaged smoke, **94 Python source tests** and
+**8 frozen protocol tests**. R7 CLI repair, exact-file work, retained-file readback and
 ordinary Chat passed their recorded checks; Chat/preferences survived reopening.
-Empty-profile UI and regular-profile visible checks remain unverified while the
-Mac is locked; the regular app process has been reopened.** Native
+Empty-profile onboarding and regular-profile startup passed visibly in a
+2026-10-13 follow-up. The R7 task/model runs below were recorded on 2026-10-12. Native
 Qwen calibration measured 28.9 tokens/sec on Metal with 8K context, and Working
 mouse/Enter/Space expansion was visibly checked during a running CLI repair.
 That app-applied repair passed **4/4 independent input checks**, with its final
@@ -14,62 +31,286 @@ The verified Gemma download reached an explicit final R7 experimental load,
 which the app stopped at its sampled resident-memory budget before Chat/tool
 probes. Independent resource samples confirmed the owned CPU-only process and
 its exit; returning to Automatic restored Qwen Metal inference. Delivery
-remains local. This draft preserves payload identities, failures and genuine
+remains local. This report preserves payload identities, failures and genuine
 captures separately; it does not establish general model competence or complete
 project autonomy.
 
-The implementation and screenshots were committed **locally** as `ea8cd31`;
-no push was performed. Later documentation corrections retain the unchanged
-R7 ZIP/ASAR identity below.
+The R7 implementation and screenshots were committed **locally** as `ea8cd31`,
+with documentation corrections in `678e0b8`. R9's dialog/path-guidance source and
+regression tests were committed locally as **`b7a72d2`**; no push was performed.
+The new captures/documentation are separate local evidence work. Recorded R8/R7
+native task/model results remain bound to their own retained payloads.
 
-## Final R7 package identity
+## Current R9 package identity
 
 | Artifact | Size | SHA-256 |
 | --- | --- | --- |
-| `release/alpha4-delivery/Free Local Agent-0.4.0-alpha.4-arm64-mac.zip` | 217,114,537 bytes | `de0560f026408548543ada24a425cc3640113c5793a7c45a52217c8f96b23d8f` |
-| `release/alpha4-delivery/mac-arm64/Free Local Agent.app/Contents/Resources/app.asar` | 32,012,010 bytes | `f01867ceffcb0363cec3a632aa99a33a4ddbbb33762961026a6a5a6fc65890b7` |
+| `release/alpha4-delivery/Free Local Agent-0.4.0-alpha.4-arm64-mac.zip` | 217,115,849 bytes | `5bc0634d9d33dbf1a47cb8e7a9d6c9aebed6b71e19ab23b871faf063879a160c` |
+| `release/alpha4-delivery/mac-arm64/Free Local Agent.app/Contents/Resources/app.asar` | 32,015,937 bytes | `792ccb209899aa8c5334d9b6e1db6a77701074fa7802a4462f5142c8190c8bb8` |
 
-Both sizes and full-file hashes were independently read from the final R7
-delivery. The read-only native observer's
-`.cache/general-agent-validation/native-alpha4r7-evidence.json` reports the same
-ASAR identity and `observerPerformedActions=false`. Its persisted-state evidence
-does not substitute for visible native task acceptance.
+Both sizes and full-file hashes were independently read from the R9 delivery and
+match `package-identity.json`. R9 changes the backend's general instructions:
+relative paths apply to **project mutations**, while granted attachments are
+read using their supplied **absolute paths** when file reading is enabled.
+This removes the contradictory blanket relative-file-path instruction without
+changing the file grants, approval or action-replay guards. The fresh native
+attachment-read passed; the earlier R8 failure remains recorded below.
 
-## Regular profile process and read-only preservation
+R9 retains R8's centralized native dialogs: macOS uses standalone
+panels for folder/file selection, model import and screenshot export, while other
+platforms retain parented panels. The original live app window regains focus
+after selection, cancellation or an error; a disposed window cannot replace the
+native result/error. Its current native checks are recorded below. The earlier
+R7 Agent/file/CLI/Gemma results and screenshots retain their own payload identity.
 
-The final delivery app is reopened through its exact executable **without a
+## R9 native attachment read — passed with exact readback
+
+The new R9 ASAR is running in the test profile retained from R8, with its verified
+Qwen model. The selected workspace is `alpha4-r8-dialog-workspace`; the attached
+note is outside that workspace. Its native picker selected the attachment using
+an enabled **Open** control. Separately cancelling an empty attachment picker
+returned focus to the app without adding an attachment. A fresh general prompt
+asked for the attached file without supplying its exact path in the user's
+request. Session `0b18cc0a-453f-4a67-8d87-5ed225ef1de6` made one `read_file` call
+with the attachment's actual absolute path outside the selected workspace,
+`start_line=1` and `max_lines=50`. The completed tool returned the complete
+**29-byte** UTF-8 text **Local agents can build tools.**, `eof=true`, and SHA-256:
+
+```text
+f6bdd21ecd9728d3da5d9d1a070dba34d204524ba6adf0dde015c44d14a884de
+```
+
+At **08:08:30.615 UTC**, the saved outcome was **completed / end_turn**, with
+**one Passed read check** and a **465-byte** nonempty final answer containing
+that exact sentence/digest. There were no edits, commands or approvals. The
+native tool input and real model thinking were expanded and inspected; the
+thinking is retained locally (**1,307 UTF-8 bytes**). The collapsed final view
+visibly showed the actual answer and digest. Independent read-only inspection
+of the saved tool output/outcome matched those native observations. This is
+separate from R8's successful explicit-path request in the file's own workspace;
+it does not reclassify the failed R8 attachment attempt.
+
+## R9 fresh Chat and normal reopening — passed
+
+Session `1b8340f0-fc4c-46a8-ba72-98855b3fb10a` used Chat with the exact prompt
+**What is 6 × 7? Reply with only the number.** It completed at **08:10:23.107 UTC**
+with `completed` / `end_turn`, a two-byte answer **42**, no tools and no approvals.
+The saved model identity is verified Qwen3.5 4B, Metal, 8K context, Automatic.
+The native answer was visibly confirmed and genuinely captured. After a normal
+Quit and relaunch of the same R9 app/profile, selecting the saved arithmetic Chat
+visibly restored **42**, **Chat** mode and **100%** text size. No agent turn was
+replayed. Saved state was also independently inspected read-only.
+
+## R9 regular profile restoration and saved v4 migration — passed
+
+The final R9 delivery app opened **without a user-data override**, using the
+regular `~/Library/Application Support/Local Agent` profile. Native inspection
+confirmed its **five original tasks**, `test` workspace, selected Qwen, **Local
+model ready**, dark theme, **100%** text size and **Careful Agent** new-task default.
+
+The normal Careful → Standard → Careful preference controls invoked the existing
+main-process save and performed the actual persisted **version 3 → version 4**
+migration. Independent before/after comparison found every original v3 field
+retained except the version change, including **all five complete original
+sessions**, messages, attachments and project paths. No session or message was
+added. Existing tasks with no saved effort retain the effective **Standard**
+fallback; no legacy turn was executed or replayed. All **six undo records**
+retained their complete hashes and unchanged path set. The full Qwen artifact
+remains **2,740,937,888 bytes**, SHA-256
+`00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
+The new persisted defaults are Automatic memory mode and Careful new-task effort.
+
+**Measure speed & tool format** then passed visibly in the regular R9 app,
+measuring **11.1 tokens/sec** on **Metal**, **8,192 context tokens**, **Automatic**.
+After the separate offline component check, the regular app was reopened again
+and its native speed/tool probe passed at **11.0 tokens/sec**, with the same
+Metal/8K/Automatic profile. It was left open on the Careful task screen at 100%
+text size. The screenshot below records the first 11.1-token/sec preparation.
+Returning to the task screen removed the calibration banner; the speed notice
+was dismissed. Its genuine final screenshot shows the ready regular workspace,
+and saving it returned focus to the app. This short sample is separate from R8's
+15.2 and R7's 28.9 measurements; it is not a sustained-performance or task-quality
+guarantee.
+
+Migration provenance is retained in
+`.cache/general-agent-validation/alpha4r9-regular-migration-audit.json`, whose
+independent observer performed no save or app interaction. Text scale is stored
+in renderer localStorage; the normal main-process task-effort preference change,
+rather than a text-scale change, triggered the persisted migration.
+
+## R8 native setup, import, Chat and dialog checks
+
+The final R8 ASAR `77c9b33b…340e` opened in a genuinely empty
+`profile-empty-r8-visible` profile. The bundled engine initialized without a
+generic runtime error, Choose model was available, and Send stayed disabled.
+The normal standalone attachment picker had an enabled **Open** control and
+selected `acceptance-note.txt` through an ordinary click. The draft and attachment
+remained in the composer. Exporting the empty-state screenshot used the native
+Save panel; an immediate accessibility readback confirmed that focus returned
+to the app.
+
+The native GGUF import picker selected the verified regular-profile Qwen file
+using its enabled **Open** control and an ordinary click. Import completed
+without an app restart, retaining the draft and attachment and enabling Send.
+Independent full-file hashing of the new profile's **2,740,937,888-byte** cache
+matched the catalog digest
+`00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
+This verifies import integrity. A separate R8 short calibration measured
+**15.2 tokens/sec**, using **Metal**, **8,192 context tokens** and **Automatic**
+memory mode. R7's separate 28.9 tokens/sec measurement retains its own run;
+neither short speed sample establishes sustained performance or Agent quality.
+
+After switching to Chat and removing the attachment, the exact prompt
+**What is 6 × 7? Reply with only the number.** produced only **42**, with **zero
+tool calls or approvals**. Session `5181ae8f-5787-4513-8b5a-5aa3d746d676` saved a
+`completed` / `end_turn` outcome at **07:49:10.847 UTC**, using Qwen's verified
+digest, Metal, 8K context and Automatic memory mode. A normal quit/relaunch
+visibly restored the saved Chat and its exact answer.
+
+The native Create folder flow also passed: its enabled **Create folder here**
+control created and selected
+`.cache/general-agent-validation/alpha4-r8-dialog-workspace`. The first read-only
+Agent task there was cancelled after incorrect-path calls, as recorded below.
+The subsequent native Add folder flow selected `general-file-test` through an
+enabled **Use folder** control; a separate explicit-path request completed the
+readback recorded below.
+These native checks used normal system networking.
+Read-only provenance is retained in
+`.cache/general-agent-validation/alpha4r8-import-chat-readback-audit.json`; the
+observer imported no model, operated no UI and modified no profile or task files.
+
+## R8 first attached-file read — incorrect path, then cancelled
+
+Session `e034536c-cce4-4f32-b4c4-5e3db9a84c06` asked the general Agent to read
+the attached `acceptance-note.txt` and return its text/tool-reported digest without
+editing files or running commands. In the selected `alpha4-r8-dialog-workspace`,
+the model used the incorrect relative path
+`general-file-test/acceptance-note.txt`. Six read-only tools were recorded:
+
+| Tool | Result |
+| --- | --- |
+| read_file, incorrect relative file path | Failed: file_unavailable |
+| list_files, current workspace | Completed |
+| list_files, incorrect relative directory | Failed: file_unavailable |
+| inspect_file, incorrect relative file path | Failed: file_unavailable |
+| list_files, current workspace | Completed |
+| read_file, repeated incorrect relative file path | Failed: file_unavailable |
+
+The user-facing Stop control ended the task at **07:55:55.650 UTC**. The saved
+outcome is **cancelled**, with a nonempty **Task stopped** answer, three failed
+read/inspection checks, zero passed checks, and no mutation, command or approval.
+This remains a model task-quality failure; it is not a successful readback or an
+automatic repair. The successful explicit-path request below is a separate task;
+it does not reclassify this failed attached-file attempt.
+
+During this actual running task, mouse activation expanded Working, Enter
+collapsed it, and Space expanded it again. Actual model thinking remained
+visible and expansion persisted through tool updates. A tool card was expanded
+and its wrong path and `file_unavailable` result were visibly inspected. These
+interaction checks passed independently of the task's failed read results. The
+genuine Working screenshot shows expanded model thinking from that unsuccessful
+task; it must not be presented as a completed readback.
+
+## R8 separate explicit-path read — completed with evidence
+
+Session `c4e08101-70e1-49fa-8c8a-237462d23ce1` ran in the selected
+`general-file-test` workspace. The new prompt explicitly named the absolute
+`acceptance-note.txt` path and requested a read-only final text/digest answer.
+The model made one `read_file` call with `path=acceptance-note.txt`; the tool
+resolved the correct file in that workspace and returned the full **29-byte**
+text **Local agents can build tools.**, `eof=true`, and SHA-256
+`f6bdd21ecd9728d3da5d9d1a070dba34d204524ba6adf0dde015c44d14a884de`.
+
+The task ended at **07:57:27.829 UTC** with **completed / end_turn**, a **409-byte**
+nonempty final answer containing that exact sentence/digest, and **one Passed
+read check**. There were no edits, commands or approvals. Actual model thinking
+remained expanded (**753 saved UTF-8 bytes**); the completed tool's input and
+result were clicked open and visibly verified. The genuine R8 readback capture
+below shows the completed tool disclosure. Its saved final answer and exact
+tool output were independently inspected read-only.
+
+This pass is limited to the new explicit-path request in the correct workspace.
+The earlier cross-workspace attachment attempt remains cancelled/failed. A
+narrow R9 instruction change for attachment paths is now packaged and passed its
+separate cross-workspace attachment read above. R8 evidence is not renamed R9.
+
+## R7 regular profile audit before migration
+
+The retained R7 app was reopened through its exact executable **without a
 user-data override**. The read-only audit found one unique regular main process,
 and helper flags consistently identify
 `~/Library/Application Support/Local Agent` as its actual profile. Its ASAR hash
-matches final R7 `f01867ce…90b7`. This establishes the reopened process/profile
-identity; the locked Mac still prevents visible confirmation of that window.
+matches R7 `f01867ce…90b7`. Visible inspection on **2026-10-13** confirmed the
+regular workspace, all five saved tasks, selected Qwen3.5 4B and **Local model
+ready** status. The tool-calibration banner remained visible; this startup check
+does not establish a new calibrated Agent task.
 
 Compared with the captured baseline, the retained regular `chats.json` is
 **byte-identical**, with **5 chats**, their captured messages/attachments/project
 paths/settings unchanged, and **6 unchanged undo records**. The full retained
 Qwen GGUF is **2,740,937,888 bytes** and independently matches its catalog SHA-256
 `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
-The persisted store remains **version 3**; no save-triggered version-4 rewrite
-has occurred. Live in-memory migration/defaults were not queried or visibly
-verified, so missing v4 preference fields are not treated as zero values.
+At that earlier audit, the persisted store was **version 3**, before a
+save-triggered version-4 rewrite. The new-task screen visibly selected Careful
+Agent. That historical v3 snapshot remains separate from the successful final
+R9 normal-save migration above; missing v4 fields in the old snapshot were not
+treated as zero values.
 
 The separate preview's persisted chats/settings are also byte-identical to their
 baseline. Its partial Qwen download remains **156,942,952 bytes**, with current
 full-file SHA-256
 `6f23f0e409cfcf089b25c473645a41f909d56f47aae28f5a11c1b2237e39e424`.
-The baseline did not contain that partial file's hash, so this establishes its
-retained size and current identity, not a before/after hash comparison. **The
+The original baseline did not contain that partial file's hash. A new independent
+full-file recheck on 2026-10-13 matched the preceding independent measurement,
+establishing unchanged bytes across those two audits. **The
 preview's unsent draft is unverified:** the baseline contains no draft text,
 and no live preview process/UI was observed. Persisted-store preservation must
 not be described as proof that a transient draft was retained.
 
 Provenance is retained in
 `.cache/general-agent-validation/alpha4-r7-independent-preservation-before-regular.json`
-and `alpha4r7-final-regular-profile-audit.json`. These were read-only audits;
+and `alpha4r7-final-regular-profile-audit.json`, with the follow-up in
+`alpha4-regular-preview-preservation-recheck.json`. These were read-only audits;
 they performed no app interaction, profile edits or process signals.
 
+## R7 empty-profile startup follow-up
+
+On **2026-10-13**, the R7 app opened in the genuinely empty
+`profile-empty-r7-visible` test profile. The visible interface identified its
+separate storage, showed **Download or import your first model** and **Choose
+model**, and kept Send disabled. It showed no generic runtime error. The user
+draft **What is 6 × 7? Reply with only the number.** and `acceptance-note.txt`
+attachment were retained after Choose model opened the full setup screen and
+Close setup returned to the composer. No model import or inference was performed.
+This native check used normal system networking, with the denied-network
+launcher failure retained separately below.
+
 <details>
-<summary>Retained R4–R6 package identities</summary>
+<summary>Retained R4–R8 package identities</summary>
+
+## Recorded R8 package identity
+
+| Artifact | Size | SHA-256 |
+| --- | --- | --- |
+| Retained R8 ZIP: `.cache/general-agent-validation/alpha4-r8-artifacts/Free Local Agent-0.4.0-alpha.4-arm64-mac.zip` | 217,115,730 bytes | `ffa45b51dd25a2f0f0d5636aac0b6e438fd884c172ab2e1aa04820f88bee7b81` |
+| Retained R8 validation app: `.cache/general-agent-validation/alpha4-r8-artifacts/Free Local Agent Alpha4 Final Validation.app/Contents/Resources/app.asar` | 32,015,464 bytes | `77c9b33b7dca432d13cf171b32beb67b0a9905722b9b85b49a4a4aa96e54340e` |
+
+These full-file hashes were independently read from the archived R8 files after
+R9 replaced the delivery path. R8 startup/import/Chat/readback screenshots and
+the cancelled attachment attempt remain tied to this retained payload.
+
+## Recorded R7 package identity
+
+| Artifact | Size | SHA-256 |
+| --- | --- | --- |
+| Retained R7 ZIP: `.cache/general-agent-validation/alpha4-r7-artifacts/Free Local Agent-0.4.0-alpha.4-arm64-mac.zip` | 217,114,537 bytes | `de0560f026408548543ada24a425cc3640113c5793a7c45a52217c8f96b23d8f` |
+| Retained R7 validation app: `.cache/general-agent-validation/alpha4-r7-artifacts/Free Local Agent Alpha4 Final Validation.app/Contents/Resources/app.asar` | 32,012,010 bytes | `f01867ceffcb0363cec3a632aa99a33a4ddbbb33762961026a6a5a6fc65890b7` |
+
+These full-file hashes were independently read from the archived R7 files after
+R8 replaced the delivery path. The read-only observer's
+`.cache/general-agent-validation/native-alpha4r7-evidence.json` reports that R7
+ASAR identity and `observerPerformedActions=false`. Persisted-state evidence
+does not substitute for visible native task acceptance.
 
 ## Recorded R6 package identity
 
@@ -120,6 +361,10 @@ fallback or Ollama service dependency.
 
 | Check | Result | Scope |
 | --- | --- | --- |
+| Final R9 app/runtime suite and types | **328/328 passed**, zero failures, skips, or cancellations; TypeScript passed | macOS-enforced public outbound-network denial, localhost allowed. Node test duration **21.248935792 seconds**, whole command **22.80 seconds**. Includes the attachment-path instruction regression; not 328 real-model tasks. |
+| Final R9 packaged offline smoke | **Passed**, exit 0, darwin-arm64 | Actual final packaged Electron/ASAR under the same public-network-denial policy; **7.19 seconds**. Runtime pins, offline Goose, actual ACP tools, denial/unchanged fixture and default-off web registration passed. No model loaded/downloaded or public network tool called. |
+| Final R8 app/runtime suite and types | **327/327 passed**, zero failures, skips, or cancellations; TypeScript passed | macOS-enforced public outbound-network denial, localhost allowed. Node test duration **23.140854709 seconds**, whole command **24.99 seconds**. Includes native-dialog option/result identity, cancellation/errors, owner/focus and disposal races; not 327 real-model tasks. |
+| Final R8 packaged offline smoke | **Passed**, exit 0, darwin-arm64 | Actual final packaged Electron/ASAR under the same public-network-denial policy; **6.94 seconds**. Approval denial left the temporary fixture unchanged; runtime pins, offline Goose, actual ACP tool startup and default-off web registration passed. No model loaded/downloaded, public network tool called, native GUI operation or user-profile mutation. |
 | Final R7 app/runtime suite and types | **315/315 passed**, zero failures, skips, or cancellations; TypeScript passed | Rerun under macOS-enforced public outbound-network denial, localhost allowed. Recorded suite duration **20.5651 seconds**. Includes Metal-device retention across experimental RAM refresh. Not 315 real-model tasks. |
 | Final R7 packaged offline smoke | **Passed**, exit 0, darwin-arm64 | Also run with macOS public outbound networking denied. Packaged denial/unchanged-file check, runtime pins/hashes/native version, offline Goose manifest, actual ACP tool startup, and default-off web registration. No model loaded/downloaded or public network tool called. |
 | R7 Python source suite | **94/94 passed**, exit 0 | **5.19 seconds**; local temporary fixtures and mocked networking. Includes exact module-source reading and existing file/PDF/security checks. |
@@ -134,6 +379,13 @@ fallback or Ollama service dependency.
 
 Local logs:
 
+- `.cache/general-agent-validation/alpha4-full-offline-r9-enforced.log`
+- `.cache/general-agent-validation/alpha4r9-packaged-smoke.log`
+- `.cache/general-agent-validation/alpha4r9-packaged-smoke-validation.json`
+- `.cache/general-agent-validation/alpha4-full-offline-r8-enforced.log`
+- `.cache/general-agent-validation/check-r8-typecheck-offline.log`
+- `.cache/general-agent-validation/alpha4r8-packaged-smoke.log`
+- `.cache/general-agent-validation/alpha4r8-packaged-smoke-validation.json`
 - `.cache/general-agent-validation/alpha4-full-offline-r7-enforced.log`
 - `.cache/general-agent-validation/alpha4r7-package.log`
 - `.cache/general-agent-validation/alpha4r7-packaged-smoke.log`
@@ -156,14 +408,56 @@ The final R7 full-suite offline result uses `sandbox-exec` with the retained
 `offline.sb` policy: outbound networking is denied except localhost. The earlier
 R7 run's 20.8325-second result was not wrapped by that OS policy and is not used
 as the final offline evidence. The enforced rerun changed no source or app
-payload; final ZIP/ASAR identities above remain unchanged.
+payload; the retained R7 ZIP/ASAR identities above remain unchanged.
 
 **Scope separation:** the real-model native Qwen tasks/Chat, Gemma trials and
-visible interactions ran with normal system networking available. Their local
+visible graphical interactions ran with normal system networking available. Their local
 execution evidence does not establish a real-model native UI run under enforced
-public-network denial. That denial was enforced for the final contract suite
-and packaged smoke; the smoke loaded no model. The attempted denied-network
+public-network denial. That denial was enforced for the final contract suite,
+packaged smoke and the separate actual real-model component check below; the
+smoke loaded no model. The attempted denied-network
 native launcher below failed before UI and leaves that acceptance unverified.
+
+## R9 real-Qwen component execution with public networking denied
+
+At **08:26:11.569–08:26:39.630 UTC** on 2026-10-13, the current R9
+runtime/gateway/backend source at **`b7a72d2`** ran the **actual final packaged
+llama.cpp, Goose and frozen file reader** under the unchanged macOS `offline.sb`
+policy. Public outbound networking was denied; localhost remained available.
+This used a fresh private runtime and real Qwen weights, with no synthetic
+provider, model download, saved-chat or existing-profile modification, or GUI interaction.
+The verified Qwen digest remained `00fe7986…11a4`.
+
+The effective profile was **Automatic / Metal**, **8K context**, **2,048 output
+tokens**, **batch 512**, **microbatch 128**, **one loaded model and one slot**.
+The native token-count endpoint returned **280, 510, 1,605 and 2,129** input
+tokens for its four input-token calls. A separate short tool-calibration sample measured
+**36.536148 tokens/sec**; it is independent of the GUI's 11.1/15.2/28.9 samples
+and establishes neither sustained speed nor model quality.
+
+| Actual component result | Evidence |
+| --- | --- |
+| Ordinary Chat | Exact two-byte **42**, `end_turn`, zero tools. |
+| Read-only Agent attachment | One actual frozen-MCP read of an individually granted absolute path outside the empty workspace; complete **57-byte** unpredictable fixture text and matching final answer, `end_turn`. |
+| File integrity and effects | Receipt digest `c3ca593a4de3f2ee7b830630bb4545aaff6f45ed812060a83c42de04ea4077f0`; fixture unchanged, workspace still empty, zero actions/approvals. |
+| Shutdown | All owned native children exited; no cleanup errors. **28.061 seconds** recorded execution, **29.63 seconds** whole command. |
+
+**The original private harness exited 1**, and its JSON still records
+`passed=false`: its display-title assertion expected `read_file`, while the
+actual ACP title used **read file**. The real Chat, tool input/receipt and final
+answer had already completed. A corrected future matcher and independent
+**read-only post-validation of those existing results** confirmed the actual
+checks passed, including exact text/digest, no effects and child cleanup. No
+model task was replayed or reloaded to obtain that post-validation; the original
+failure is preserved.
+
+Private evidence remains in
+`.cache/general-agent-validation/alpha4r9-real-model-offline.json`, its unchanged
+`.log`, and `alpha4r9-real-model-offline-independent.json`. This is **real-model
+offline component execution using R9 source and packaged binaries**, not full
+Electron GUI offline acceptance. The separate exit-133 nested-GUI harness failure
+below remains unverified within its own scope. Package/source identities and all
+earlier native task/model results are unchanged.
 
 ## Qwen3.5 4B — R7 Node CLI repair independently passed
 
@@ -495,7 +789,11 @@ calibration. During the live CLI-repair session
 and expanded Working with real thinking and tools retained. These checks establish
 calibration and interaction behavior. The CLI's four independent checks and saved
 completion, fresh-file/ordinary Chat and Chat-reopen results are recorded above.
-Empty/regular-profile verification remains pending.
+R7 empty/regular-profile startup passed the visible 2026-10-13 follow-up above.
+R8's setup/import, Chat/reopen and dialog checks passed separately above. Its
+first read-only task was cancelled after incorrect-path failures; the separate
+explicit-path request in the correct workspace passed within the scope recorded
+above.
 
 ## Qwen3.5 4B — separate R4 file-operation sequence
 
@@ -517,7 +815,7 @@ without the period. This exposes a text-boundary ambiguity/model omission. If th
 period is an intended byte requirement, that requirement was not met. This record
 does not claim every semantic requirement passed, and it does not reclassify the
 failed built-in validation. Its genuine R4 captures are retained below. Reopening
-this historical R4 session was not established; the current R7 Chat reopen and
+this historical R4 session was not established; the R7 Chat reopen and
 fresh exact-file acceptance passed separately above, with no outstanding Chat
 check.
 
@@ -525,6 +823,18 @@ check.
 
 | Check | Result | Payload scope |
 | --- | --- | --- |
+| Granted attachment outside selected workspace | Passed visibly and persisted | Final R9 `0b18cc0a…`: actual absolute-path read, one Passed check, complete 29-byte text/digest and 465-byte final answer; no edits/commands/approvals. Thinking/tool disclosure and final answer separately captured. |
+| Fresh Chat exact `42` and normal reopening | Passed visibly and persisted | Final R9 `1b8340f0…`: completed end_turn, two-byte answer, no tools/approvals; normal quit/relaunch restored saved `42`, Chat and 100% text size without replay. |
+| Regular profile restore and saved v4 migration | Passed visibly and independently compared | Final R9, no profile override: five original full sessions and settings retained except version, no new messages/sessions, six full undo hashes and Qwen digest unchanged. Normal main-process task-effort preference save triggered v4. |
+| Regular speed/tool calibration and ready workspace | Passed visibly; 11.1 then 11.0 tokens/sec | Final R9 regular profile, Metal/8K/Automatic; preparation passed again after the final reopening, calibration banner gone, dark/100%/Careful screen restored. Separate short samples, not task-quality acceptance. |
+| Empty startup, attachment and GGUF import | Passed visibly, import cache hash independently matched | Final R8 fresh profile: no generic engine error; enabled native Open controls worked by ordinary clicks. Import retained draft/attachment, enabled Send and required no restart. |
+| Ordinary Chat exact `42` and reopen | Passed visibly and persisted | Final R8 `5181ae8f…`: zero tools/approvals, completed end_turn; normal quit/relaunch restored Chat and `42`. |
+| Screenshot export and focus restoration | Passed visibly | Final R8 native Save panel exported the empty-profile capture; immediate accessibility readback confirmed return to the app. |
+| Native Create folder and Add folder selection | Passed visibly | Final R8 created/selected `alpha4-r8-dialog-workspace` through enabled Create folder here; later selected `general-file-test` through enabled Use folder. |
+| Working mouse / Enter / Space and tool disclosure | Passed visibly | Final R8 `e034536c…`: actual model thinking, retained expansion through updates, wrong read path/result inspected. This was an unsuccessful read task, not a task-quality pass. |
+| First attached-file read task | Failed readback, then cancelled | Final R8 `e034536c…`: six read-only tools, wrong relative path, repeated file_unavailable, explicit stopped answer; no mutation/command/approval. Separate pass does not change this result. |
+| Separate explicit-path readback | Passed visibly and persisted | Final R8 `c4e08101…`, correct workspace: one completed read, one Passed check, 409-byte final text/digest answer; no edits/commands/approvals. Expanded thinking and tool disclosure verified. |
+| Qwen speed sample | Measured 15.2 tokens/sec | Final R8, Metal/8K/Automatic; separate from R7's 28.9 sample. Short calibration, not sustained project performance. |
 | Qwen calibration and Metal readiness | Passed visibly; 28.9 tokens/sec measured | Final R7 alpha.4, 8K context. Short calibration; not a sustained project-quality benchmark. |
 | Node CLI repair and four input checks | Independent 4/4 passed; completed final answer/readback visibly confirmed | Final R7 alpha.4 session `8c7f5065…`; one approved edit/command. Genuine captures below. |
 | Working mouse / Enter / Space expansion | Passed visibly during live CLI repair | Final R7 alpha.4 session `8c7f5065…`; actual thinking/tools retained. |
@@ -532,7 +842,8 @@ check.
 | Retained note readback | Passed visibly | Final R7 `226b63da…`; one read, no new mutation/command/approval; exact requested sentence/hash. |
 | Ordinary Chat exact `42` and reopen | Passed visibly, saved and restored | Final R7 `c541fac4…`; zero tools/approvals; graceful quit/relaunch restored `42`, Chat mode and 125% text scale without replay. |
 | Gemma experimental loading and return to Qwen | Verified safety stop, probes not reached; Qwen fallback ready | Final R7; owned CPU-only process independently observed, watchdog stop visible, Metal/Qwen readiness retained after Automatic. |
-| Regular profile process and retained data | Process reopen and read-only preservation passed; UI unverified | Final R7 unique no-override process uses legacy regular store; 5 chats/6 undo unchanged and full Qwen digest verified. v4/live migration not visually established. |
+| Regular profile process and retained data | Passed visible startup and read-only preservation | Historical R7 follow-up on 2026-10-13: regular workspace, five tasks, selected Qwen and Local model ready shown; 5 chats/6 undo/full Qwen hash retained in the pre-migration audit. Final R9 calibration and v4 migration passed separately above. |
+| Empty-model startup and setup return | Passed visibly | R7 fresh profile on 2026-10-13: separate storage identified, Choose model available, no generic runtime error; draft/attachment retained after opening/closing setup, Send disabled. No import or inference run. |
 | Task activity mouse collapse / Enter expand | Passed visibly | Final R4. Thinking and tool tree disappeared and reappeared. |
 | Space collapse / Space expand | Passed visibly | Final R4. Nested `read_file` remained expanded with exact text and SHA evidence. |
 | Approved creation/edit and final file readback | Passed for the actual operations | Final R4 separate task `d48b2462…`; four ordered tools, two approvals, exact final hash and nonempty answer. Period-boundary limitation described above. |
@@ -541,6 +852,53 @@ check.
 | Native Create folder and workspace selection | Passed | Final R4: New task → Create folder → native parent picker created and selected `.cache/general-agent-validation/alpha4-node-cli`. Independent read found the new folder empty at the check. This does not establish a running Node project. |
 | Screenshot export | Passed | Final R4: File → Save screenshot used the app's own capturePage. Original PNGs show expanded thinking and the final answer/outcome; no mocked conversation or image alteration. |
 | Text-scale choice and Chat reopen | Passed visibly | Final R7; 125% survived graceful quit/relaunch, then normal controls restored 100%. Other native preference choices retain their individual automated-check scope. |
+
+![Final R9 expanded thinking and absolute-path attachment read](screenshots/free-local-agent-alpha4-tools-r9.png)
+
+![Final R9 collapsed activity and exact final text/digest answer](screenshots/free-local-agent-alpha4-final-readback-r9.png)
+
+![Final R9 ordinary Chat exact answer](screenshots/free-local-agent-alpha4-chat-r9.png)
+
+![Final R9 ready regular profile after saved v4 migration](screenshots/free-local-agent-alpha4-regular-profile-r9.png)
+
+These genuine R9 captures were independently inspected and hashed. The first
+shows actual model thinking and the completed tool's absolute-path input outside
+the selected workspace. The second shows the actual final sentence/digest with
+Task activity collapsed. The third shows the exact Chat answer and completed
+outcome without recorded tool checks. The fourth shows the restored regular
+profile after migration and calibration, with the five original tasks and no
+calibration banner. They identify R9 ASAR `792ccb20…8bb8`; earlier R8/R7
+captures below keep their original payload identity.
+
+| R9 PNG | SHA-256 |
+| --- | --- |
+| `free-local-agent-alpha4-tools-r9.png` | `dc8c9049064362a6eb5930740a22d0c65bbe0fdbba2a9b0e332ee86e0ab38691` |
+| `free-local-agent-alpha4-final-readback-r9.png` | `b0115ab97bc836e5f3e22c0db1378740b376fd26fd04a7b788ec998183efbe62` |
+| `free-local-agent-alpha4-chat-r9.png` | `3d0320d3a4ebf6acbb4002dd82d131adcbb457ff4925709070520f8c3310da96` |
+| `free-local-agent-alpha4-regular-profile-r9.png` | `29f9e763c70756b0dc794eec1bd4e7aa06973c9f6910118fa8783296fff0d553` |
+
+![Final R8 genuinely empty profile with draft and attachment](screenshots/free-local-agent-alpha4-empty-model-r8.png)
+
+![Final R8 Chat after verified local-model import](screenshots/free-local-agent-alpha4-chat-r8.png)
+
+![Final R8 Working during the unsuccessful attached-file read](screenshots/free-local-agent-alpha4-working-r8.png)
+
+![Final R8 completed file read with expanded input/result](screenshots/free-local-agent-alpha4-readback-r8.png)
+
+These genuine R8 screenshots were independently inspected and hashed. The first
+shows Choose model, retained draft/attachment and disabled Send before import.
+The second shows the exact `42` answer, Chat mode, completed outcome and zero
+recorded operation checks. The third shows actual model thinking and expanded
+Working during the failed first read task. The fourth shows the separate completed
+read's expanded thinking and tool disclosure. All retain R8 ASAR `77c9b33b…340e`
+provenance; the R7 Agent-task captures below keep their original identity.
+
+| R8 PNG | SHA-256 |
+| --- | --- |
+| `free-local-agent-alpha4-empty-model-r8.png` | `889ba2e2e77a829acb05452117967855e4958680897a4c87328420b2f4345dc4` |
+| `free-local-agent-alpha4-chat-r8.png` | `662acf69dd3a82e924737599a5c789d549a56a02f0484bc09f8cb635aa8eab5a` |
+| `free-local-agent-alpha4-working-r8.png` | `0167b6eff3e55885bd143459bb427ff97d55d9f0c4f3e8267a59a8804a034001` |
+| `free-local-agent-alpha4-readback-r8.png` | `b5c93922cd3d3b6c378d0a705c1efd7fd8c726d1890c75071e9c59255a2098f5` |
 
 ![Final R7 live Working expanded during the CLI repair](screenshots/free-local-agent-alpha4-working-r7.png)
 
@@ -572,6 +930,20 @@ recorded tool evidence and the larger text setting.
 | `free-local-agent-alpha4-exact-readback-r7.png` | `88b0f12d812f52717fd6208b48945aca4ab337376e308c32cffaa334f8ca2dfa` |
 | `free-local-agent-alpha4-note-r7.png` | `c7f3190e58ad792a943404662c65a1f710ab4a5657c97016dc427c81abe59d22` |
 | `free-local-agent-alpha4-chat-r7.png` | `9004c119bc14af1961f6c6d994cab07964b0a916aa284644c6b62223be1a3a3d` |
+
+![R7 regular profile after visible reopening](screenshots/free-local-agent-alpha4-regular-profile-r7.png)
+
+![R7 genuinely empty profile after returning from model setup](screenshots/free-local-agent-alpha4-empty-model-r7.png)
+
+These genuine 2026-10-13 R7 captures were independently inspected and hashed.
+The regular capture shows the five retained tasks, workspace and selected Qwen,
+with the separate tool-calibration banner still present. The empty-profile
+capture shows the preserved draft and attachment, Choose model and disabled Send.
+
+| R7 startup PNG | SHA-256 |
+| --- | --- |
+| `free-local-agent-alpha4-regular-profile-r7.png` | `3fca912313a09459608accd8b5d235ab47c41339dcb6ffc4d0394f42a8fc01ac` |
+| `free-local-agent-alpha4-empty-model-r7.png` | `1beba1ea888390ae39c45cb052ff9a2a4c6b4f21b2a4b1dbd262287fa92179d6` |
 
 <details>
 <summary>Historical R4 file-task captures and earlier payload evidence</summary>
@@ -628,20 +1000,14 @@ guided task results and package hashes. They are not alpha.4 project acceptance.
 
 ## Pending checks and practical limits
 
-Two final R7 visible delivery checks remain unverified:
-
-- **Empty profile onboarding:** the normal app launched in a genuinely fresh
-  profile with zero downloaded models, but visible inspection was prevented by
-  the locked Mac. Only that verified idle app-owned process was closed afterward;
-  it had no engine or task children. Launch alone does not establish the UI result.
-- **Regular profile reopen:** the final delivery app was launched **without a
-  user-data override**, reopening the verified unique regular process/store.
-  Read-only preservation passed as recorded above. Visible chats/settings/model
-  readiness and migration confirmation remain prevented by the same Mac lock.
-
-The isolated Chat/preference reopen, final R7 task results and authentic captures
-passed as recorded above. The Mac lock is an automation constraint, not evidence
-of an app display or model-setup defect.
+The earlier Mac lock prevented regular/empty-profile UI inspection on 2026-10-12.
+Those R7 startup checks passed in the visible 2026-10-13 follow-up recorded above.
+Final R9 regular-profile restoration, actual saved v4 migration and speed/tool
+calibration passed, with the original chats, undo records and model preserved.
+The preview's unsent draft remains unverified. The R9 attachment read passed with
+its own visible/saved evidence, and fresh R9 Chat/reopening passed separately. R8 setup/import, Chat/reopen
+and native-dialog results passed within their recorded scope; they do not
+reclassify the earlier R7 task/model evidence or establish broader model quality.
 
 An additional native empty-profile launch under the denied-public-network policy
 exited **133** before a usable UI. Electron's nested GPU/network-service sandbox
