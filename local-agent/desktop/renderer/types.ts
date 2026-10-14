@@ -74,6 +74,25 @@ export interface UtilityPreferences {
   webResearch: boolean;
 }
 
+/** Utilities whose local access can be remembered for one workspace. */
+export type ApprovalUtility = 'fileReading' | 'projectSearch' | 'fileEditing';
+export interface ApprovalPolicy {
+  workspacePath: string;
+  utility: ApprovalUtility;
+  createdAt: string;
+}
+export interface ResearchNote {
+  id: string;
+  url: string;
+  title: string;
+  publisher?: string;
+  retrievedAt: string;
+  quote?: string;
+  summary: string;
+  taskId?: string;
+  fileRefs?: string[];
+}
+
 export interface PluginPreferences {
   taskResearch: boolean;
 }
@@ -128,6 +147,13 @@ export interface LocalModel {
   emitsThinking?: boolean;
 }
 
+/** Public Ollama library metadata only; never a local runtime or validation. */
+export interface OllamaCatalogModel {
+  name: string; description: string; parameterSize?: string; contextLength?: number; quantization?: string;
+  family?: string; updatedAt?: string; sizeBytes?: number; digest?: string; sourceUrl: string;
+  compatibility: 'metadata-only' | 'compatible-gguf-unknown';
+}
+
 export interface ModelProbe { status: 'passed' | 'failed' | 'unverified'; detail?: string; digest?: string; templateHash?: string; runtime?: string; profileSignature?: string; }
 
 export interface SessionSummary {
@@ -154,6 +180,7 @@ export interface AgentStatus {
   profile?: ExecutionProfile;
   utilities: UtilityPreferences;
   plugins: PluginPreferences;
+  approvalPolicies?: ApprovalPolicy[];
   slowMode: boolean;
   memoryMode?: MemoryMode;
   defaultTaskEffort?: TaskEffort;
@@ -192,6 +219,10 @@ export interface ChatMessage {
 export interface AgentSession {
   id: string;
   messages: ChatMessage[];
+  /** Composer state saved for an idle chat and restored on navigation. */
+  draft?: string;
+  draftFiles?: Attachment[];
+  draftRevision?: number;
   mode: Mode;
   projectPath?: string;
   stage?: StageProgress;
@@ -226,6 +257,9 @@ export interface PermissionRequest {
   preview?: unknown;
   command?: string;
   cwd?: string;
+  workspacePath?: string;
+  utility?: ApprovalUtility;
+  alwaysApproveAllowed?: boolean;
   turnId?: string;
   revision?: number;
 }
@@ -251,6 +285,14 @@ export interface LocalAgentBridge {
   calibrateModel(id: string): Promise<void>;
   setUtilities(preferences: UtilityPreferences): Promise<void>;
   setPlugins(preferences: PluginPreferences): Promise<void>;
+  getApprovalPolicies(): Promise<ApprovalPolicy[]>;
+  setApprovalPolicy(options: { workspacePath: string; utility: ApprovalUtility }): Promise<ApprovalPolicy[]>;
+  revokeApprovalPolicy(options: { workspacePath: string; utility?: ApprovalUtility }): Promise<ApprovalPolicy[]>;
+  listResearchNotes(options?: { workspacePath?: string; query?: string }): Promise<ResearchNote[]>;
+  saveResearchNote(note: Omit<ResearchNote, 'id'> & { id?: string; workspacePath?: string }): Promise<ResearchNote>;
+  deleteResearchNotes(options: { ids: string[]; workspacePath?: string }): Promise<number>;
+  clearResearchNotebook(options?: { workspacePath?: string }): Promise<number>;
+  exportResearchNotebook(options?: { workspacePath?: string; format?: 'json' | 'markdown' }): Promise<string>;
   setSlowMode(enabled: boolean): Promise<void>;
   setExecutionPreferences(options: { memoryMode?: MemoryMode; taskEffort?: TaskEffort; ssdTaskHours?: 4 | 8 }): Promise<void>;
   startModelTrial?(id: string, route: 'ssd-experts'): Promise<void>;
@@ -260,11 +302,13 @@ export interface LocalAgentBridge {
   downloadModel(id: string): Promise<void>;
   cancelDownload(): Promise<void>;
   selectModel(id: string): Promise<void>;
+  searchOllamaModels(query: string): Promise<OllamaCatalogModel[]>;
   selectProject(): Promise<string | null>;
   createProject(options: { name: string }): Promise<string | null>;
   selectFiles(): Promise<Attachment[]>;
   createSession(options: { mode: Mode; projectPath?: string; taskEffort?: TaskEffort }): Promise<{ id: string }>;
   loadSession(id: string): Promise<AgentSession>;
+  saveDraft(options: { sessionId: string; draft: string; files: Attachment[]; revision: number }): Promise<{ saved: boolean; revision: number }>;
   send(options: { sessionId: string; text: string; files?: Attachment[] }): Promise<void>;
   cancel(sessionId?: string): Promise<void>;
   resume(sessionId: string): Promise<void>;

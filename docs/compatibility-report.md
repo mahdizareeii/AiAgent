@@ -181,7 +181,9 @@ selected model, and utility preferences remained intact. The cached
 2,740,937,888-byte GGUF had unchanged size/modification time and was not downloaded
 again. Private chats and paths are omitted. This check is limited to data
 preservation, not complete interactive GUI or packaged inference validation.
-GitHub publication of these changes is pending authentication; no push completed.
+This historical report predates the tagged GitHub Release workflow; current
+package downloads are listed on the
+[GitHub Releases](https://github.com/mahdizareeii/AiAgent/releases) page.
 
 The Qwen4B run began with **7.10 GiB available memory** and used the pinned
 artifact SHA-256 `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.

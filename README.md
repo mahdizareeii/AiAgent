@@ -19,21 +19,30 @@ results, genuine capture status, failures, and package identity are kept in the
 results remain in the [alpha.4 report](docs/alpha4-validation.md); they are not
 new alpha.5 test results.
 
-The local Apple Silicon delivery archive is
-`release/alpha5-delivery/Free-Local-Agent-0.5.0-alpha.1-mac-arm64-r14.zip`.
-Its checksum and full resource manifest are stored beside the archive.
+Download the current platform package from the
+[GitHub Releases](https://github.com/mahdizareeii/AiAgent/releases) page. Each
+tagged release includes platform-specific installers and an aggregate
+`SHA256SUMS` file. The current alpha's validation report records the exact
+package identity and retained limitations.
 
-![Packaged app showing the simplified task interface](docs/screenshots/alpha5/regular-profile-r14-new-task.png)
+Read the practical introduction and comparison at the
+[project site](https://mahdizareeii.github.io/AiAgent/).
+
+![Packaged app showing the simplified task interface](docs/screenshots/alpha5/workspace-plus-r17.png)
 
 These are genuine captures of the packaged application in an isolated test
 profile. The app verified four CLI input cases through one reviewed command and
 reported the unchanged source digest in the [completed CLI task capture](docs/screenshots/alpha5/cli-verified-final-r9.png).
 The original implementation and its earlier interrupted turn remain in the report.
+The final UI captures below come from the packaged r17 build; the older R13/R14 captures remain as historical task evidence.
 
 ## One place to work
 
 - **New task** plans, implements, verifies, and repairs observed failures. Choose
   or create a workspace through its single folder control, then describe the work.
+- Coding tasks first run a bounded project preflight that detects the stack,
+  selects local or bundled skills progressively, and records the evidence shown
+  in Working. Web research remains opt-in; remote skills are never installed.
 - **New chat** is a separate action for conversation and attached-document reading.
   Chat cannot edit a project or run commands.
 - **Models** beside the composer opens the model library. Cards explain intended
@@ -54,11 +63,22 @@ workflows, not certifications. Execution also depends on installed prerequisites
 enabled utilities, and approvals. WordPress is a general task example, not a
 special product feature or hardcoded agent shortcut.
 
-![Model cards with labelled abilities and separate Download actions](docs/screenshots/alpha5/regular-profile-r14-model-library.png)
+![Model cards, hardware fit, Ollama metadata discovery, and task abilities](docs/screenshots/alpha5/model-library-r17.png)
 
 ![Expanded task activity showing actual supplied thinking and command input](docs/screenshots/alpha5/working-thinking-tools-r13.png)
 
 The completed command's input, result, and Unicode output survived reopening.
+
+![Plugins with Research permissions, workspace-scoped approvals, and the local notebook](docs/screenshots/alpha5/plugins-notebook-r17.png)
+
+Research stays off until you enable both the plugin and web permission. Completed public-source reads can be saved as bounded, cited notes under `.free-local-agent/research-notebook.json` in the selected workspace. Notes can be searched, exported, deleted, or cleared. This is retrieval memory; it never fine-tunes or changes model weights.
+
+**Always approve** is offered for local file reading, project search, and file edits. Policies are normalized to the selected workspace and can be revoked in Plugins. Terminal commands remain manually approved for every command.
+
+![Workspace plus menu for choosing or creating a folder](docs/screenshots/alpha5/workspace-plus-r17.png)
+
+The plus button beside Workspace opens the native Choose folder and Create folder flows. Draft text and attachment selections are saved per chat while idle, then restored when you return to that chat.
+
 Its disclosure was checked with mouse, Enter, and Space. Ordinary Chat also
 retained its [visible answer of 42](docs/screenshots/alpha5/chat-42-reopened-r13.png),
 with no project tools or approvals.
@@ -177,5 +197,6 @@ protections. It is not an upstream stable-release feature.
 Initial SSD support is Apple Silicon. Windows/Linux keep normal CPU/Vulkan
 inference and await native SSD validation. Text, code, and text PDFs are the
 initial formats; OCR, vision, audio, CUDA-specific acceleration, signed installers,
-and automatic app updates are deferred. Current changes and installer artifacts
-remain local; no GitHub push or release publication is performed.
+and automatic app updates are deferred. Tagged builds publish unsigned,
+unnotarized installers through the GitHub Releases workflow; model weights remain
+separate publisher downloads.

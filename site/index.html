@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Free Local Agent is an open-source desktop AI agent with bundled local inference, project tools, approvals, and evidence." />
+    <meta name="theme-color" content="#07101f" />
+    <title>Free Local Agent · Your AI, your machine</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="container nav-wrap">
+        <a class="brand" href="#top" aria-label="Free Local Agent home">
+          <span class="brand-mark" aria-hidden="true">✦</span>
+          <span>Free Local Agent</span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="#features">Features</a>
+          <a href="#install">Install</a>
+          <a href="#compare">Compare</a>
+          <a href="#evidence">Evidence</a>
+          <a class="nav-cta" href="https://github.com/mahdizareeii/AiAgent/releases">Releases <span aria-hidden="true">↗</span></a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> Open-source desktop agent · 0.5.0-alpha.1</p>
+            <h1>Your AI.<br /><em>Your machine.</em></h1>
+            <p class="lede">Free Local Agent brings model inference and project work together on your computer. Build software, edit files, inspect documents, and review every command before it runs.</p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="https://github.com/mahdizareeii/AiAgent/releases">Download from Releases <span aria-hidden="true">↗</span></a>
+              <a class="button button-secondary" href="https://github.com/mahdizareeii/AiAgent">View source <span aria-hidden="true">↗</span></a>
+            </div>
+            <p class="hero-note"><span aria-hidden="true">●</span> No hosted-model account, API key, Ollama, or separate model server required.</p>
+          </div>
+          <div class="hero-card" aria-label="Free Local Agent task workspace preview">
+            <div class="window-bar"><span></span><span></span><span></span><small>Free Local Agent</small></div>
+            <img src="assets/task-workspace.png" alt="Free Local Agent task workspace showing a local project task" />
+            <div class="hero-card-caption"><span class="mini-icon">⌘</span><span>Plan, implement, verify, and repair in one reviewed workspace.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section intro-section" aria-labelledby="intro-heading">
+        <div class="container narrow-copy">
+          <p class="section-kicker">A local agent for real work</p>
+          <h2 id="intro-heading">Keep the useful parts of an AI agent close to the work.</h2>
+          <p>Free Local Agent packages its inference engine, agent backend, and desktop controls together. Local Chat and project tasks continue offline after model weights are available. Optional research tools are disabled on a fresh profile and can be enabled when you need public-source lookup.</p>
+        </div>
+      </section>
+
+      <section class="section" id="features" aria-labelledby="features-heading">
+        <div class="container">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">What it can do</p>
+              <h2 id="features-heading">A practical loop from request to checked result.</h2>
+            </div>
+            <p class="section-aside">The agent shows its work as it goes. You stay in control of changes and commands.</p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card feature-card-accent">
+              <span class="feature-number">01</span>
+              <h3>Bundled local inference</h3>
+              <p>Download pinned GGUF weights or import your own. The packaged app includes its inference engine, so a separate model server is optional.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-number">02</span>
+              <h3>Project tasks</h3>
+              <p>Choose one workspace, describe the outcome, and let the agent plan, implement, check, and make bounded repairs.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-number">03</span>
+              <h3>File and terminal tools</h3>
+              <p>Read project files, search text, edit exact content, and run approved commands with complete local output.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-number">04</span>
+              <h3>Review before action</h3>
+              <p>Edits and commands pause for your approval. Deny or stop when the proposed action does not match the job.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-number">05</span>
+              <h3>Evidence you can inspect</h3>
+              <p>Working keeps thinking, tool inputs, results, stages, and approvals available for inspection and later readback.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-number">06</span>
+              <h3>Optional research</h3>
+              <p>Enable the research plugin only when needed. Inference remains on loopback while approved research can reach public sources.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section screenshots-section" aria-labelledby="screenshots-heading">
+        <div class="container">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Inside the workspace</p>
+              <h2 id="screenshots-heading">See the controls before you install.</h2>
+            </div>
+            <p class="section-aside">These captures come from the packaged application and its local validation work.</p>
+          </div>
+          <div class="screenshots-grid">
+            <figure class="screenshot-card screenshot-large">
+              <img src="assets/working-tools.png" alt="Expanded Working panel showing model supplied thinking, tools, and command results" loading="lazy" />
+              <figcaption><strong>Working</strong><span>Expand activity to inspect supplied thinking, named tools, inputs, and results.</span></figcaption>
+            </figure>
+            <figure class="screenshot-card">
+              <img src="assets/model-library.png" alt="Free Local Agent model library with local model cards and download actions" loading="lazy" />
+              <figcaption><strong>Models</strong><span>Model cards show intended tasks, size, compatibility, and local evidence.</span></figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section install-section" id="install" aria-labelledby="install-heading">
+        <div class="container install-grid">
+          <div>
+            <p class="section-kicker">Get started</p>
+            <h2 id="install-heading">Install once. Work locally.</h2>
+            <ol class="steps">
+              <li><span>1</span><div><strong>Download the package</strong><p>Choose the archive for macOS arm64, Windows x64, or Ubuntu x64 from the <a href="https://github.com/mahdizareeii/AiAgent/releases">Releases page</a>.</p></div></li>
+              <li><span>2</span><div><strong>Choose or import a model</strong><p>Open <b>Models</b> and download a supported, checksummed GGUF or import one from disk.</p></div></li>
+              <li><span>3</span><div><strong>Start a task</strong><p>Choose a workspace, describe the result, then review proposed edits and commands as they appear.</p></div></li>
+            </ol>
+          </div>
+          <aside class="requirements-card">
+            <p class="section-kicker">Before you begin</p>
+            <h3>Hardware and platform</h3>
+            <dl>
+              <div><dt>macOS</dt><dd>13.3+, Apple Silicon for the packaged arm64 build.</dd></div>
+              <div><dt>Windows</dt><dd>Windows x64 with normal CPU/Vulkan inference.</dd></div>
+              <div><dt>Ubuntu</dt><dd>Ubuntu 24.04 x64 with Vulkan and packaged runtime libraries.</dd></div>
+              <div><dt>Storage</dt><dd>Model files range from about 2.55 GiB to 45.09 GiB split across shards.</dd></div>
+            </dl>
+            <p class="muted">Source builders also need Node.js 24.10+, Python 3.12, Rust 1.96.1, CMake, and native C/C++ tools.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section compare-section" id="compare" aria-labelledby="compare-heading">
+        <div class="container">
+          <div class="section-heading compare-heading">
+            <div>
+              <p class="section-kicker">Choose the right tool</p>
+              <h2 id="compare-heading">Free Local Agent alongside familiar local AI tools.</h2>
+            </div>
+            <p class="section-aside">This is a role and capability comparison. Model quality and speed depend on the model, hardware, and configuration; they have not been benchmarked here.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <caption class="sr-only">Comparison of Free Local Agent, Ollama, LM Studio, and Open WebUI</caption>
+              <thead><tr><th scope="col">Dimension</th><th scope="col" class="highlight-col">Free Local Agent</th><th scope="col">Ollama</th><th scope="col">LM Studio</th><th scope="col">Open WebUI</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">Primary role</th><td class="highlight-col">Desktop agent for project work and local chat</td><td>Local model runner and API</td><td>Desktop model runner and chat app</td><td>Web UI for connecting to model servers</td></tr>
+                <tr><th scope="row">Runtime / model source</th><td class="highlight-col">Bundled native engine; curated or imported GGUF weights</td><td>Ollama runtime with models from its library or local files</td><td>llama.cpp-based runtime with downloadable or imported models</td><td>Uses a configured backend such as Ollama or OpenAI-compatible APIs</td></tr>
+                <tr><th scope="row">Project actions</th><td class="highlight-col">Files, search, edits, terminal commands, checks, and bounded repair</td><td>Model serving; project actions require a client or integration</td><td>Chat and developer features; project automation depends on integrations</td><td>Chat and web workflows; host-side actions depend on connected services</td></tr>
+                <tr><th scope="row">API / server behavior</th><td class="highlight-col">Local desktop app; loopback inference and reviewed action host</td><td>Local HTTP API for running and managing models</td><td>Local OpenAI-compatible server and desktop API options</td><td>Web application that routes requests to configured model APIs</td></tr>
+                <tr><th scope="row">Offline path</th><td class="highlight-col">Chat and project tasks work offline after weights are present</td><td>Local inference works offline after model acquisition</td><td>Local inference works offline after model acquisition</td><td>Offline when its web app and configured backend are local</td></tr>
+                <tr><th scope="row">Setup</th><td class="highlight-col">Download app, choose a workspace, then download/import a model</td><td>Install runtime, pull a model, and use CLI/API clients</td><td>Install desktop app and download a model in the library</td><td>Run the web app and configure one or more model providers</td></tr>
+                <tr><th scope="row">Safety / observability</th><td class="highlight-col">Approval gates, Working history, local logs, and task evidence</td><td>Server and request logs; action policy comes from the client</td><td>Desktop activity and server controls; action policy comes from the client</td><td>Web activity and provider controls; host action policy varies</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-sources">Documentation: <a href="https://docs.ollama.com/api" target="_blank" rel="noreferrer">Ollama API ↗</a> · <a href="https://lmstudio.ai/docs/app" target="_blank" rel="noreferrer">LM Studio app ↗</a> · <a href="https://docs.openwebui.com/" target="_blank" rel="noreferrer">Open WebUI docs ↗</a></p>
+        </div>
+      </section>
+
+      <section class="section evidence-section" id="evidence" aria-labelledby="evidence-heading">
+        <div class="container">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Read the evidence</p>
+              <h2 id="evidence-heading">Claims stay close to the records.</h2>
+            </div>
+            <p class="section-aside">Validation reports describe the exact package, model, hardware, and checks that were run.</p>
+          </div>
+          <div class="evidence-grid">
+            <a class="evidence-card" href="https://github.com/mahdizareeii/AiAgent/blob/main/docs/alpha5-validation.md"><span class="evidence-icon" aria-hidden="true">✓</span><span><strong>Alpha.5 validation report</strong><small>Current model-specific results, package identity, and retained failures.</small></span><span class="arrow" aria-hidden="true">↗</span></a>
+            <a class="evidence-card" href="https://github.com/mahdizareeii/AiAgent/blob/main/docs/architecture.md"><span class="evidence-icon" aria-hidden="true">⌘</span><span><strong>Architecture and trust boundaries</strong><small>Action host, approvals, local inference, plugins, and data paths.</small></span><span class="arrow" aria-hidden="true">↗</span></a>
+            <a class="evidence-card" href="https://github.com/mahdizareeii/AiAgent/blob/main/docs/setup-guide.md"><span class="evidence-icon" aria-hidden="true">→</span><span><strong>Setup guide</strong><small>Platform prerequisites, model setup, and source build instructions.</small></span><span class="arrow" aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section limits-section" aria-labelledby="limits-heading">
+        <div class="container limits-grid">
+          <div>
+            <p class="section-kicker">Current alpha</p>
+            <h2 id="limits-heading">Know what is still experimental.</h2>
+          </div>
+          <div class="limits-copy">
+            <p>Packages are unsigned and not notarized. The alpha is for evaluation and local development; read the release notes and verify the published SHA-256 checksums before installing.</p>
+            <p>Windows and Linux use normal CPU/Vulkan inference. The SSD expert-streaming worker is experimental and currently targeted at Apple Silicon. OCR, vision, audio, CUDA-specific acceleration, signed installers, automatic updates, and arbitrary desktop automation remain deferred.</p>
+            <a class="text-link" href="https://github.com/mahdizareeii/AiAgent/releases">Read the latest release notes <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-wrap">
+        <div><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">✦</span><span>Free Local Agent</span></a><p>Your AI. Your machine. Apache-2.0.</p></div>
+        <div class="footer-links"><a href="https://github.com/mahdizareeii/AiAgent">GitHub</a><a href="https://github.com/mahdizareeii/AiAgent/releases">Releases</a><a href="https://github.com/mahdizareeii/AiAgent/blob/main/NOTICE">Notices</a></div>
+      </div>
+    </footer>
+  </body>
+</html>

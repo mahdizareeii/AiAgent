@@ -617,5 +617,6 @@ in that project also contains verified stop/restart commands and image digests.
 - [Final delivery artifact](general-agent-package.json) records the rebuilt
   macOS arm64 archive and packaged smoke result separately from older task runs.
 
-The macOS alpha remains unsigned and unnotarized. There is no GitHub push or
-publication claim for this update.
+The macOS alpha remains unsigned and unnotarized. This historical update predates
+the tagged GitHub Release workflow; current package downloads are listed on the
+[GitHub Releases](https://github.com/mahdizareeii/AiAgent/releases) page.

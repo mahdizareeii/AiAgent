@@ -7,9 +7,18 @@ import { BudgetedInference } from './inference-gateway.ts';
 import type { StageProgress, UtilityPreferences, TaskOutcome } from './renderer/types.ts';
 
 interface Source { path: string; sha256: string; size: number; kind: 'text' | 'pdf'; cursor?: string | null; done?: boolean }
-export interface Checkpoint { version: 1; request: string; modelDigest: string; sources: Source[]; summaries: string[]; textOffset: number;
+/**
+ * The host-owned project preflight is part of a read-stage checkpoint.  Keep
+ * only its bounded digest/context here: the preflight is rerun on resume and
+ * the digest makes a changed manifest or selected skill invalidate summaries.
+ */
+export interface PreflightCheckpoint { digest: string; context?: string }
+export interface Checkpoint { version: 1 | 2; request: string; modelDigest: string; sources: Source[]; summaries: string[]; textOffset: number;
   phase: 'reading' | 'reducing' | 'ready' | 'agent' | 'finished'; context?: string; completed: number; stage: StageProgress;
+  preflight?: PreflightCheckpoint;
   outcome?: { status: TaskOutcome['status']; finishReason: string } }
+
+export interface StagedPreflight { digest: string; context?: string }
 export class StagedWork {
   private client?: Client; private transport?: StdioClientTransport;
   private cancelRead?: () => void;
@@ -21,7 +30,8 @@ export class StagedWork {
       const raw = await readFile(path.join(this.options.directory, 'checkpoint.json'), 'utf8');
       if (raw.length > 25_000_000) throw new Error('The staged task checkpoint is too large.');
       const value = JSON.parse(raw) as Checkpoint;
-      if (value.version !== 1 || !Array.isArray(value.sources) || !Array.isArray(value.summaries) || typeof value.request !== 'string' || !Number.isInteger(value.completed)) throw new Error('The task checkpoint is invalid.');
+      if (value.version !== 1 && value.version !== 2 || !Array.isArray(value.sources) || !Array.isArray(value.summaries) || typeof value.request !== 'string' || !Number.isInteger(value.completed)) throw new Error('The task checkpoint is invalid.');
+      if (value.preflight !== undefined && (typeof value.preflight !== 'object' || typeof value.preflight.digest !== 'string' || value.preflight.digest.length > 256 || value.preflight.context !== undefined && (typeof value.preflight.context !== 'string' || Buffer.byteLength(value.preflight.context, 'utf8') > 128 * 1024))) throw new Error('The task checkpoint preflight is invalid.');
       return value;
     } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
   }
@@ -75,7 +85,7 @@ export class StagedWork {
     for (let index = 0; index < checkpoint.summaries.length; index += 2) reduced.push(await this.options.inference.summarize(checkpoint.summaries.slice(index, index + 2).join('\n\n'), this.options.signal, checkpoint.request));
     checkpoint.summaries = reduced;
   }
-  async run(request: string, modelDigest: string, resume = false): Promise<string> {
+  async run(request: string, modelDigest: string, resume = false, preflight?: StagedPreflight): Promise<string> {
     let checkpoint = resume ? await this.readCheckpoint() : undefined;
     if (resume && (!checkpoint || ['agent', 'finished'].includes(checkpoint.phase))) throw new Error('Only paused read-only stages can resume. Send a new request to continue an interrupted agent turn.');
     if (resume && checkpoint!.request !== request) throw new Error('The resumed request does not match its checkpoint.');
@@ -86,10 +96,13 @@ export class StagedWork {
         const metadata = await this.tool('inspect_file', { path: file });
         sources.push({ path: file, sha256: metadata.sha256, size: metadata.size, kind: metadata.kind });
       }
-      if (checkpoint && (checkpoint.modelDigest !== modelDigest || sources.length !== checkpoint.sources.length || sources.some((source, index) => source.path !== checkpoint!.sources[index].path || source.sha256 !== checkpoint!.sources[index].sha256))) {
-        checkpoint = undefined; this.options.onStage({ stage: 'Restarting read stages', message: 'The model or source files changed. Previous summaries were invalidated.', resumable: true });
+      const preflightChanged = checkpoint && ((checkpoint.preflight?.digest ?? undefined) !== (preflight?.digest ?? undefined));
+      if (checkpoint && (checkpoint.modelDigest !== modelDigest || sources.length !== checkpoint.sources.length || sources.some((source, index) => source.path !== checkpoint!.sources[index].path || source.sha256 !== checkpoint!.sources[index].sha256) || preflightChanged)) {
+        checkpoint = undefined; this.options.onStage({ stage: 'Restarting read stages', message: preflightChanged ? 'The project preflight changed. Previous summaries were invalidated.' : 'The model or source files changed. Previous summaries were invalidated.', resumable: true });
       }
-      checkpoint ??= { version: 1, request, modelDigest, sources, summaries: [], textOffset: 0, phase: 'reading', completed: 0, stage: { stage: 'Reading local sources', completed: 0, resumable: true } };
+      if (checkpoint?.version === 1) checkpoint.version = 2;
+      checkpoint ??= { version: 2, request, modelDigest, sources, summaries: [], textOffset: 0, phase: 'reading', completed: 0, stage: { stage: 'Reading local sources', completed: 0, resumable: true },
+        ...(preflight ? { preflight: { digest: preflight.digest, context: preflight.context } } : {}) };
       if (checkpoint.phase === 'ready') return checkpoint.context ?? '';
       await this.save(checkpoint);
       for (const source of checkpoint.sources) {

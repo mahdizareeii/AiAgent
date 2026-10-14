@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { cancelledActionText, commandTimeoutLimits, commandTimeoutText, interruptedTurnText } from './action-protocol.ts';
+import type { ApprovalUtility } from './renderer/types.ts';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -21,6 +22,10 @@ export interface ActionPermission {
   preview?: string;
   command?: string;
   cwd?: string;
+  /** Workspace identity used by the host's persisted approval policy. */
+  workspacePath?: string;
+  utility?: ApprovalUtility;
+  alwaysApproveAllowed?: boolean;
 }
 
 export interface ActionToolEvent {
@@ -320,7 +325,8 @@ export class LocalActions {
         relativePath: target.relative, before: null, beforeHash: null, afterHash: hash(content), mode: 0o600, applied: false, undone: false } });
     }
     await this.permission({ requestId: id, title: `Create ${planned.length} project ${planned.length === 1 ? 'file' : 'files'}`,
-      arguments: args, preview: planned.map(item => diffPreview(item.target.relative, null, item.content)).join('\n\n') }, signal);
+      arguments: args, preview: planned.map(item => diffPreview(item.target.relative, null, item.content)).join('\n\n'), workspacePath: planned[0].target.root,
+      utility: 'fileEditing', alwaysApproveAllowed: true }, signal);
     for (const item of planned) {
       const checked = await this.target(item.target.relative);
       if (checked.root !== item.target.root || (await this.fileVersion(checked.absolute)).content !== null) throw new ActionError('STALE_PREVIEW', 'A project file appeared while approval was pending. Review a fresh creation batch.');
@@ -407,7 +413,8 @@ export class LocalActions {
     if (before.content === content) return mutationResult('The file already has the proposed content. No change was needed. Verify with read_file; do not rewrite it.', {
       ok: true, operation: tool, path: target.relative, status: 'unchanged', changed: false, sha256: before.hash, bytes: Buffer.byteLength(content, 'utf8'),
     });
-    await this.permission({ requestId: id, title: `${before.content === null ? 'Create' : 'Change'} ${target.relative}`, arguments: args, preview: diffPreview(target.relative, before.content, content) }, signal);
+    await this.permission({ requestId: id, title: `${before.content === null ? 'Create' : 'Change'} ${target.relative}`, arguments: args, preview: diffPreview(target.relative, before.content, content), workspacePath: target.root,
+      utility: 'fileEditing', alwaysApproveAllowed: true }, signal);
     const checked = await this.target(file);
     const current = await this.fileVersion(checked.absolute);
     if (checked.root !== target.root || checked.absolute !== target.absolute || current.hash !== before.hash || current.device !== before.device || current.inode !== before.inode || current.mode !== before.mode) throw new ActionError('STALE_PREVIEW', 'The file changed while approval was pending. Read it and propose a fresh change.');

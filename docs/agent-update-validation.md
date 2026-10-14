@@ -33,7 +33,7 @@ evidence; full interactive GUI checks remain pending after capture-tool failure.
 | Initial 0.3 model-setup screenshot | Captured; partial evidence only |
 | Full visible GUI and further screenshots | Pending after stale frames / ScreenCaptureKit -3811 despite an unlocked desktop |
 | Normal-config upgrade preservation | Passed; three chats/message counts, model selection, and utilities preserved; GGUF size/mtime unchanged |
-| GitHub publication | Pending authentication; no push completed; current changes and installer remain local |
+| GitHub publication | This historical report predates tagged publication; current packages use the repository release workflow |
 | Windows/Linux native execution | Pending; CI configuration alone is not native validation |
 
 The automated suite result does not establish a finished project or substitute
@@ -146,8 +146,8 @@ selected model, and utility preferences were preserved. The local pinned GGUF
 remained **2,740,937,888 bytes** with unchanged modification time and was not
 downloaded again. This report includes no private chat IDs, message contents,
 or user-data paths. The preservation result does not establish a complete GUI
-or a new packaged inference run. GitHub publication is pending authentication;
-no push completed, and the source changes and installer are local.
+or a new packaged inference run. This historical report predates the tagged
+GitHub Release workflow; current downloads are published from verified tag builds.
 
 ## Earlier model evidence
 

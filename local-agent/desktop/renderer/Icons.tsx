@@ -29,5 +29,7 @@ const paths: Record<IconName, string> = {
 };
 
 export default function Icon({ name, size = 18, style }: { name: IconName; size?: number; style?: CSSProperties }) {
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>{name === 'brand' && <ellipse cx="12" cy="12" rx="10.6" ry="7.8" transform="rotate(-35 12 12)" strokeWidth=".75" opacity=".48" />}<path d={paths[name]} />{name === 'brand' && <circle cx="20.4" cy="6.5" r="1.1" fill="currentColor" stroke="none" />}</svg>;
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+    {name === 'brand' ? <><rect x="1.2" y="1.2" width="21.6" height="21.6" rx="6" fill="currentColor" opacity=".12" stroke="currentColor" strokeWidth=".8" /><ellipse cx="12" cy="12" rx="8.7" ry="5.6" transform="rotate(-32 12 12)" stroke="currentColor" strokeWidth=".8" opacity=".76" /><path d="m12 5.5 1.25 5.25L18.5 12l-5.25 1.25L12 18.5l-1.25-5.25L5.5 12l5.25-1.25L12 5.5Z" fill="currentColor" stroke="none" /><circle cx="18.9" cy="6.3" r="1.25" fill="currentColor" stroke="none" /></> : <path d={paths[name]} />}
+  </svg>;
 }

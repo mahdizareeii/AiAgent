@@ -1,70 +1,33 @@
-"""Render Free Local Agent's code-native monogram into desktop icon formats.
+"""Render Free Local Agent's local-spark orbit mark into desktop icon formats.
 
-Optional maintainer tool: Python 3 + Pillow. Generated assets are committed, so
-packaging and end users do not need Pillow. Keep geometry aligned with free-local-agent.svg.
+Maintainer tool only: Python 3 + Pillow are needed to regenerate assets. The
+PNG, ICNS, and ICO are committed so packaged users need no Pillow.
 """
 from pathlib import Path
-import math
-import xml.etree.ElementTree as ET
 from PIL import Image, ImageDraw
 
 root = Path(__file__).resolve().parents[1]
 assets = root / "assets" / "branding"
-svg = ET.parse(assets / "free-local-agent.svg").getroot()
-ns = {"s": "http://www.w3.org/2000/svg"}
-mark = svg.find("s:path", ns)
-assert mark is not None and mark.attrib["d"] == "M8 18V6h9M8 12h7", "Update the icon renderer when the monogram geometry changes."
-
-# Supersampling preserves the thin orbit and rounded line ends at small sizes.
-sample = 2
-image = Image.new("RGBA", (1024 * sample, 1024 * sample), (0, 0, 0, 0))
+S = 4
+size = 1024 * S
+image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
 draw = ImageDraw.Draw(image)
-draw.rounded_rectangle(tuple(v * sample for v in (42, 42, 982, 982)), radius=210 * sample,
-                       fill="#172754", outline="#3c5191", width=3 * sample)
-scale = 29 * sample
-origin = 164 * sample
-
-def point(x, y):
-    return (origin + x * scale, origin + y * scale)
-
-accent = svg.attrib["stroke"]
-orbit = svg.find("s:ellipse", ns)
-assert orbit is not None and orbit.attrib["transform"] == "rotate(-35 12 12)"
-cx, cy, rx, ry = (float(orbit.attrib[key]) for key in ("cx", "cy", "rx", "ry"))
-angle = math.radians(-35)
-outer, inner = [], []
-half_stroke = float(orbit.attrib["stroke-width"]) / 2
-for index in range(361):
-    phase = math.radians(index)
-    x, y = rx * math.cos(phase), ry * math.sin(phase)
-    nx, ny = math.cos(phase) / rx, math.sin(phase) / ry
-    normal = math.hypot(nx, ny)
-    nx, ny = nx / normal * half_stroke, ny / normal * half_stroke
-    for outline, direction in [(outer, 1), (inner, -1)]:
-        px, py = x + direction * nx, y + direction * ny
-        outline.append(point(cx + px * math.cos(angle) - py * math.sin(angle),
-                             cy + px * math.sin(angle) + py * math.cos(angle)))
-layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
-orbit_draw = ImageDraw.Draw(layer)
-rgb = tuple(int(accent[i:i + 2], 16) for i in (1, 3, 5))
-orbit_draw.polygon(outer, fill=(*rgb, round(255 * float(orbit.attrib["opacity"])) ))
-orbit_draw.polygon(inner, fill=(0, 0, 0, 0))
-image = Image.alpha_composite(image, layer)
+draw.rounded_rectangle((42*S, 42*S, 982*S, 982*S), radius=215*S, fill="#10243f", outline="#376a94", width=4*S)
+# Two soft orbit strokes make the mark readable when reduced to dock size.
+orbit = Image.new("RGBA", image.size, (0, 0, 0, 0))
+od = ImageDraw.Draw(orbit)
+od.ellipse((190*S, 315*S, 834*S, 710*S), outline="#55d6c3", width=10*S)
+od.ellipse((265*S, 245*S, 760*S, 775*S), outline=(85, 214, 195, 115), width=4*S)
+orbit = orbit.rotate(-32, resample=Image.Resampling.BICUBIC, center=(512*S, 512*S))
+image = Image.alpha_composite(image, orbit)
 draw = ImageDraw.Draw(image)
-width = round(float(svg.attrib["stroke-width"]) * scale)
-radius = width / 2
-for vertices in [[(8, 18), (8, 6), (17, 6)], [(8, 12), (15, 12)]]:
-    coords = [point(x, y) for x, y in vertices]
-    draw.line(coords, fill=accent, width=width, joint="curve")
-    for x, y in coords:
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=accent)
-dot = svg.find("s:circle", ns)
-assert dot is not None
-x, y = point(float(dot.attrib["cx"]), float(dot.attrib["cy"]))
-r = float(dot.attrib["r"]) * scale
-draw.ellipse((x - r, y - r, x + r, y + r), fill=accent)
+# Four-point local spark.
+points = [(512*S,176*S),(562*S,462*S),(848*S,512*S),(562*S,562*S),(512*S,848*S),(462*S,562*S),(176*S,512*S),(462*S,462*S)]
+draw.polygon(points, fill="#f6d365")
+draw.ellipse((496*S,496*S,528*S,528*S), fill="#fff2b2")
+draw.ellipse((745*S,210*S,785*S,250*S), fill="#55d6c3")
 image = image.resize((1024, 1024), Image.Resampling.LANCZOS)
 image.save(assets / "free-local-agent.png", optimize=True)
 image.save(assets / "free-local-agent.icns")
-image.save(assets / "free-local-agent.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+image.save(assets / "free-local-agent.ico", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
 print("Generated assets/branding/free-local-agent.png, free-local-agent.icns and free-local-agent.ico")

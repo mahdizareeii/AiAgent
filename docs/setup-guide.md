@@ -96,6 +96,15 @@ profile. Disabled web tools are omitted from registration. Enabling research
 allows public-source lookup; inference still stays on loopback. Approved terminal
 commands run with the user's permissions and can access the network.
 
+Every coding task starts with a host-owned project preflight. It detects the stack
+from local manifests and entrypoints, scans `.agents/skills`, `.goose/skills`,
+`.claude/skills`, and bundled skills, then loads only relevant bounded skill
+bodies. The result and its hashes appear in **Working** and the coding prompt;
+web research remains opt-in and remote skills are never installed or executed.
+Creating or editing a local `SKILL.md` uses the normal reviewed file actions and
+is validated against the [Agent Skills specification](https://agentskills.io/specification)
+before completion.
+
 File edits use exact UTF-8 content and verified mutation receipts. New files and
 edits have local undo records. Undo cannot reverse package installation, database
 changes, command side effects, or concurrent external modifications. Complete
@@ -166,9 +175,14 @@ sidecar. Preparation requires the internet; local runtime operation does not.
 
 Run `npm run package` and `npm run smoke:package` natively on the target OS.
 The configured [CI](../.github/workflows/alpha.yml) builds SSD resources only on
-Apple Silicon, then checks resources and approval boundaries. A configured job
-is not evidence of a successful native release. Current repository changes and
-packages stay local; no GitHub push or publication is performed.
+Apple Silicon, then checks resources and approval boundaries. The reusable
+packaging workflow is also called by [release.yml](../.github/workflows/release.yml)
+for semantic-version tags; it verifies the tag against `package.json`, checks
+each platform package, and publishes the installers with an aggregate
+`SHA256SUMS` file. A configured job is not evidence of a successful native
+release until its workflow run and release assets are available.
+The public user introduction is deployed from `site/` by
+[pages.yml](../.github/workflows/pages.yml) at the project Pages URL.
 
 Application source is Apache-2.0. Goose, llama.cpp, Python and Electron dependencies
 retain their licenses and notices; model weights have separate publisher licenses.

@@ -48,6 +48,7 @@
   "build": {
     "appId": "org.localagent.desktop",
     "productName": "Free Local Agent",
+    "artifactName": "Free-Local-Agent-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "files": [
       "dist/**/*",

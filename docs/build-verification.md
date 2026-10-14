@@ -149,7 +149,7 @@ partial evidence; full visible GUI validation remains pending after capture-tool
 | Initial 0.3 model-setup screenshot | Captured; real M5 / 24 GB RAM, with 3.8 GB available during a separate model run; partial GUI evidence only |
 | Full visible GUI and further screenshots | Pending; capture tool returns stale frames / ScreenCaptureKit error -3811 despite the desktop being unlocked |
 | Normal-config upgrade preservation | Passed: three saved chats and message counts, selected model and utilities retained; cached GGUF size/mtime unchanged |
-| GitHub publication | Pending authentication; no push completed; current installer and source changes are local |
+| GitHub publication | This historical report predates tagged publication; current packages use the repository release workflow |
 | Windows/Linux native execution | Pending; packaging/CI configuration alone is not native validation |
 
 The 106-test suite ran under macOS `sandbox-exec` with public outbound networking
@@ -181,8 +181,9 @@ error was `ScreenCaptureKit SCStreamErrorDomain -3811`, an audio/video capture
 failure. Temporary `--disable-gpu` and background-flag diagnostics did not
 restore capture; no production GPU configuration was changed. Home, chat, and
 tool screenshots are omitted rather than presented as completed captures.
-Publishing the current changes to GitHub remains pending authentication; no
-push completed. The capture error does not establish a graphics root cause.
+This historical report predates the repository's tagged GitHub Release workflow;
+current downloads are published from verified tag builds. The capture error does
+not establish a graphics root cause.
 
 The native Qwen4B complex-project run used Metal, 8192 context, 2048 reserved
 output, 512 batch, and 128 microbatch tokens. Local calibration measured

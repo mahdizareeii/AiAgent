@@ -1,4 +1,5 @@
 import Icon from './Icons';
+import HighlightedCode from './HighlightedCode';
 import { workingStatus } from './conversation-flow';
 import type { StageProgress, ToolActivity } from './types';
 
@@ -8,6 +9,15 @@ function commandDisplay(output: unknown) {
   if (value.operation !== 'run_command' || typeof value.output_text !== 'string') return { result: output };
   const { output_text, ...result } = value;
   return { result, text: output_text };
+}
+
+function sourceFor(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
+}
+
+function languageFor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return 'json';
+  return /^(?:\$ |npm |pnpm |yarn |node |python |pip |git |docker )/m.test(value) ? 'bash' : undefined;
 }
 
 export default function WorkingDetails({ thinking, active, thinkingActive, waitingApproval, stage, tools = [], toolsTruncated, expanded, onExpandedChange }: {
@@ -39,9 +49,9 @@ export default function WorkingDetails({ thinking, active, thinkingActive, waiti
         const output = commandDisplay(tool.output);
         return <details key={tool.id}>
         <summary><span className={`tool-dot ${['completed', 'success'].includes(tool.status) ? 'complete' : ['failed', 'error'].includes(tool.status) ? 'failed' : ''}`} /><span>{tool.title}</span><span className="tool-status">{tool.status}</span></summary>
-        {tool.input !== undefined && <><h3>Input</h3><pre>{typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}</pre></>}
-        {tool.output !== undefined && <><h3>Result</h3><pre>{typeof output.result === 'string' ? output.result : JSON.stringify(output.result, null, 2)}</pre></>}
-        {output.text !== undefined && <><h3>Command output</h3><pre>{output.text}</pre></>}
+        {tool.input !== undefined && <><h3>Input</h3><HighlightedCode source={sourceFor(tool.input)} language={typeof tool.input === 'string' ? undefined : 'json'} /></>}
+        {tool.output !== undefined && <><h3>Result</h3><HighlightedCode source={sourceFor(output.result)} language={typeof output.result === 'string' ? languageFor(output.result) : 'json'} /></>}
+        {output.text !== undefined && <><h3>Command output</h3><HighlightedCode source={output.text} language={languageFor(output.text)} /></>}
       </details>;
       })}</div>}
       {toolsTruncated && <p className="thinking-unavailable">Working retains the first 256 tool activities for this reply. Further activity details were not retained here.</p>}

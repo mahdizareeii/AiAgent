@@ -68,19 +68,21 @@ function environment(extra) {
 }
 
 // Electron's filesystem support must read the skill inside the actual ASAR.
-const packagedSkill = await new Promise((resolve, reject) => {
-  const child = spawn(electronExecutable, ['-e', 'process.stdout.write(require("node:fs").readFileSync(process.argv[1], "utf8"))',
-    path.join(archive, 'dist', 'skills', 'task-research', 'SKILL.md')], {
-    env: environment({ ELECTRON_RUN_AS_NODE: '1' }), shell: false, windowsHide: true,
+for (const skillName of ['task-research', 'project-preflight']) {
+  const packagedSkill = await new Promise((resolve, reject) => {
+    const child = spawn(electronExecutable, ['-e', 'process.stdout.write(require("node:fs").readFileSync(process.argv[1], "utf8"))',
+      path.join(archive, 'dist', 'skills', skillName, 'SKILL.md')], {
+      env: environment({ ELECTRON_RUN_AS_NODE: '1' }), shell: false, windowsHide: true,
+    });
+    let output = '', errors = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`Packaged ${skillName} skill read timed out.`)); }, 10_000);
+    child.stdout.on('data', chunk => { output += String(chunk); });
+    child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-2000); });
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error(`Packaged ${skillName} skill read failed: ${errors}`)); });
   });
-  let output = '', errors = '';
-  const timer = setTimeout(() => { child.kill(); reject(new Error('Packaged skill read timed out.')); }, 10_000);
-  child.stdout.on('data', chunk => { output += String(chunk); });
-  child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-2000); });
-  child.once('error', error => { clearTimeout(timer); reject(error); });
-  child.once('close', code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error(`Packaged skill read failed: ${errors}`)); });
-});
-assert.equal(packagedSkill, await readFile(path.join(root, 'local-agent', 'desktop', 'skills', 'task-research', 'SKILL.md'), 'utf8'));
+  assert.equal(packagedSkill, await readFile(path.join(root, 'local-agent', 'desktop', 'skills', skillName, 'SKILL.md'), 'utf8'));
+}
 
 async function bounded(promise, label, timeoutMs = 30_000) {
   let timer;

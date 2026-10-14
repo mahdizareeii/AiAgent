@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { KeyboardEvent, RefObject } from 'react';
 import Icon from './Icons';
 import PreferenceChoice from './PreferenceChoice';
@@ -6,7 +7,7 @@ import TrialHistory from './TrialHistory';
 import KernelDiagnostics from './KernelDiagnostics';
 import { modelFitAllowsUse, runtimePresentation } from './status-flow';
 import { acquisitionReason, canTrySsd, currentValidation, measuredMemory, memoryModes, modelEvidence, trialDisplaysError } from './model-controls';
-import type { AgentStatus, DownloadProgress, LocalModel, MemoryMode, Mode, StageProgress, TaskEffort } from './types';
+import type { AgentStatus, DownloadProgress, LocalModel, MemoryMode, Mode, StageProgress, TaskEffort, OllamaCatalogModel } from './types';
 
 const memory = (bytes: number) => `${(Math.max(0, bytes) / 1024 ** 3).toFixed(1)} GiB`;
 const guidanceIcons = { coding: 'code', websites: 'monitor', automation: 'settings', documents: 'folder', research: 'search' } as const;
@@ -59,6 +60,29 @@ interface Props {
   onMemoryMode: (mode: MemoryMode) => Promise<void>; onTryModel: (id: string) => Promise<void>;
   onCancelTrial: (trialId: string) => Promise<void>; onValidate: (id: string) => Promise<void>;
   onTaskEffort?: (effort: TaskEffort) => Promise<void>; onSsdTaskHours?: (hours: 4 | 8) => Promise<void>;
+  onSearchOllama?: (query: string) => Promise<OllamaCatalogModel[]>;
+}
+
+function OllamaCatalogPanel({ status, onSearch }: { status: AgentStatus; onSearch?: (query: string) => Promise<OllamaCatalogModel[]> }) {
+  const [query, setQuery] = useState('');
+  const [rows, setRows] = useState<OllamaCatalogModel[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = status.plugins.taskResearch && status.utilities.webResearch;
+  async function search() {
+    if (!onSearch) return;
+    setBusy(true); setError(null);
+    try { setRows(await onSearch(query)); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); }
+  }
+  return <section className="ollama-catalog" aria-label="Ollama model discovery">
+    <div className="model-section-heading"><div><h3>Discover Ollama models</h3><p>Search public metadata only. Free Local Agent never starts Ollama or sends prompts to it.</p></div></div>
+    {!enabled ? <p className="muted">Enable Research and Allow web research in Plugins to search the public Ollama catalog.</p> : <>
+      <form className="ollama-search" onSubmit={event => { event.preventDefault(); void search(); }}><label className="sr-only" htmlFor="ollama-model-search">Search Ollama models</label><input id="ollama-model-search" value={query} onChange={event => setQuery(event.target.value)} maxLength={100} placeholder="Search model names, for example qwen or llama" /><button className="secondary-button" type="submit" disabled={busy}>{busy ? 'Searching…' : 'Search'}</button></form>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      {!!rows.length && <div className="ollama-results">{rows.map(row => <article className="ollama-result" key={`${row.name}-${row.digest ?? ''}`}><div><strong>{row.name}</strong><span className="ollama-meta">{[row.parameterSize, row.quantization, row.family].filter(Boolean).join(' · ') || 'Publisher details available'}</span></div><p>{row.description}</p><small>{row.compatibility === 'metadata-only' ? 'Metadata only · import a compatible GGUF to run locally' : 'Compatible GGUF not verified'}</small><a href={row.sourceUrl} target="_blank" rel="noreferrer">Publisher details <Icon name="external" size={11} /></a></article>)}</div>}
+      {!busy && query.trim() && !rows.length && !error && <p className="muted">No matching public models were returned.</p>}
+    </>}
+  </section>;
 }
 
 function ModelDetails({ model, status }: { model: LocalModel; status: AgentStatus }) {
@@ -142,6 +166,7 @@ export default function ModelSetup(props: Props) {
       })}</div>{!status && <p className="muted">Connecting to the local runtime…</p>}
     </section>
     {status?.experimentalTrial && <Trial status={status} active={trialActive} hasBridge={hasBridge} onCancel={props.onCancelTrial} />}
+    {status && <OllamaCatalogPanel status={status} onSearch={props.onSearchOllama} />}
     {setupBusy && stage && <div className="setup-stage" role="status"><span className="spinner" /><span>{stage.message || stage.stage}</span></div>}
     {error && error !== status?.runtime.error && !duplicateTrialFailure && <div className="setup-error" role="alert">{error}{!status && <button className="text-button" disabled={locked || !hasBridge} onClick={() => void props.onSetup()}>Retry connection</button>}</div>}
     <details className="model-advanced"><summary><Icon name="settings" size={15} />Advanced<span>Hardware, execution & diagnostics</span></summary><div className="advanced-content">

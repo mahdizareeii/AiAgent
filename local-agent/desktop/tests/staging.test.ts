@@ -80,6 +80,25 @@ test('staged frozen file reads resume cursors, invalidate changed files, and can
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('project preflight digest invalidates a paused read checkpoint', { skip: !existsSync(executable), timeout: 30_000 }, async () => {
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-staging-preflight-')));
+  const file = path.join(directory, 'source.txt');
+  await writeFile(file, `PREFLIGHT_MARKER ${'long line '.repeat(700)} END_MARKER\n`);
+  const firstController = new AbortController();
+  const firstInference = new FixtureInference(); firstInference.controller = firstController; firstInference.abortAfter = 1;
+  const stages: any[] = [];
+  const options = { directory: path.join(directory, 'checkpoints'), executable, roots: [], files: [file], utilities: DEFAULT_UTILITIES, inference: firstInference, signal: firstController.signal, onStage: (stage: any) => stages.push(stage) };
+  try {
+    await assert.rejects(new StagedWork(options).run('Use project guidance.', 'model-digest', false, { digest: 'preflight-one', context: 'one' }), /stopped|abort|closed/i);
+    const resumedInference = new FixtureInference();
+    const resumed = new StagedWork({ ...options, inference: resumedInference, signal: new AbortController().signal });
+    const context = await resumed.run('Use project guidance.', 'model-digest', true, { digest: 'preflight-two', context: 'two' });
+    assert.ok(context.includes('END_MARKER'));
+    assert.ok(stages.some(stage => stage.stage === 'Restarting read stages' && /preflight changed/i.test(stage.message ?? '')));
+    assert.equal((await resumed.readCheckpoint())?.preflight?.digest, 'preflight-two');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('26 frozen file chunks retain evidence and task goals with bounded incremental summaries', { skip: !existsSync(executable), timeout: 30_000 }, async () => {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'local-agent-staging-bounded-')));
   const file = path.join(directory, 'source.txt');

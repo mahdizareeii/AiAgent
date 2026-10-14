@@ -266,6 +266,19 @@ The shipped Research plugin is app-owned; this is not an arbitrary external
 plugin installer. Chat-only imports
 receive local-context instructions and never advertise tools they cannot call.
 
+Normal coding turns also run the host-owned `project-preflight` stage before
+source staging and prompt construction. It reads metadata from project-local
+`.agents/skills`, `.goose/skills`, and `.claude/skills` directories plus bundled
+skills, detects the stack from bounded manifests and entrypoints, and loads only
+selected skill bodies. The stage records hashes so changed manifests or skills
+invalidate resumable read checkpoints. Its compact evidence appears in Working
+and in the coding prompt; skill text is untrusted guidance and never grants tools
+or approvals. Web research remains opt-in and is limited to one search and two
+official-source fetches. Remote skills are never installed or executed.
+Architecture-heavy work may reuse an existing `graphify-out/graph.json` or an
+incremental graphify pass when the optional executable is already available;
+small edits use the deterministic local scan instead.
+
 General Agent instructions require prerequisite/version inspection, implementation,
 appropriate validation, and repair of observed failures using the offered tools
 and approvals. Empty workspaces are supported. The agent must report tool-backed
@@ -373,5 +386,7 @@ See the [alpha.5 model/package report](alpha5-validation.md),
 
 macOS arm64 ZIP, Windows x64 portable ZIP, and Ubuntu x64 DEB jobs are configured.
 Windows/Linux native jobs have not been executed locally. The macOS app is unsigned
-and not notarized; alpha packages use manual updates and artifact checksums. CI has
-read-only permissions and does not publish releases or hold signing credentials.
+and not notarized; alpha packages use manual updates and artifact checksums. Pull
+request and main validation jobs retain read-only permissions, while the separate
+tagged release job publishes verified assets with `contents: write`; no signing
+credentials are held by CI.

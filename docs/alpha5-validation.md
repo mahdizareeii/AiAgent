@@ -1,8 +1,9 @@
 # 0.5.0-alpha.1 validation record
 
 **Validation is in progress.** This record separates native observations,
-component tests, numerical fixtures, and unverified model results. No GitHub push
-or release publication has been performed. Earlier alpha.4 results retain their
+component tests, numerical fixtures, and unverified model results. It records a
+historical local package; tagged builds are published through the repository's
+release workflow after CI verification. Earlier alpha.4 results retain their
 original scope and are not counted as new passes.
 
 ## Machine and storage
@@ -546,13 +547,53 @@ is:
 
 ![R13 live Qwen3-Coder-Next download progress](screenshots/alpha5/qwen80-live-progress-r13.png)
 
-The final local package is
+The final historical local package is
 `release/alpha5-delivery/Free-Local-Agent-0.5.0-alpha.1-mac-arm64-r14.zip`.
 Its SHA-256 is recorded in `release/alpha5-delivery/SHA256SUMS-r14` and its
 full resource binding is in `release/alpha5-delivery/package-manifest-r14.json`.
+Current tagged downloads are available from the
+[GitHub Releases](https://github.com/mahdizareeii/AiAgent/releases) page.
 The package is unsigned and unnotarized. Native Gemma Chat/tool/task checks and
 the regular-profile preservation check preserved the baseline exactly: six
 sessions, six undo records, the same chat digest, and the Qwen GGUF digest
 `00fe7986…`. Native Gemma Chat/tool/task checks remain pending. Arbitrary dense
 models, universal correctness, and
 Astra/Claude-level reasoning are not claimed.
+
+## r17 usability and local discovery update
+
+The final packaged source/UI build is `release/alpha5-native-r17/mac-arm64` and its
+local delivery archive is
+`release/alpha5-delivery/Free-Local-Agent-0.5.0-alpha.1-mac-arm64-r17.zip`.
+SHA-256:
+
+```text
+e5558f151875c9a9be1f3543e6a93d605a4a305fae6473b8bb68fac59ef33cce
+```
+
+The r17 screenshots were captured through the packaged app's File → Save
+screenshot flow: `workspace-plus-r17.png`, `model-library-r17.png`,
+`plugins-notebook-r17.png`, and `dark-theme-r17.png`. They show the Workspace
+plus menu, model abilities and hardware fit, permission-gated Research and
+workspace approvals, the local Research notebook, Ollama metadata discovery,
+and the dark theme. Earlier packaged captures retain the saved-chat, Working,
+syntax, and ordinary Chat evidence.
+
+Focused r17 checks passed for per-chat drafts and attachment restoration,
+workspace controls, normalized approval policies and revocation, notebook
+persistence/export/deletion, permission-gated Ollama metadata normalization,
+offline syntax tokenization, state migration, and the new brand assets. The
+full test command cannot bind loopback sockets in this restricted execution
+host; its native integration/resource failures are environment failures rather
+than assertions from these changes. `npm run typecheck` and `npm run build`
+pass. The packaged smoke harness likewise requires loopback binding and is
+recorded as unavailable in this host; the app was launched and its UI observed
+from the packaged r17 build.
+
+Ollama discovery remains metadata-only. It starts only when both Research and
+Allow web research are enabled, never starts an Ollama daemon, and never treats
+catalog rows as local model validation. The Research notebook stores bounded
+cited evidence under `.free-local-agent/research-notebook.json` in the selected
+workspace; it does not modify model weights. Terminal commands remain manually
+approved, while file-reading, project-search, and file-edit policies can be
+remembered per normalized workspace and revoked in Plugins.

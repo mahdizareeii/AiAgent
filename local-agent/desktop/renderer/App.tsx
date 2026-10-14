@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import HighlightedCode from './HighlightedCode';
 import Icon from './Icons';
 import ModelSetup, { activeModelDownload, ModelDownloadStatus } from './ModelSetup';
 import Utilities from './Utilities';
@@ -20,7 +21,7 @@ import { showOutcome } from './task-evidence';
 import { normalizeTextScale, readTextScale, TEXT_SCALE_KEY } from './appearance';
 import { applyApprovalRequest, applyApprovalResolution, applyApprovalSnapshot, emptyApprovals } from './approval-flow';
 import { prepareValidationTask } from './validation-flow';
-import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, MemoryMode, Mode, PermissionRequest, StageProgress, TaskEffort, UtilityPreferences } from './types';
+import type { AgentEvent, AgentStatus, Attachment, ChatMessage, DownloadProgress, MemoryMode, Mode, PermissionRequest, StageProgress, TaskEffort, UtilityPreferences, ApprovalUtility } from './types';
 
 const modes: { id: Mode; name: string; icon: 'code' | 'search' | 'spark'; description: string; examples: string[] }[] = [
   { id: 'coding', name: 'Task', icon: 'code', description: 'Describe the result. Your agent plans, builds, and checks its work.', examples: ['Build a new project in this workspace', 'Build a simple website from my idea', 'Explore this project and fix a bug'] },
@@ -40,6 +41,17 @@ function displayValue(value: unknown): string {
 
 function folderName(path?: string) {
   return path?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose a folder';
+}
+
+function MarkdownCode({ className, children, ...props }: { className?: string; children?: unknown; inline?: boolean }) {
+  // Keep the model's bytes intact (including a final newline); token spans do
+  // not alter copy/selection text.
+  const source = String(children ?? '');
+  const language = className?.replace(/^language-/, '');
+  // react-markdown supplies the block <pre> wrapper itself. Returning a
+  // nested <pre> breaks copy/selection and produces invalid markup, so the
+  // renderer always returns the tokenized <code> element here.
+  return <HighlightedCode source={source} language={language} inline className={className} />;
 }
 
 export function modelReadyForConversation(status: AgentStatus | null, download: DownloadProgress | null) {
@@ -68,7 +80,7 @@ function trapDialogFocus(event: KeyboardEvent<HTMLElement>, container: HTMLEleme
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
 }
 
-function PermissionDialog({ request, onRespond }: { request: PermissionRequest; onRespond: (approved: boolean) => Promise<void> }) {
+function PermissionDialog({ request, onRespond, onAlwaysApprove }: { request: PermissionRequest; onRespond: (approved: boolean) => Promise<void>; onAlwaysApprove?: () => Promise<void> }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -80,6 +92,10 @@ function PermissionDialog({ request, onRespond }: { request: PermissionRequest; 
     setError(null);
     try { await onRespond(approved); } catch (reason) { setError(errorMessage(reason)); setSubmitting(false); }
   }
+  async function alwaysApprove() {
+    setSubmitting(true); setError(null);
+    try { await onAlwaysApprove?.(); } catch (reason) { setError(errorMessage(reason)); setSubmitting(false); }
+  }
 
   return <div className="modal-backdrop" onKeyDown={(event) => {
     if (event.key === 'Escape' && !submitting) void respond(false);
@@ -89,13 +105,13 @@ function PermissionDialog({ request, onRespond }: { request: PermissionRequest; 
       <div className="dialog-symbol"><Icon name="shield" size={24} /></div>
       <p className="eyebrow">YOUR APPROVAL</p>
       <h2 id="permission-title">{request.title || 'Review this action'}</h2>
-      <p className="muted">Review the action before Free Local Agent continues. Your choice applies to this action only.</p>
+      <p className="muted">Review the action before Free Local Agent continues. You can remember approval for this workspace and utility.</p>
       {request.cwd && <div className="review-location"><Icon name="folder" size={15} /><span>{request.cwd}</span></div>}
       {request.command && <section className="review-block"><h3>Command</h3><pre>{request.command}</pre></section>}
       {request.preview !== undefined && <section className="review-block"><h3>Proposed change</h3><pre className="diff-preview">{displayValue(request.preview)}</pre></section>}
       <details className="review-block" open={!request.command && request.preview === undefined}><summary>Action details</summary><pre>{displayValue(request.arguments)}</pre></details>
       {error && <p className="inline-error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button className="secondary-button" ref={denyRef} disabled={submitting} onClick={() => void respond(false)}>Deny</button><button className="primary-button" disabled={submitting} onClick={() => void respond(true)}><Icon name="check" size={17} />{submitting ? 'Responding…' : 'Approve once'}</button></div>
+      <div className="dialog-actions"><button className="secondary-button" ref={denyRef} disabled={submitting} onClick={() => void respond(false)}>Deny</button>{request.alwaysApproveAllowed && onAlwaysApprove && <button className="secondary-button" disabled={submitting} onClick={() => void alwaysApprove()}>Always approve here</button>}<button className="primary-button" disabled={submitting} onClick={() => void respond(true)}><Icon name="check" size={17} />{submitting ? 'Responding…' : 'Approve once'}</button></div>
     </div>
   </div>;
 }
@@ -119,6 +135,7 @@ export default function App() {
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [utilitiesOpen, setUtilitiesOpen] = useState(false);
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
   const [view, setView] = useState<'workspace' | 'plugins'>('workspace');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -161,6 +178,10 @@ export default function App() {
   const downloadCancelRef = useRef(false);
   const downloadPendingRef = useRef(false);
   const settingsBusyRef = useRef(false);
+  const draftSaveTimersRef = useRef(new Map<string, number>());
+  const draftRevisionRef = useRef(0);
+  const draftRef = useRef('');
+  const filesRef = useRef<Attachment[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
   const followingOutputRef = useRef(true);
@@ -285,6 +306,9 @@ export default function App() {
         if (sessionRef.current !== id || reconnectedSessionRef.current !== id) return;
         setMessages(loaded.messages); setMode(loaded.mode); setTaskEffort(loaded.taskEffort ?? 'standard');
         setProjectPath(loaded.projectPath); setStage(loaded.stage ?? null); setToolHistory(emptyToolHistory());
+        setDraft(loaded.draft ?? ''); setFiles(loaded.draftFiles ?? []);
+        draftRevisionRef.current = loaded.draftRevision ?? 0;
+        draftRef.current = loaded.draft ?? ''; filesRef.current = loaded.draftFiles ?? [];
         await reconcileApprovals(id);
       } catch (reason) { setError(errorMessage(reason)); }
       finally { setLoadingSession(false); }
@@ -337,9 +361,40 @@ export default function App() {
     inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 180)}px`;
   }, [draft]);
 
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => { filesRef.current = files; }, [files]);
+  useEffect(() => () => {
+    for (const timer of draftSaveTimersRef.current.values()) window.clearTimeout(timer);
+    draftSaveTimersRef.current.clear();
+  }, []);
+
   async function action(operation: () => Promise<unknown>) {
     setError(null);
     try { await operation(); } catch (reason) { setError(errorMessage(reason)); }
+  }
+
+  /** Persist idle composer state without making every keystroke an IPC round trip. */
+  function queueDraftSave(nextDraft: string, nextFiles: Attachment[], id = sessionRef.current) {
+    if (!bridge || !id || busyRef.current) return;
+    draftRef.current = nextDraft;
+    filesRef.current = nextFiles;
+    const revision = ++draftRevisionRef.current;
+    const previous = draftSaveTimersRef.current.get(id);
+    if (previous !== undefined) window.clearTimeout(previous);
+    const timer = window.setTimeout(() => {
+      draftSaveTimersRef.current.delete(id);
+      void bridge.saveDraft({ sessionId: id, draft: nextDraft, files: nextFiles, revision }).catch(reason => {
+        if (sessionRef.current === id && !busyRef.current) setError(errorMessage(reason));
+      });
+    }, 250);
+    draftSaveTimersRef.current.set(id, timer);
+  }
+
+  function cancelDraftSave(id: string | null) {
+    if (!id) return;
+    const timer = draftSaveTimersRef.current.get(id);
+    if (timer !== undefined) window.clearTimeout(timer);
+    draftSaveTimersRef.current.delete(id);
   }
 
   function newChat(nextMode: Mode = 'coding') {
@@ -349,6 +404,8 @@ export default function App() {
     followingOutputRef.current = true; setExpandedWorking(new Set());
     if (nextMode !== 'assistant') setProjectPath(status?.projectPath ?? projectPath);
     setView('workspace'); setMode(nextMode); setMessages([]); setToolHistory(emptyToolHistory()); setFiles([]); setDraft(''); setError(null); setNotice(null); setStage(null);
+    draftRevisionRef.current = 0; draftRef.current = ''; filesRef.current = [];
+    setWorkspaceMenuOpen(false);
     inputRef.current?.focus();
   }
 
@@ -361,8 +418,12 @@ export default function App() {
       followingOutputRef.current = true; setExpandedWorking(new Set());
       setSessionId(loaded.id); sessionRef.current = loaded.id;
       approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals(loaded.id)); setTaskEffort(loaded.taskEffort ?? 'standard');
-      setView('workspace');
-      setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setToolHistory(emptyToolHistory()); setFiles([]); setDraft(''); setStage(loaded.stage ?? null);
+      setView('workspace'); setSetupOpen(false); setUtilitiesOpen(false);
+      setMessages(loaded.messages); setMode(loaded.mode); setProjectPath(loaded.projectPath); setToolHistory(emptyToolHistory());
+      setFiles(loaded.draftFiles ?? []); setDraft(loaded.draft ?? '');
+      draftRevisionRef.current = loaded.draftRevision ?? 0;
+      draftRef.current = loaded.draft ?? ''; filesRef.current = loaded.draftFiles ?? [];
+      setWorkspaceMenuOpen(false); setStage(loaded.stage ?? null);
       await reconcileApprovals(loaded.id);
     } catch (reason) { setError(errorMessage(reason)); }
     finally { loadingSessionRef.current = false; setLoadingSession(false); }
@@ -424,16 +485,21 @@ export default function App() {
     setError(null); setNotice(null); setBusy(true); busyRef.current = true; setThinking(false); setToolHistory(emptyToolHistory()); setStage({ stage: 'preparing', message: 'Preparing your local task' });
     let started = false;
     let failed = false;
+    let restoreDraft = false;
     try {
       const currentId = await resolveTaskSession(sessionRef.current,
         () => bridge.createSession(newSessionOptions(mode, taskProjectPath, taskEffort)),
         (id) => { sessionRef.current = id; setSessionId(id); approvalLoaderRef.current.invalidate(); setApprovalView(emptyApprovals(id)); }, () => stopRequestedRef.current);
+      // The host clears the persisted draft when this request is accepted.
+      // Cancel any debounced pre-submit write so it cannot reintroduce the
+      // just-submitted text after the task starts.
+      cancelDraftSave(currentId);
       setMessages((current) => [...current, { role: 'user', content: text + (files.length ? `\n\nAttached: ${files.map((file) => file.name).join(', ')}` : '') }, { role: 'assistant', content: '' }]);
       setDraft(''); setFiles([]); started = true;
       await bridge.send({ sessionId: currentId, text, ...(files.length ? { files } : {}) });
       await refresh();
     } catch (reason) {
-      failed = true; setError(errorMessage(reason)); if (started) setDraft(text);
+      failed = true; setError(errorMessage(reason));
       reviewModelAfterFailureRef.current = true;
       await refresh().catch(() => { /* Keep the original task error if status is temporarily unavailable. */ });
     }
@@ -443,10 +509,14 @@ export default function App() {
         const saved = await synchronizeSession(sessionRef.current).catch((reason) => { setError((current) => current ?? errorMessage(reason)); return undefined; });
         // Only a verified rejection before the host recorded the request restores
         // attachments. A failed task that already ran must not stage them again.
-        if (failed && started && saved && saved.messages.filter((message) => message.role === 'user').length === userCountBeforeSend) setFiles(submittedFiles);
+        if (failed && started && saved && saved.messages.filter((message) => message.role === 'user').length === userCountBeforeSend) {
+          restoreDraft = true;
+          setDraft(text); setFiles(submittedFiles);
+        }
       }
       await reconcileApprovals().catch(() => {});
       setBusy(false); busyRef.current = false; setThinking(false); inputRef.current?.focus();
+      if (restoreDraft && sessionRef.current) queueDraftSave(text, submittedFiles, sessionRef.current);
     }
   }
 
@@ -589,6 +659,16 @@ export default function App() {
     if (bridge) await settingsAction(() => bridge.setPlugins({ taskResearch: enabled }));
   }
 
+  async function setApprovalPolicy(utility: ApprovalUtility) {
+    if (!bridge || !status?.projectPath) return;
+    await settingsAction(async () => { await bridge.setApprovalPolicy({ workspacePath: status.projectPath!, utility }); await refresh(); });
+  }
+
+  async function revokeApprovalPolicy(utility?: ApprovalUtility) {
+    if (!bridge || !status?.projectPath) return;
+    await settingsAction(async () => { await bridge.revokeApprovalPolicy({ workspacePath: status.projectPath!, utility }); await refresh(); });
+  }
+
   async function resumeTask() {
     const id = sessionRef.current;
     if (!id || !bridge || !ready || createFolderOpen || busyRef.current || loadingSessionRef.current || selectingProjectRef.current || settingsBusyRef.current || calibrating || trialPreparing || validating || importing || setupBusy) return;
@@ -610,10 +690,11 @@ export default function App() {
     }
   }
 
-  async function respondPermission(approved: boolean) {
+  async function respondPermission(approved: boolean, remember = false) {
     const request = permissions[0];
     if (!bridge || !request) return;
     try {
+      if (remember && request.alwaysApproveAllowed && request.utility && request.workspacePath) await bridge.setApprovalPolicy({ workspacePath: request.workspacePath, utility: request.utility });
       await bridge.respondPermission({ requestId: request.requestId, approved, sessionId: sessionRef.current ?? undefined, turnId: request.turnId });
     } catch (reason) {
       await reconcileApprovals().catch(() => {});
@@ -632,6 +713,10 @@ export default function App() {
   }
 
   const locked = busy || loadingSession || selectingProject || permissions.length > 0 || !!calibrating || trialPreparing || !!validating || importing || settingsBusy || setupBusy || createFolderOpen;
+  // Model setup/calibration and preference writes do not run a chat turn. A
+  // saved chat may still be opened during those idle operations; the host's
+  // active-turn guard remains the authority if a response is actually live.
+  const chatNavigationLocked = busy || loadingSession || selectingProject || createFolderOpen || permissions.length > 0;
 
   function workingExpanded(index: number, expanded: boolean) {
     setExpandedWorking((current) => {
@@ -650,12 +735,14 @@ export default function App() {
       <button className={`sidebar-link plugins-link ${view === 'plugins' ? 'selected' : ''}`} aria-label="Plugins" aria-current={view === 'plugins' ? 'page' : undefined} onClick={() => setView('plugins')}><Icon name="plugin" size={17} />Plugins{researchEnabled && <span className="nav-count" aria-hidden="true" title="One plugin enabled">1</span>}</button>
       {mode !== 'assistant' && <section className="workspace-section" aria-label="Workspace folder">
         <div className="workspace-heading">Workspace</div>
-        <div className="workspace-control" title={projectPath || 'Choose or create a workspace folder'}><Icon name="folder" size={14} /><PreferenceChoice label="Workspace folder" value="" placeholder={selectingProject ? 'Choosing…' : projectPath ? folderName(projectPath) : 'Choose folder'} options={[{ value: 'choose', label: 'Choose folder', description: 'Work in an existing local folder' }, { value: 'create', label: 'Create folder', description: 'Create a new folder for this task' }]} disabled={locked || !bridge || !!sessionId} title={sessionId ? 'Start a new task to change its workspace' : projectPath || 'Choose or create a workspace'} onChange={value => value === 'create' ? openCreateFolder() : void action(chooseProject)} minimumWidth={230} /></div>
+        <div className="workspace-control" title={projectPath || 'Choose or create a workspace folder'}><Icon name="folder" size={14} /><PreferenceChoice label="Workspace folder" value="" placeholder={selectingProject ? 'Choosing…' : projectPath ? folderName(projectPath) : 'Choose folder'} options={[{ value: 'choose', label: 'Choose folder', description: 'Work in an existing local folder' }, { value: 'create', label: 'Create folder', description: 'Create a new folder for this task' }]} disabled={locked || !bridge || !!sessionId} title={sessionId ? 'Start a new task to change its workspace' : projectPath || 'Choose or create a workspace'} onChange={value => value === 'create' ? openCreateFolder() : void action(chooseProject)} minimumWidth={230} /><button type="button" className="workspace-add-button" aria-label="Add workspace" title="Choose or create a workspace" disabled={locked || !bridge || !!sessionId} onClick={() => setWorkspaceMenuOpen(current => !current)}><Icon name="plus" size={15} /></button>
+          {workspaceMenuOpen && <div className="workspace-menu" role="menu" aria-label="Workspace actions"><button type="button" role="menuitem" onClick={() => { setWorkspaceMenuOpen(false); void action(chooseProject); }}><Icon name="folder" size={14} /><span>Choose folder</span></button><button type="button" role="menuitem" onClick={() => { setWorkspaceMenuOpen(false); openCreateFolder(); }}><Icon name="plus" size={14} /><span>Create folder</span></button></div>}
+        </div>
       </section>}
       <div className="sidebar-heading">Tasks</div>
       <nav className="session-list" aria-label="Saved tasks">
         {!status?.sessions.length && <p className="empty-history">Your tasks will appear here.</p>}
-        {status?.sessions.map((session) => <button key={session.id} className={`session-item ${view === 'workspace' && sessionId === session.id ? 'selected' : ''}`} disabled={locked} onClick={() => void loadSession(session.id)} title={session.title}><Icon name={session.mode === 'coding' ? 'code' : 'chat'} size={15} /><span>{session.title || 'Untitled task'}</span>{session.resumable && <small className="session-paused">Paused</small>}</button>)}
+        {status?.sessions.map((session) => <button key={session.id} className={`session-item ${view === 'workspace' && sessionId === session.id ? 'selected' : ''}`} disabled={chatNavigationLocked} onClick={() => void loadSession(session.id)} title={session.title}><Icon name={session.mode === 'coding' ? 'code' : 'chat'} size={15} /><span>{session.title || 'Untitled task'}</span>{session.resumable && <small className="session-paused">Paused</small>}</button>)}
       </nav>
       <div className="sidebar-bottom">
         <div className="text-scale-control"><span>Text size</span><PreferenceChoice label="Text size" value={String(textScale)} options={[90, 95, 100, 105, 110, 115, 120, 125].map(value => ({ value: String(value), label: `${value}%` }))} onChange={value => setTextScale(normalizeTextScale(value))} minimumWidth={100} /></div>
@@ -677,7 +764,7 @@ export default function App() {
       {notice && <div className="banner notice-banner" role="status"><span><Icon name="check" size={15} />{notice}</span><button className="icon-button" aria-label="Dismiss notice" onClick={() => setNotice(null)}><Icon name="close" size={16} /></button></div>}
       {visibleStage && !setupOpen && <div className={`stage-banner ${visibleStage.resumable && !busy ? 'stage-paused' : ''}`} role="status"><div><span className={`stage-marker ${busy ? 'stage-active' : ''}`} /><strong>{visibleStage.message || visibleStage.stage.replace(/[_-]/g, ' ')}</strong>{visibleStage.total !== undefined && visibleStage.total > 0 && <span className="stage-count">{visibleStage.completed ?? 0} / {visibleStage.total}</span>}</div>{visibleStage.total !== undefined && visibleStage.total > 0 && <progress value={visibleStage.completed ?? 0} max={visibleStage.total} aria-label={`${visibleStage.stage} progress`} />}{visibleStage.resumable && !busy && sessionId && <button className="secondary-button" disabled={locked || !ready} onClick={() => void resumeTask()}><Icon name="arrow" size={13} />Resume task</button>}</div>}
 
-      {view === 'plugins' ? <section className="plugins-page" aria-labelledby="plugins-title"><div className="page-heading"><h1 id="plugins-title" tabIndex={-1} ref={pluginHeadingRef}>Plugins</h1><span>Bundled</span></div><Plugins status={status} disabled={locked || !bridge} onEnable={setResearchPlugin} onWebResearch={(enabled) => status ? setUtilities({ ...status.utilities, webResearch: enabled }) : Promise.resolve()} /></section> : <>
+      {view === 'plugins' ? <section className="plugins-page" aria-labelledby="plugins-title"><div className="page-heading"><h1 id="plugins-title" tabIndex={-1} ref={pluginHeadingRef}>Plugins</h1><span>Bundled</span></div><Plugins status={status} disabled={locked || !bridge} onEnable={setResearchPlugin} onWebResearch={(enabled) => status ? setUtilities({ ...status.utilities, webResearch: enabled }) : Promise.resolve()} onSetApproval={setApprovalPolicy} onRevokeApproval={revokeApprovalPolicy} /></section> : <>
       <div className={`conversation ${messages.length ? 'has-messages' : ''}`} ref={conversationRef} onScroll={() => { if (conversationRef.current) followingOutputRef.current = isNearConversationEnd(conversationRef.current); }} aria-label="Conversation" aria-busy={busy || loadingSession}>
         {loadingSession ? <div className="loading-state"><span className="spinner" />Opening your task…</div> : !messages.length ? <div className="welcome">
           <h1>{mode === 'coding' ? 'What would you like to build?' : mode === 'research' ? 'What would you like to explore?' : 'What’s on your mind?'}</h1>
@@ -687,7 +774,7 @@ export default function App() {
         </div> : <div className="message-list">
           {messages.map((message, index) => <article className={`message ${message.role}`} key={index}><div className="message-body">
             {message.role === 'assistant' && visibleWorking.has(index) && <WorkingDetails thinking={message.thinking} active={busy && index === messages.length - 1} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={visibleStage} tools={busy && index === messages.length - 1 ? tools : message.tools ?? (index === messages.length - 1 ? tools : undefined)} toolsTruncated={busy && index === messages.length - 1 ? toolsTruncated : message.toolsTruncated} expanded={expandedWorking.has(index)} onExpandedChange={(expanded) => workingExpanded(index, expanded)} />}
-            {message.content && <><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></>}
+            {message.content && <><div className="message-label">{message.role === 'assistant' ? 'Free Local Agent' : 'You'}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCode, a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={11} /></a>, img: ({ alt }) => <span className="muted">[Image: {alt || 'image'}]</span> }}>{message.content}</ReactMarkdown></div></>}
             {message.role === 'assistant' && message.outcome && showOutcome(mode, message.outcome) && <TaskOutcomeDetails outcome={message.outcome} context={mode === 'assistant' ? 'response' : 'task'} />}
           </div></article>)}
           {messages.at(-1)?.role !== 'assistant' && visibleWorking.has(messages.length) && <WorkingDetails active={busy} thinkingActive={thinking} waitingApproval={permissions.length > 0} stage={visibleStage} tools={tools} toolsTruncated={toolsTruncated} expanded={expandedWorking.has(messages.length)} onExpandedChange={(expanded) => workingExpanded(messages.length, expanded)} />}
@@ -698,10 +785,10 @@ export default function App() {
       <div className="composer-area">
         {!busy && (!ready || selectedModel?.needsPreparation ? <div className="model-limitation"><Icon name="monitor" size={15} /><span>{modelSetupMessage(status)}</span></div> : !canPrepareTools(selectedModel) ? <div className="model-limitation"><Icon name="monitor" size={15} /><span>{mode === 'coding' ? 'This model is chat only until its tool check passes. Choose another model or retry under Advanced.' : 'Chat-only model. Selected files can still be attached.'}</span></div> : researchMode && selectedModel && !calibrated ? <div className="model-limitation model-calibration"><Icon name="monitor" size={15} /><span>Tool format has not been verified for the current model profile. Preparation checks it before project tools run.</span></div> : null)}
         <form className={`composer ${busy ? 'working' : ''}`} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-          {files.length > 0 && <div className="attachment-list">{files.map((file) => <span className="attachment" key={file.path} title={file.path}><Icon name="attach" size={13} />{file.name}<button type="button" className="icon-button" aria-label={`Remove ${file.name}`} disabled={locked} onClick={() => setFiles((current) => current.filter((item) => item.path !== file.path))}><Icon name="close" size={12} /></button></span>)}</div>}
-          <label className="sr-only" htmlFor="message-input">Message Free Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} spellCheck={false} autoCorrect="off" autoCapitalize="off" placeholder={composerPlaceholder(mode, ready, busy, loadingSession)} rows={2} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
+          {files.length > 0 && <div className="attachment-list">{files.map((file) => <span className="attachment" key={file.path} title={file.path}><Icon name="attach" size={13} />{file.name}<button type="button" className="icon-button" aria-label={`Remove ${file.name}`} disabled={locked} onClick={() => { const next = files.filter((item) => item.path !== file.path); setFiles(next); queueDraftSave(draftRef.current, next); }}><Icon name="close" size={12} /></button></span>)}</div>}
+          <label className="sr-only" htmlFor="message-input">Message Free Local Agent</label><textarea ref={inputRef} id="message-input" value={draft} disabled={busy || loadingSession} spellCheck={false} autoCorrect="off" autoCapitalize="off" placeholder={composerPlaceholder(mode, ready, busy, loadingSession)} rows={2} onChange={(event) => { const value = event.target.value; setDraft(value); queueDraftSave(value, filesRef.current); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} />
           <div className="composer-toolbar"><div className="composer-left">
-            <button className="icon-button" type="button" disabled={locked || !bridge || !status?.utilities.fileReading} title={status?.utilities.fileReading ? 'Attach local files' : 'Enable Read files in Tools to attach documents'} aria-label="Attach local files" onClick={() => void action(async () => { const selected = await bridge!.selectFiles(); setFiles((current) => [...current, ...selected.filter((file) => !current.some((existing) => existing.path === file.path))]); })}><Icon name="plus" size={18} /></button>
+            <button className="icon-button" type="button" disabled={locked || !bridge || !status?.utilities.fileReading} title={status?.utilities.fileReading ? 'Attach local files' : 'Enable Read files in Tools to attach documents'} aria-label="Attach local files" onClick={() => void action(async () => { const selected = await bridge!.selectFiles(); const next = [...filesRef.current, ...selected.filter((file) => !filesRef.current.some((existing) => existing.path === file.path))]; setFiles(next); queueDraftSave(draftRef.current, next); })}><Icon name="plus" size={18} /></button>
             <button className="composer-chip" type="button" disabled={!status} onClick={() => setUtilitiesOpen(true)} aria-haspopup="dialog"><Icon name="settings" size={13} /><span>Tools</span></button>
           </div><div className="composer-right">
             <button className="composer-chip model-library-button" type="button" disabled={locked} aria-label={`Models: ${selectedModel?.name || 'Choose a model'}`} title="Open model library" aria-haspopup="dialog" onClick={() => setSetupOpen(true)}><Icon name="monitor" size={14} /><span>{selectedModel?.name || 'Choose model'}</span><Icon name="chevron" size={12} /></button>
@@ -714,7 +801,7 @@ export default function App() {
 
     {utilitiesOpen && status && <div className="modal-backdrop" onKeyDown={(event) => { if (event.key === 'Escape') setUtilitiesOpen(false); trapDialogFocus(event, utilitiesRef.current); }}><section className="tools-dialog" ref={utilitiesRef} role="dialog" aria-modal="true" aria-labelledby="tools-title"><div className="tools-dialog-header"><h2 id="tools-title">Agent tools</h2><button className="icon-button" aria-label="Close tools" onClick={() => setUtilitiesOpen(false)}><Icon name="close" size={18} /></button></div><p className="muted">Choose what the agent can access. Preferences apply to your next task; changes are unavailable while a task is running.</p>{error && <p className="inline-error" role="alert">{error}</p>}<Utilities preferences={status.utilities} mode={mode} toolCapable={canPrepareTools(selectedModel)} projectSelected={!!projectPath} calibrated={calibrated} disabled={locked || !bridge} onChange={setUtilities} /><button className="text-button tools-plugin-link" onClick={() => { setUtilitiesOpen(false); setView('plugins'); }}><Icon name="plugin" size={15} />Manage optional Research in Plugins<Icon name="chevron" size={13} /></button></section></div>}
     {createFolderOpen && <CreateFolderDialog busy={selectingProject} error={folderError} onCreate={createFolder} onClose={() => { if (!selectingProjectRef.current) setCreateFolderOpen(false); }} onKeyDown={(event, container) => { if (event.key === 'Escape' && !selectingProjectRef.current) setCreateFolderOpen(false); trapDialogFocus(event, container); }} />}
-    {setupOpen && <ModelSetup status={status} mode={mode} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} trialModel={modelTrial} validating={validating} importing={importing} download={activeDownload} cancellingDownload={cancellingDownload} stage={stage} error={error} errorTrialId={displayError.trialId} hasBridge={!!bridge} taskEffort={taskEffort} taskPreferencesLocked={!!sessionId} onTaskEffort={next => settingsAction(async () => { await bridge!.setExecutionPreferences({ taskEffort: next }); setTaskEffort(next); })} onSsdTaskHours={hours => settingsAction(() => bridge!.setExecutionPreferences({ ssdTaskHours: hours }))} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && !locked) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onValidate={validateModel} onMemoryMode={setMemoryMode} onTryModel={tryModel} onCancelTrial={cancelTrial} onSelect={selectModel} onDownload={downloadModel} onCancelDownload={cancelDownload} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
-    {permissions[0] && <PermissionDialog key={permissions[0].requestId} request={permissions[0]} onRespond={respondPermission} />}
+    {setupOpen && <ModelSetup status={status} mode={mode} ready={ready} busy={locked} setupBusy={setupBusy} calibrating={calibrating} trialModel={modelTrial} validating={validating} importing={importing} download={activeDownload} cancellingDownload={cancellingDownload} stage={stage} error={error} errorTrialId={displayError.trialId} hasBridge={!!bridge} taskEffort={taskEffort} taskPreferencesLocked={!!sessionId} onTaskEffort={next => settingsAction(async () => { await bridge!.setExecutionPreferences({ taskEffort: next }); setTaskEffort(next); })} onSsdTaskHours={hours => settingsAction(() => bridge!.setExecutionPreferences({ ssdTaskHours: hours }))} onSearchOllama={query => bridge!.searchOllamaModels(query)} dialogRef={setupRef} onKeyDown={(event) => { if (event.key === 'Escape' && !locked) setSetupOpen(false); trapDialogFocus(event, setupRef.current); }} onClose={() => { setSetupOpen(false); setError(null); }} onSetup={checkRuntime} onImport={importModel} onCalibrate={calibrateModel} onValidate={validateModel} onMemoryMode={setMemoryMode} onTryModel={tryModel} onCancelTrial={cancelTrial} onSelect={selectModel} onDownload={downloadModel} onCancelDownload={cancelDownload} onSlowMode={(enabled) => settingsAction(() => bridge!.setSlowMode(enabled))} />}
+    {permissions[0] && <PermissionDialog key={permissions[0].requestId} request={permissions[0]} onRespond={respondPermission} onAlwaysApprove={() => respondPermission(true, true)} />}
   </div>;
 }
