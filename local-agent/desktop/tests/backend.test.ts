@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentPrompt, backendEnvironment, backendExtensions, backendStepLimits, cancelledActionResult, deniedActionResult, ownedToolFailureResult, ownedToolUpdateStatus, repeatedCommandReadFailureResult, repeatedEditFailureResult, GooseBackend, type BackendOptions } from '../backend.ts';
+import { agentPrompt, backendEnvironment, backendExtensions, backendProviderConfig, backendStepLimits, cancelledActionResult, deniedActionResult, ownedToolFailureResult, ownedToolUpdateStatus, repeatedCommandReadFailureResult, repeatedEditFailureResult, GooseBackend, type BackendOptions } from '../backend.ts';
+import { generationPolicyForModel } from '../../runtime/index.ts';
 import { repeatedCommandReadFailureText, repeatedEditFailureText } from '../actions.ts';
 import { actionRequestDeadlines, actionRequestTimeoutText, actionResponseInterruptedText, cancelledActionText, commandTimeoutLimits, commandTimeoutText, interruptedTurnText } from '../action-protocol.ts';
 import { loadTaskResearchSkill } from '../skills/task-research.ts';
@@ -13,6 +14,49 @@ const options: BackendOptions = {
   contextTokens: 8192, outputTokens: 1024, utilities: { fileReading: true, projectSearch: true, fileEditing: true, terminal: true, webResearch: false },
   grantedRoots: ['/project'], grantedFiles: [], actionUrl: `http://127.0.0.1:2345/${'a'.repeat(64)}`, onEvent: () => {},
 };
+
+test('plain chat omits the ungranted reader while attachments and coding keep their tools', () => {
+  const plain = { ...options, mode: 'assistant' as const, grantedRoots: [], grantedFiles: [] };
+  assert.deepEqual(backendExtensions(plain), []);
+  const request = 'Reply to this exact request: سلام 🌍';
+  assert.ok(agentPrompt(plain, request).endsWith(request));
+  assert.doesNotMatch(agentPrompt(plain, request), /Read granted attachments/);
+  // Chat mode cannot gain network access from an enabled preference.
+  assert.deepEqual(backendExtensions({ ...plain, utilities: { ...plain.utilities, webResearch: true } }), []);
+  for (const grants of [{ grantedRoots: ['/workspace'] }, { grantedFiles: ['/selected/document.pdf'] }]) {
+    assert.deepEqual(backendExtensions({ ...plain, ...grants }).map(item => item.server.name), ['local_files_and_research']);
+  }
+  assert.deepEqual(backendExtensions({ ...plain, grantedFiles: ['/selected/document.pdf'],
+    utilities: { ...plain.utilities, fileReading: false } }), []);
+  for (const mode of ['coding', 'research'] as const) {
+    assert.equal(backendExtensions({ ...plain, mode })[0].server.name, 'local_files_and_research');
+  }
+  assert.deepEqual(backendExtensions(options).map(item => item.server.name), ['local_files_and_research', 'reviewed_actions']);
+});
+
+test('the app owns compaction and preserves qualified local reasoning through an isolated provider configuration', () => {
+  for (const model of ['qwen3.8:27b', 'muse-glimmer:30b']) {
+    const configured = { ...options, model, generationPolicy: generationPolicyForModel(model) };
+    const provider = backendProviderConfig(configured)!;
+    assert.equal(provider.preserves_thinking, true);
+    assert.equal(provider.base_url, `${options.baseUrl}/v1/chat/completions`);
+    assert.equal(provider.api_key_env, 'LOCAL_AGENT_INFERENCE_KEY');
+    assert.equal(provider.dynamic_models, false);
+    assert.equal(provider.models.length, 1);
+    assert.equal(provider.models[0].name, model);
+    assert.doesNotMatch(JSON.stringify(provider), /private/);
+    const environment = backendEnvironment(configured);
+    assert.equal(environment.GOOSE_PROVIDER, provider.name);
+    assert.equal(environment.LOCAL_AGENT_INFERENCE_KEY, options.apiKey);
+  }
+  assert.equal(backendProviderConfig(options), undefined);
+  assert.equal(backendEnvironment(options).GOOSE_PROVIDER, 'openai');
+  const environment = backendEnvironment(options);
+  assert.equal(environment.GOOSE_STATE_MACHINE, '0');
+  assert.equal(environment.GOOSE_AUTO_COMPACT_THRESHOLD, '0');
+  assert.equal(environment.GOOSE_TOOL_PAIR_SUMMARIZATION, 'false');
+  assert.throws(() => backendProviderConfig({ ...options, generationPolicy: generationPolicyForModel('qwen3.8:27b'), baseUrl: 'https://api.example.org' }), /loopback/);
+});
 
 test('coding prompts explain real enabled capabilities while preserving the complete task', () => {
   const task = 'Create a WordPress project.\nKeep these exact requirements: سلام 🌍';
@@ -304,4 +348,25 @@ test('completed error receipts only change statuses for previously identified ow
   assert.equal(ownedToolUpdateStatus('owned-read', 'in_progress', failure, ownedIds), 'in_progress');
   assert.equal(ownedToolUpdateStatus('owned-read', 'failed', { ok: true }, ownedIds), 'failed');
   assert.equal(ownedToolUpdateStatus('owned-read', undefined, undefined, ownedIds), 'in_progress');
+});
+
+
+test('the private readback channel is explicit current coding state and never inherited or put in model config', () => {
+  const url = `http://127.0.0.1:2345/${'f'.repeat(64)}`, previous = process.env.LOCAL_AGENT_READBACK_URL;
+  try {
+    process.env.LOCAL_AGENT_READBACK_URL = url;
+    assert.equal(backendEnvironment(options).LOCAL_AGENT_READBACK_URL, undefined);
+    const configured = { ...options, readbackUrl: url, generationPolicy: generationPolicyForModel('qwen3.8:27b') };
+    assert.equal(backendEnvironment(configured).LOCAL_AGENT_READBACK_URL, url);
+    assert.doesNotMatch(JSON.stringify(backendProviderConfig(configured)), /ffffffffffffffff|READBACK/);
+    assert.deepEqual(backendExtensions(configured), backendExtensions(options), 'No new model tool or grant is registered.');
+    for (const changes of [{ mode: 'assistant' as const }, { mode: 'research' as const },
+      { utilities: { ...options.utilities, fileReading: false } }, { readbackUrl: 'https://example.invalid/' },
+      { readbackUrl: `http://localhost:2345/${'f'.repeat(64)}` }, { readbackUrl: url + '?secret=extra' }]) {
+      assert.throws(() => backendEnvironment({ ...configured, ...changes }), error => {
+        assert(error instanceof Error); assert.match(error.message, /private readback receipt channel/);
+        assert(!error.message.includes(url)); return true;
+      });
+    }
+  } finally { if (previous === undefined) delete process.env.LOCAL_AGENT_READBACK_URL; else process.env.LOCAL_AGENT_READBACK_URL = previous; }
 });

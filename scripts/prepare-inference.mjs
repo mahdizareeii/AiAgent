@@ -6,12 +6,15 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { allocationPlannerPin, allocationPlannerDescriptor } from '../local-agent/runtime/planner-pins.ts';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const ENGINE_PIN = Object.freeze({
   engine: 'llama.cpp', version: '0.6.0', build: 11429,
   commit: 'd81235049384534c167caea52b85a694f6103d14', tag: 'b11429',
 });
+export const RESOURCE_PROBE_SOURCE = 'local-agent/runtime/native/resource-sample.c';
+export const RESOURCE_PROBE_SHA256 = 'aa0d0e8417dcb97af0beea648f14ba7b344669ce7f9a364b56371144fdbd4775';
 
 // Digests are published by the official b11429 GitHub release. v0.6.0 is an
 // annotated tag of the same commit and explicitly points to these binaries.
@@ -25,6 +28,8 @@ export const INFERENCE_TARGETS = Object.freeze({
       { id: 'metal', executable: 'metal/llama-server', libraryDirectory: 'metal', arguments: [] },
       { id: 'cpu', executable: 'metal/llama-server', libraryDirectory: 'metal', arguments: ['--device', 'none', '--n-gpu-layers', '0', '--no-op-offload'] },
     ],
+    planner: allocationPlannerDescriptor('darwin-arm64'),
+    resourceProbe: { id: 'native-resource', executable: 'metal/agent-memory-sample', arguments: [], sourceSha256: RESOURCE_PROBE_SHA256 },
     systemDependencies: ['macOS >= 13.3', 'Apple system frameworks (Metal, Accelerate, Security)'],
   },
   'win32-x64': {
@@ -36,6 +41,7 @@ export const INFERENCE_TARGETS = Object.freeze({
       { id: 'vulkan', executable: 'vulkan/llama-server.exe', libraryDirectory: 'vulkan', arguments: [] },
       { id: 'cpu', executable: 'cpu/llama-server.exe', libraryDirectory: 'cpu', arguments: ['--device', 'none', '--n-gpu-layers', '0', '--no-op-offload'] },
     ],
+    planner: allocationPlannerDescriptor('win32-x64'),
     systemDependencies: ['Windows 10+ Universal CRT', 'Vulkan loader/GPU driver for optional Vulkan acceleration'],
   },
   'linux-x64': {
@@ -47,6 +53,7 @@ export const INFERENCE_TARGETS = Object.freeze({
       { id: 'vulkan', executable: 'vulkan/llama-server', libraryDirectory: 'vulkan', arguments: [] },
       { id: 'cpu', executable: 'cpu/llama-server', libraryDirectory: 'cpu', arguments: ['--device', 'none', '--n-gpu-layers', '0', '--no-op-offload'] },
     ],
+    planner: allocationPlannerDescriptor('linux-x64'),
     systemDependencies: ['glibc >= 2.34', 'libstdc++.so.6 with GLIBCXX_3.4.30 (GCC 12 runtime)', 'libgomp.so.1 (Debian/Ubuntu: libgomp1)', 'libvulkan.so.1/GPU driver for optional Vulkan acceleration'],
   },
 });
@@ -106,6 +113,7 @@ export async function verifyInferenceResources(directory, target = `${process.pl
   }
   if (manifest.schemaVersion !== 1 || manifest.target !== target) throw new Error('Inference manifest platform/schema mismatch');
   if (JSON.stringify(manifest.backends) !== JSON.stringify(expected.backends) || JSON.stringify(manifest.assets) !== JSON.stringify(expected.assets)) throw new Error('Inference manifest backend/asset mismatch');
+  if (JSON.stringify(manifest.planner) !== JSON.stringify(expected.planner) || JSON.stringify(manifest.resourceProbe) !== JSON.stringify(expected.resourceProbe)) throw new Error('Inference manifest memory-planner/probe mismatch');
   if (!Array.isArray(manifest.files) || !manifest.files.length) throw new Error('Inference manifest has no file hashes');
   const seen = new Set();
   for (const file of manifest.files) {
@@ -123,6 +131,9 @@ export async function verifyInferenceResources(directory, target = `${process.pl
   for (const backend of expected.backends) {
     if (!seen.has(backend.executable)) throw new Error(`Missing inference executable: ${backend.executable}`);
   }
+  for (const helper of [expected.planner, expected.resourceProbe].filter(Boolean)) if (!seen.has(helper.executable)) throw new Error(`Missing inference helper: ${helper.executable}`);
+  const plannerPin=allocationPlannerPin(target);
+  if(expected.planner&&manifest.files.find(file=>file.path===expected.planner.executable)?.sha256!==plannerPin?.sha256)throw new Error('The allocation planner does not match the pinned official release executable.');
   return manifest;
 }
 
@@ -243,6 +254,20 @@ export function validateNativeEngine(directory, manifest) {
   for (const flag of ['--no-agent', '--no-webui', '--offline', '--cache-ram', '--no-cache-idle-slots', '--ctx-checkpoints', '--list-devices']) {
     if (!help.includes(flag)) throw new Error(`Pinned native engine lacks required argument: ${flag}`);
   }
+  if (manifest.planner) {
+    const plannerEnv={...env},plannerLibraries=resourcePath(directory,manifest.planner.libraryDirectory);
+    if(process.platform==='linux')plannerEnv.LD_LIBRARY_PATH=plannerLibraries;
+    if(process.platform==='win32')plannerEnv.PATH=`${plannerLibraries}${path.delimiter}${plannerEnv.PATH??''}`;
+    const planned = spawnSync(resourcePath(directory, manifest.planner.executable), [...(manifest.planner.arguments??[]),'--version'], { env:plannerEnv, encoding: 'utf8', timeout: 30_000, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (planned.error) throw planned.error;
+    const text = `${planned.stdout ?? ''}${planned.stderr ?? ''}`;
+    if (planned.status !== 0 || !text.includes(`version: ${ENGINE_PIN.version}`) || !text.includes(`build ${ENGINE_PIN.build}`) || !text.includes(`commit ${ENGINE_PIN.commit.slice(0, 9)}`)) throw new Error('Native memory planner does not match the pinned engine.');
+  }
+  if (manifest.resourceProbe) {
+    const probe = spawnSync(resourcePath(directory, manifest.resourceProbe.executable), [], { env, encoding: 'utf8', timeout: 3000, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (probe.error) throw probe.error;
+    if (probe.status !== 64) throw new Error('Native resource sampler did not reject a missing owned PID.');
+  }
   return { executed: true, version: version.trim() };
 }
 
@@ -271,6 +296,21 @@ export async function prepareInference({ target = `${process.platform}-${process
       const executable = await findExecutable(extracted, target.startsWith('win32-') ? 'llama-server.exe' : 'llama-server');
       if (!executable) throw new Error(`No llama-server executable in pinned archive: ${entry.name}`);
       await copyNativeFiles(executable, path.join(staging, entry.directory), licenses);
+      if (definition.planner?.executable.startsWith(`${entry.directory}/`)) {
+        const planner = await findExecutable(extracted, path.basename(definition.planner.executable));
+        if (!planner) throw new Error(`No memory planner in pinned archive: ${entry.name}`);
+        await copyFile(planner, resourcePath(staging, definition.planner.executable));
+        await chmod(resourcePath(staging, definition.planner.executable), 0o755);
+      }
+    }
+    if (definition.resourceProbe) {
+      if (process.platform !== 'darwin') throw new Error('Prepare the macOS memory sampler on a Mac with the Apple command-line compiler.');
+      const source = path.join(projectRoot, RESOURCE_PROBE_SOURCE);
+      if (await sha256File(source) !== RESOURCE_PROBE_SHA256) throw new Error('The read-only resource sampler source does not match its pin.');
+      const compiled = spawnSync('/usr/bin/xcrun', ['--sdk', 'macosx', 'clang', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-arch', 'arm64', '-mmacosx-version-min=13.3', source, '-o', resourcePath(staging, definition.resourceProbe.executable)], { encoding: 'utf8', timeout: 60_000, maxBuffer: 2_000_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      if (compiled.error) throw compiled.error;
+      if (compiled.status !== 0) throw new Error(`Resource sampler build failed: ${compiled.stderr}`);
+      await chmod(resourcePath(staging, definition.resourceProbe.executable), 0o755);
     }
     await mkdir(path.join(staging, 'licenses'), { recursive: true });
     for (const license of SOURCE_LICENSES) {
@@ -288,6 +328,7 @@ export async function prepareInference({ target = `${process.platform}-${process
     const manifest = {
       schemaVersion: 1, engine: ENGINE_PIN.engine, version: ENGINE_PIN.version, build: ENGINE_PIN.build,
       commit: ENGINE_PIN.commit, target, backends: definition.backends, assets: definition.assets,
+      ...(definition.planner ? { planner: definition.planner } : {}), ...(definition.resourceProbe ? { resourceProbe: definition.resourceProbe } : {}),
       licenses, systemDependencies: definition.systemDependencies, ...(redistributables ? { redistributables } : {}),
       files: await inventory(staging),
     };

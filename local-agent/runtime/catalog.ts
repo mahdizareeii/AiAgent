@@ -1,4 +1,4 @@
-/** Immutable publisher revisions and LFS SHA-256 values, checked 2026-10-13. */
+/** Immutable conversion revisions and LFS SHA-256 values; 9B low-RAM pins checked against primary HF metadata 2026-10-17. */
 export interface ModelArtifact { filename:string; remotePath?:string; sizeBytes:number; sha256:string; }
 export interface ModelTaskGuidance { id:'coding'|'websites'|'automation'|'documents'|'research'; label:string; icon:string; description:string; examples:string[]; }
 export interface CuratedModel {
@@ -9,8 +9,14 @@ export interface CuratedModel {
   artifacts?:readonly ModelArtifact[]; taskGuidance?:readonly ModelTaskGuidance[];
   ssd?:{minimumSlotsPerLayer:number;expertsPerLayer:number;activeExperts:number;expectedLayers:number};
   emitsThinking?:boolean;
+  /** Profile-specific estimates; local calibration still establishes readiness. */
+  profileMemoryGB?:Readonly<Record<number,number>>;
+  /** Candidate designation is not measured hardware support or qualification. */
+  lowRamCandidate?:{profile:'portable-cpu-4k-v1';evidence:'unverified';metadataUrl:string};
 }
 export const MODEL_CATALOG: readonly CuratedModel[] = Object.freeze([
+  {id:'qwen3.8:27b',title:'Qwen3.8 27B',description:'Local coding and agent model. 32K and 16K profiles require memory and task checks.',estimatedDownloadBytes:16810714336,minimumMemoryGB:24,license:'Apache-2.0',sourceUrl:'https://huggingface.co/lmstudio-community/Qwen3.8-27B-GGUF',quantization:'Q4_K_M',repository:'lmstudio-community/Qwen3.8-27B-GGUF',revision:'5a7da681f60570ab5b439a587e912d2e5eddb582',filename:'Qwen3.8-27B-Q4_K_M.gguf',sha256:'e00082f779fa385cee8c68a3ec8833a75778cc87272240b942f74e0b8243e520',architecture:'qwen35',toolCapable:true,workingMemoryGB:18.9,profileMemoryGB:{32768:18.9,16384:17.9}},
+  {id:'muse-glimmer:30b',title:'Muse Glimmer 30B',description:'Meta local agent model with continuous reasoning. Profile and task checks are required.',estimatedDownloadBytes:16756683904,minimumMemoryGB:24,license:'Apache-2.0',sourceUrl:'https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF',quantization:'Q4_K_M',repository:'meta-models/Muse-Glimmer-30B-GGUF',revision:'43c7eadd41352a299ea8e0a36b3157978dd63596',filename:'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf',sha256:'4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e',architecture:'muse-glimmer',toolCapable:true,workingMemoryGB:18.3,profileMemoryGB:{32768:18.3,16384:17.5}},
   {id:'qwen3.5:4b',title:'Qwen3.5 4B',description:'Compact coding and research model.',estimatedDownloadBytes:2740937888,minimumMemoryGB:8,license:'Apache-2.0',sourceUrl:'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF',quantization:'Q4_K_M',repository:'unsloth/Qwen3.5-4B-GGUF',revision:'e87f176479d0855a907a41277aca2f8ee7a09523',filename:'Qwen3.5-4B-Q4_K_M.gguf',sha256:'00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4',architecture:'qwen35',toolCapable:true,workingMemoryGB:4.5},
   {id:'qwen3.5:9b',title:'Qwen3.5 9B',description:'Larger coding and research model.',estimatedDownloadBytes:5680522464,minimumMemoryGB:16,license:'Apache-2.0',sourceUrl:'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF',quantization:'Q4_K_M',repository:'unsloth/Qwen3.5-9B-GGUF',revision:'3885219b6810b007914f3a7950a8d1b469d598a5',filename:'Qwen3.5-9B-Q4_K_M.gguf',sha256:'03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8',architecture:'qwen35',toolCapable:true,workingMemoryGB:8},
   {id:'gemma4:12b',title:'Gemma 4 12B',description:'Balanced general reasoning, coding and tool use.',estimatedDownloadBytes:6975879296,minimumMemoryGB:16,license:'Apache-2.0',sourceUrl:'https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf',quantization:'QAT Q4_0',repository:'google/gemma-4-12B-it-qat-q4_0-gguf',revision:'29d097773436b69ff9feafd636ab4cf873786537',filename:'gemma-4-12b-it-qat-q4_0.gguf',sha256:'93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b',architecture:'gemma4',toolCapable:true,workingMemoryGB:10},
@@ -22,6 +28,18 @@ export const MODEL_CATALOG: readonly CuratedModel[] = Object.freeze([
     {filename:'Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf',remotePath:'Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf',sizeBytes:14503294496,sha256:'23aa634d47dca9b4ca3ea249384e6f01951b24c83cdc076f37f6f43d6c99883f'},
     {filename:'Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf',remotePath:'Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf',sizeBytes:3510702144,sha256:'249c768cc5f130dc731567d6edcbdacc48e14dec9e02c5dbe2b2185d2c5bdb2b'},
   ]},
+  // Separately pinned lower-precision candidates. These estimates and family
+  // settings grant no inherited Q4 template, probe or task evidence.
+  {id:'qwen3.8:27b-q3-k-m',title:'Qwen3.8 27B Q3_K_M',description:'Lower-precision Q3_K_M of Qwen3.8 27B. Lower-memory candidate with provisional estimates; profile and task checks are required.',estimatedDownloadBytes:13404051168,minimumMemoryGB:24,license:'Apache-2.0',sourceUrl:'https://huggingface.co/bartowski/Qwen3.8-27B-GGUF',quantization:'Q3_K_M',repository:'bartowski/Qwen3.8-27B-GGUF',revision:'87410e7b9a5c21e6ca70c0c9cc5237de909fe621',filename:'Qwen3.8-27B-Q3_K_M.gguf',sha256:'14865aaef0b6c26a013538782d366443c7298b11d5df9f0fb829d34d1963f869',architecture:'qwen35',toolCapable:true,workingMemoryGB:15.7,profileMemoryGB:{32768:15.7,16384:14.7}},
+  {id:'muse-glimmer:30b-q3-k-m',title:'Muse Glimmer 30B Q3_K_M',description:'Lower-precision Q3_K_M of Muse Glimmer 30B. Lower-memory candidate; its exact template, profile and task checks are required.',estimatedDownloadBytes:13962519328,minimumMemoryGB:24,license:'Apache-2.0',sourceUrl:'https://huggingface.co/bartowski/Muse-Glimmer-30B-GGUF',quantization:'Q3_K_M',repository:'bartowski/Muse-Glimmer-30B-GGUF',revision:'01e1b7c30e19e1823ee9a73dec51d12f59ec4857',filename:'Muse-Glimmer-30B-Q3_K_M.gguf',sha256:'de551709c7977735a4012323b82ba34a5756127c6b03a730753a37a318f02872',architecture:'muse-glimmer',toolCapable:true,workingMemoryGB:15.8,profileMemoryGB:{32768:15.8,16384:15}},
+  // Whole-artifact + 1.25 GiB is a provisional 4K CPU estimate, not an exact
+  // allocation plan. The 3 GiB OS reserve is retained even when it rejects a
+  // candidate on 8 GiB hardware. No quantization inherits Q4 task evidence.
+  ...([
+    {id:'qwen3.5:9b-q3-k-s',quantization:'Q3_K_S',bytes:4316865760,sha256:'162050d39ebae6b8a87435f282bcb7a0e3fab7b2444db730966b3fef1ed0179e'},
+    {id:'qwen3.5:9b-ud-iq3-xxs',quantization:'UD-IQ3_XXS',bytes:4016235744,sha256:'40d0f32cd3030b04f0784139a589fb63e876cfbf8667d56311b79783c74fd149'},
+    {id:'qwen3.5:9b-ud-iq2-m',quantization:'UD-IQ2_M',bytes:3649365216,sha256:'a31b6b4c603ddd66b5496ee065c9dd13b2b6de77dce9e5d59609aef8d39868e7'},
+  ].map(pin=>({id:pin.id,title:`Qwen3.5 9B ${pin.quantization}`,description:'Lower-RAM candidate with provisional 4K CPU estimates. All 8 GB OS/hardware combinations are unverified; exact allocation, cold/warm answers within five minutes and frozen task checks are required.',estimatedDownloadBytes:pin.bytes,minimumMemoryGB:8,license:'Apache-2.0',sourceUrl:'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF',quantization:pin.quantization,repository:'unsloth/Qwen3.5-9B-GGUF',revision:'3885219b6810b007914f3a7950a8d1b469d598a5',filename:`Qwen3.5-9B-${pin.quantization}.gguf`,sha256:pin.sha256,architecture:'qwen35',toolCapable:true,workingMemoryGB:pin.bytes/1024**3+1.5,profileMemoryGB:{4096:pin.bytes/1024**3+1.25},lowRamCandidate:{profile:'portable-cpu-4k-v1' as const,evidence:'unverified' as const,metadataUrl:'https://huggingface.co/api/models/unsloth/Qwen3.5-9B-GGUF/revision/3885219b6810b007914f3a7950a8d1b469d598a5?blobs=true'}}))),
 ].map(spec=>Object.freeze({...spec,taskGuidance:taskGuidance(spec.architecture)})));
 export function modelArtifacts(spec:CuratedModel):readonly ModelArtifact[]{
   return spec.artifacts??[{filename:spec.filename,sizeBytes:spec.estimatedDownloadBytes,sha256:spec.sha256}];

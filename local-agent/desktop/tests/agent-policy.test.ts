@@ -3,6 +3,22 @@ import { test } from 'node:test';
 import { assertAgentCapabilities, taskInstructions } from '../agent-policy.ts';
 import { DEFAULT_UTILITIES, effectiveUtilities, emptyState, migrateState } from '../state.ts';
 
+test('portable policy remains explicit about approval, exact edits, verification and network denial', () => {
+  const compact = taskInstructions('coding', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful', 300_000, true);
+  assert.ok(Buffer.byteLength(compact) < Buffer.byteLength(taskInstructions('coding', DEFAULT_UTILITIES, true, { taskResearch: false }, 'careful', 300_000)));
+  for (const rule of [/versions\/prerequisites/, /desktop approval; await results/, /Respect denials/, /never retry through another route/,
+    /repeat completed edits\/commands/, /successful tool evidence/, /untrusted evidence/, /Never install remote skills/,
+    /BOM, CRLF, final LF, Unicode, whitespace and literal prefixes/, /changed=false: verify, finish/,
+    /two identical failures stop/, /run_verification\(check_id\)/, /implementation receipts do not satisfy acceptance/,
+    /host network policy applies/, /Web research disabled; never bypass/, /three repair cycles, 40 steps\/5 active minutes/,
+    /Approval waits pause execution/, /Available tools/]) assert.match(compact, rule);
+  const readOnly = taskInstructions('coding', { ...DEFAULT_UTILITIES, fileEditing: false, terminal: false }, true, { taskResearch: false }, 'standard', 300_000, true);
+  assert.doesNotMatch(readOnly, /write_file|create_files|edit_file|run_command|run_verification/);
+  assert.match(readOnly, /File editing disabled/); assert.match(readOnly, /Terminal disabled/);
+  assert.equal(taskInstructions('assistant', DEFAULT_UTILITIES, true, { taskResearch: false }, 'standard', 300_000, true), taskInstructions('assistant', DEFAULT_UTILITIES, true, { taskResearch: false }, 'standard', 300_000));
+  assert.equal(taskInstructions('coding', DEFAULT_UTILITIES, false, { taskResearch: false }, 'standard', 300_000, true), taskInstructions('coding', DEFAULT_UTILITIES, false, { taskResearch: false }, 'standard', 300_000));
+});
+
 test('new installations default to Agent while saved chat modes and grants remain intact', () => {
   assert.equal(emptyState().mode, 'coding');
   const existing = { ...emptyState(), mode: 'assistant', projectPath: '/existing-workspace' };
@@ -80,6 +96,7 @@ test('Careful tasks require evidence-backed checks and bounded repair cycles wit
   assert.match(careful, /40-step and 60-minute active execution/);
   assert.match(careful, /Approval waits pause/);
   assert.match(careful, /Passed, Failed or Unverified.*actual tool/);
+  assert.match(careful, /at most 60 words unless the user requests detail; avoid tables and repeated checklists/);
   assert.match(careful, /Copy old_text exactly.*BOM, CRLF, trailing newlines and Unicode/);
   assert.match(careful, /Never remove literal prefixes/);
   assert.match(careful, /changed=false.*verify and finish/);

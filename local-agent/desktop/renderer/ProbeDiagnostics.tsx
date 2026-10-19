@@ -23,7 +23,7 @@ function ProbeRecord({ kind, diagnostic }: { kind: 'chat' | 'tools'; diagnostic?
       <div><dt>Output tokens</dt><dd>{count(record.outputTokens)} / {count(record.requestedOutputTokens)} allowed</dd></div>
       <div><dt>Reasoning tokens</dt><dd>{count(record.reasoningTokens)}</dd></div>
       <div><dt>Tool calls</dt><dd>{count(record.toolCallCount)}</dd></div>
-      <div><dt>Request thinking</dt><dd>Disabled</dd></div>
+      <div><dt>Request thinking</dt><dd>{record.thinkingDisabled ? 'Disabled' : 'Enabled by model policy'}</dd></div>
     </dl>
     <h5>Content returned</h5><pre>{excerpt(record.content, 512)}</pre>
     <h5>Reasoning returned</h5><pre>{excerpt(record.reasoning, 512)}</pre>

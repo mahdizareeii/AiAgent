@@ -20,8 +20,8 @@ export function trialDisplaysError(error: string | null | undefined, trial: Expe
 }
 
 export const memoryModes: { id: MemoryMode; label: string; description: string }[] = [
-  { id: 'automatic', label: 'Automatic', description: 'Choose a supported CPU/GPU profile while keeping memory for the operating system.' },
-  { id: 'low-memory', label: 'Low memory', description: 'Use a smaller context and batches to reduce workspace memory. Model weights still need usable memory.' },
+  { id: 'automatic', label: 'Automatic', description: 'Choose a supported CPU/GPU profile while keeping memory for the operating system. Q3 coding candidates prepare a separate 16K profile before use.' },
+  { id: 'low-memory', label: 'Low memory', description: 'Qwen and Muse keep a 16K context with a Q8 cache and some CPU weights. Q3 files need their own verified placement and task checks. CPU work can run slower. Other models use smaller context and batches.' },
 ];
 
 export function validationMatches(status: AgentStatus, model: LocalModel, record: Pick<ModelValidationRecord, 'digest' | 'templateHash' | 'runtime' | 'profileSignature'>) {

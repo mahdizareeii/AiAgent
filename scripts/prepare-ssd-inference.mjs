@@ -1,3 +1,4 @@
+import { isQwen80NumericalReport, ssdNumericalNativeBinding } from '../local-agent/runtime/ssd-contract.ts';
 import { createHash } from 'node:crypto';
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -9,7 +10,16 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const patchPath = path.join(projectRoot, 'scripts/ssd-inference/llama.cpp-ssd.patch');
 const plannerSource = path.join(projectRoot, 'scripts/ssd-inference/native-plan.cpp');
 const integritySource = path.join(projectRoot, 'scripts/ssd-inference/native-hash.cpp');
-const validationReports = [{ source: 'scripts/ssd-inference/validation/gemma4-26b-standard-cpu.json', path: 'validation/gemma4-26b-standard-cpu.json' }];
+const validationReports = [{ source: 'scripts/ssd-inference/validation/gemma4-26b-standard-cpu.json', path: 'validation/gemma4-26b-standard-cpu.json' },
+  { source: 'scripts/ssd-inference/validation/qwen3-coder-next-80b-standard-cpu-8k.json', path: 'validation/qwen3-coder-next-80b-standard-cpu-8k.json', optional: true }];
+async function existingValidationReports() {
+  const entries=[];
+  for(const entry of validationReports) {
+    try { const info=await lstat(path.join(projectRoot,entry.source));if(!info.isFile()||info.isSymbolicLink())throw new Error('Numerical report must be a regular file');entries.push(entry); }
+    catch(error) { if(entry.optional&&error.code==='ENOENT')continue;throw error; }
+  }
+  return entries;
+}
 export const SSD_ENGINE_PIN = Object.freeze({
   engine: 'llama.cpp-ssd-experts', version: '0.6.0', build: 11429,
   baseCommit: 'd81235049384534c167caea52b85a694f6103d14',
@@ -47,21 +57,23 @@ async function inventory(directory, prefix = '') {
   }
   return files;
 }
-async function sourceValidations(patchSha256) {
+async function sourceValidations(patchSha256,nativeBinding=null) {
   const configurations=[];
-  for(const entry of validationReports) {
+  for(const entry of await existingValidationReports()) {
     const source=path.join(projectRoot,entry.source);
     const report=JSON.parse(await readFile(source,'utf8'));
+    const qwen=report.architecture==='qwen3next',configuration={...report,report:entry.path,reportSha256:await sha256File(source)};
     if(report.schemaVersion!==1 || report.passed!==true || report.workerPatchSha256!==patchSha256 ||
        report.baseCommit!==SSD_ENGINE_PIN.baseCommit || report.backend!=='cpu' || report.cpuKernel!=='standard' ||
        report.useExtraBufts!==false || report.cpuRepackTensorCount!==0 ||
-       report.scope!=='representative-experts-and-two-swa-layers') throw new Error('SSD CPU equivalence report does not match the active native binding');
-    if(!/^[a-f0-9]{64}$/.test(report.modelSha256) || !/^[a-f0-9]{64}$/.test(report.templateSha256) || report.architecture!=='gemma4')
+       !(report.architecture==='gemma4'&&report.scope==='representative-experts-and-two-swa-layers'||isQwen80NumericalReport(report,configuration,patchSha256,nativeBinding))) throw new Error('SSD CPU equivalence report does not match the active native binding');
+    if(qwen && (await stat(source)).size>1024**2)throw new Error('Qwen numerical report exceeds the unchanged runtime report cap');
+    if(!/^[a-f0-9]{64}$/.test(report.modelSha256) || !/^[a-f0-9]{64}$/.test(report.templateSha256) || !['gemma4','qwen3next'].includes(report.architecture))
       throw new Error('SSD CPU equivalence artifact/template binding is invalid');
     const p=report.profile;
-    if(!p || p.contextTokens!==4096 || p.outputTokens!==1024 || p.batchTokens!==64 || p.microBatchTokens!==16 ||
+    if(!p || p.contextTokens!==(qwen?8192:4096) || p.outputTokens!==(qwen?2048:1024) || p.batchTokens!==64 || p.microBatchTokens!==16 ||
        p.cacheTypeK!=='f16' || p.cacheTypeV!=='f16' || p.swaFull!==false || p.slots!==1 || p.ioWorkers!==2 ||
-       p.ioMode!=='darwin-nocache' || p.decodeThreads!==4 || p.batchThreads!==4 || p.cacheSlotsPerLayer!==24)
+       p.ioMode!=='darwin-nocache' || p.decodeThreads!==4 || p.batchThreads!==4 || p.cacheSlotsPerLayer!==(qwen?30:24))
       throw new Error('SSD CPU equivalence report profile is invalid');
     configurations.push({schemaVersion:1,modelSha256:report.modelSha256,templateSha256:report.templateSha256,architecture:report.architecture,
       backend:report.backend,cpuKernel:report.cpuKernel,useExtraBufts:report.useExtraBufts,cpuRepackTensorCount:report.cpuRepackTensorCount,
@@ -72,7 +84,7 @@ async function sourceValidations(patchSha256) {
 }
 async function copyValidations(directory) {
   await mkdir(path.join(directory,'validation'),{recursive:true});
-  for(const entry of validationReports)await copyFile(path.join(projectRoot,entry.source),path.join(directory,entry.path));
+  for(const entry of await existingValidationReports())await copyFile(path.join(projectRoot,entry.source),path.join(directory,entry.path));
 }
 export async function verifySSDInferenceResources(directory) {
   const manifest = JSON.parse(await readFile(path.join(directory, 'manifest.json'), 'utf8'));
@@ -84,7 +96,7 @@ export async function verifySSDInferenceResources(directory) {
   if (manifest.planner?.executable !== 'worker/llama-plan-ssd' || manifest.planner?.sourceSha256 !== await sha256File(plannerSource)) throw new Error('SSD native planner identity mismatch');
   if (manifest.integrity?.executable !== 'worker/llama-hash-ssd' || manifest.integrity?.sourceSha256 !== await sha256File(integritySource)) throw new Error('SSD native integrity identity mismatch');
   if (JSON.stringify(manifest.backends) !== JSON.stringify(SSD_BACKENDS)) throw new Error('SSD backend identity mismatch');
-  if(JSON.stringify(manifest.validatedConfigurations)!==JSON.stringify(await sourceValidations(manifest.patchSha256)))
+  if(JSON.stringify(manifest.validatedConfigurations)!==JSON.stringify(await sourceValidations(manifest.patchSha256,ssdNumericalNativeBinding(manifest))))
     throw new Error('SSD CPU equivalence report/certificate binding mismatch');
   const actual = await inventory(directory);
   if (JSON.stringify(actual) !== JSON.stringify(manifest.files)) throw new Error('SSD resource file inventory/hash mismatch');
@@ -100,7 +112,7 @@ export async function refreshSSDValidationResources(directory=path.join(projectR
   const current=(await inventory(directory)).filter(entry=>!entry.path.startsWith('validation/'));
   const recorded=manifest.files.filter(entry=>!entry.path.startsWith('validation/'));
   if(JSON.stringify(current)!==JSON.stringify(recorded))throw new Error('Cannot refresh reports after native resource modification');
-  manifest.validatedConfigurations=await sourceValidations(manifest.patchSha256);
+  manifest.validatedConfigurations=await sourceValidations(manifest.patchSha256,ssdNumericalNativeBinding(manifest));
   await copyValidations(directory);manifest.files=await inventory(directory);
   await writeFile(path.join(directory,'manifest.json'),`${JSON.stringify(manifest,null,2)}\n`);
   return verifySSDInferenceResources(directory);
@@ -200,8 +212,10 @@ export async function prepareSSDInference({ verifyOnly = false, sourceDirectory,
     ioMode: 'darwin-nocache', requiredStreaming: true, ioWorkers: 2,
     minimumCacheMultiplier: 3, minimumMacOS: '14.0',
     buildInfo: { compiler, cmakeFlags: flags, adHocSigned: true },
-    validatedConfigurations:await sourceValidations(patchSha256),
+    validatedConfigurations:[],
   };
+  manifest.files=await inventory(output);
+  manifest.validatedConfigurations=await sourceValidations(patchSha256,ssdNumericalNativeBinding(manifest));
   await copyValidations(output);manifest.files=await inventory(output);
   await writeFile(path.join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   await verifySSDInferenceResources(output);

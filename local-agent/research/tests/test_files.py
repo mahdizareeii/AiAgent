@@ -432,3 +432,68 @@ def test_project_search_matches_across_long_fragment_boundaries(project):
     assert len(result["matches"]) == 1
     assert result["matches"][0]["line"] == 1
     assert "needle" in result["matches"][0]["text"]
+
+
+def test_host_file_read_default_preserves_exact_pages_and_explicit_hard_limit(monkeypatch, project):
+    root, grants = project
+    monkeypatch.setenv("LOCAL_AGENT_TOOL_RESULT_CHARS", "4000")
+    monkeypatch.setenv("LOCAL_AGENT_FILE_READ_DEFAULT_CHARS", "1024")
+    head = "\ufeff1: " + "😀سلام" * 200
+    text = head + "x" * (1023 - len(head)) + "\r\n" + "عنوان 😀\r\n" * 40 + "z" * 5200 + "\n"
+    payload = text.encode("utf-8")
+    (root / "exact.txt").write_bytes(payload)
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    first = grants.read_file("exact.txt", expected_sha256=expected_sha)
+    assert len(first["text"]) == 1024 and first["text"].endswith("\r")
+    assert first["truncated"] and not first["eof"] and first["next_cursor"]
+    second = grants.read_file("exact.txt", cursor=first["next_cursor"], expected_sha256=expected_sha, max_chars=16000)
+    assert len(second["text"]) == 4000 and second["text"].startswith("\n")
+    pages = [first, second]
+    for _ in range(20):
+        if pages[-1]["eof"]:
+            break
+        pages.append(grants.read_file("exact.txt", cursor=pages[-1]["next_cursor"], expected_sha256=expected_sha))
+    assert pages[-1]["eof"] and pages[-1]["next_cursor"] is None
+    assert b"".join(page["text"].encode("utf-8") for page in pages) == payload
+    offset = 0
+    for index, page in enumerate(pages):
+        assert page["sha256"] == expected_sha and page["size"] == len(payload)
+        assert page["start_byte"] == offset
+        prefix = payload[:offset].decode("utf-8")
+        assert page["start_line"] == prefix.count("\n") + 1
+        assert page["start_column"] == len(prefix.rsplit("\n", 1)[-1]) + 1
+        offset += len(page["text"].encode("utf-8"))
+        assert page["end_byte"] == offset
+        prefix = payload[:offset].decode("utf-8")
+        assert page["end_line"] == prefix.count("\n") + 1
+        assert page["end_column"] == len(prefix.rsplit("\n", 1)[-1]) + 1
+        if index != 1:
+            assert len(page["text"]) <= 1024
+    assert grants.read_file("exact.txt", max_chars=500)["text"] == text[:500]
+    assert (root / "exact.txt").read_bytes() == payload
+
+
+def test_absent_file_read_default_keeps_legacy_reads_and_hard_receipt_budget(monkeypatch, project):
+    from local_agent_research.files import result_chars
+    root, grants = project
+    monkeypatch.delenv("LOCAL_AGENT_FILE_READ_DEFAULT_CHARS", raising=False)
+    monkeypatch.setenv("LOCAL_AGENT_TOOL_RESULT_CHARS", "4000")
+    (root / "long.txt").write_text("x" * 7000, encoding="utf-8")
+    assert len(grants.read_file("long.txt")["text"]) == 4000
+    monkeypatch.setenv("LOCAL_AGENT_FILE_READ_DEFAULT_CHARS", "1024")
+    assert len(grants.read_file("long.txt")["text"]) == 1024
+    assert len(grants.read_file("long.txt", max_chars=16000)["text"]) == 4000
+    assert result_chars() == 4000 and result_chars(16000) == 4000
+    with pytest.raises(ToolError) as error:
+        grants.read_file("long.txt", max_chars=499)
+    assert error.value.code == "invalid_limit"
+
+
+@pytest.mark.parametrize("configured", ["not-an-int", "499", "4001", "True", ""])
+def test_invalid_host_file_read_default_fails_before_tools_are_advertised(monkeypatch, configured):
+    from local_agent_research.server import create_server
+    monkeypatch.setenv("LOCAL_AGENT_TOOL_RESULT_CHARS", "4000")
+    monkeypatch.setenv("LOCAL_AGENT_FILE_READ_DEFAULT_CHARS", configured)
+    with pytest.raises(ToolError) as error:
+        create_server(grants=Grants(()), mode="coding")
+    assert error.value.code == "invalid_configuration"

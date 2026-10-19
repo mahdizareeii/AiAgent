@@ -3,6 +3,7 @@ import type { AgentEvent, LocalAgentBridge } from './renderer/types.ts';
 const call = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`local-agent:${method}`, ...args);
 const bridge: LocalAgentBridge = {
   status: () => call('status'), setup: options => call('setup', options),
+  refreshHardware: () => call('refreshHardware'),
   importModel: () => call('importModel'), calibrateModel: id => call('calibrateModel', id),
   setUtilities: preferences => call('setUtilities', preferences), setPlugins: preferences => call('setPlugins', preferences),
   getApprovalPolicies: () => call('getApprovalPolicies'),
@@ -19,14 +20,16 @@ const bridge: LocalAgentBridge = {
   startModelTrial: (id, route) => call('startModelTrial', id, route),
   createModelValidationTask: id => call('createModelValidationTask', id),
   downloadModel: id => call('downloadModel', id),
-  cancelDownload: () => call('cancelDownload'), selectModel: id => call('selectModel', id),
+  cancelDownload: () => call('cancelDownload'), selectModel: (id, sessionId) => call('selectModel', id, sessionId),
   searchOllamaModels: query => call('searchOllamaModels', query),
   selectProject: () => call('selectProject'), createProject: options => call('createProject', options),
   selectFiles: () => call('selectFiles'),
   createSession: options => call('createSession', options), loadSession: id => call('loadSession', id),
+  navigate: (route, replace) => call('navigate', route, replace), back: () => call('back'),
+  draftsFlushed: (id, error) => call('draftsFlushed', id, error),
   saveDraft: options => call('saveDraft', options),
   send: options => call('send', options), cancel: id => call('cancel', id), resume: id => call('resume', id),
-  approvals: id => call('approvals', id), respondPermission: options => call('respondPermission', options), undo: () => call('undo'),
+  approvals: id => call('approvals', id), respondPermission: options => call('respondPermission', options), undo: id => call('undo', id),
   onEvent(callback) {
     const listener = (_: unknown, event: AgentEvent) => callback(event);
     ipcRenderer.on('local-agent:event', listener);

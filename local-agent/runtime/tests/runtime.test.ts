@@ -1,15 +1,19 @@
+import {generationPolicyForModel} from '../generation.ts';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawn,type ChildProcess} from 'node:child_process';
+import {EventEmitter} from 'node:events';
 import {mkdtemp,mkdir,writeFile,readFile,readdir,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test,type TestContext} from 'node:test';
 import {createServer} from 'node:http';
-import {LocalInferenceRuntime,MODEL_CATALOG,isAllocationFailure,EXPERIMENTAL_PROFILE_SIGNATURE,ENGINE_COMMIT,inferenceProfileSignature,type CuratedModel,type HardwareInfo,type RuntimeOptions,type ResourceMeasurements} from '../index.ts';
+import {LocalInferenceRuntime,MODEL_CATALOG,RuntimeError,plannerExitedAfterSamplerFailure,isAllocationFailure,EXPERIMENTAL_PROFILE_SIGNATURE,ENGINE_COMMIT,inferenceProfileSignature,type CuratedModel,type HardwareInfo,type RuntimeOptions,type ResourceMeasurements} from '../index.ts';
 import {classifyModel,GIB,parseDevices,parseMacAvailableMemory} from '../hardware.ts';
 import {readGGUFMetadata} from '../gguf.ts';
+import {nativeMappedPlacement,museQ3CPUPlacement,museQ3PhysicalCPUBlocks,nativePlacementArguments,type NativeMemoryProfile} from '../memory.ts';
+import {QWEN_Q3_CHECKPOINT_POLICY} from '../memory.ts';
 
 const u32=(v:number)=>{const b=Buffer.alloc(4);b.writeUInt32LE(v);return b;};
 const u64=(v:number)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(v));return b;};
@@ -20,14 +24,25 @@ function ggufFixture(architecture='llama',name='Local fixture'){
   return Buffer.concat([header,Buffer.alloc((32-header.length%32)%32),Buffer.alloc(8*4)]);
 }
 const bytes=ggufFixture();
+function mixedPlacementFixture(architecture:'qwen35'|'muse-glimmer',numericMuse=false,outputFirst=false,missingLastBlock=false,embeddingLast=false){
+  const count=architecture==='qwen35'?65:52,firstGPU=architecture==='qwen35'?(numericMuse?24:2):numericMuse?20:14;
+  const names=architecture==='qwen35'?['output.weight','output_norm.weight','token_embd.weight']:['token_embd.weight'];
+  const blocks=Array.from({length:count},(_,i)=>`blk.${i}.attn_norm.weight`);if(architecture==='muse-glimmer'&&!numericMuse)blocks.sort();
+  for(const name of blocks){names.push(name);if(architecture==='muse-glimmer'&&name==='blk.49.attn_norm.weight')names.push('output.weight');}
+  if(architecture==='muse-glimmer')names.push('output_norm.weight');if(outputFirst){names.splice(names.indexOf('output.weight'),1);names.unshift('output.weight');}if(missingLastBlock)names.splice(names.indexOf('blk.51.attn_norm.weight'),1);if(embeddingLast){names.splice(names.indexOf('token_embd.weight'),1);names.push('token_embd.weight');}let offset=0;
+  const descriptors=names.map(name=>{const elements=name===`blk.${firstGPU}.attn_norm.weight`?524288:8;const descriptor=Buffer.concat([str(name),u32(1),u64(elements),u32(0),u64(offset)]);offset+=elements*4;return descriptor;});
+  const blockCount=Buffer.concat([str(`${architecture}.block_count`),u32(4),u32(count)]);
+  const header=Buffer.concat([Buffer.from('GGUF'),u32(3),u64(names.length),u64(4),entry('general.architecture',architecture),entry('general.name','Mixed fixture'),entry('tokenizer.chat_template','{{messages|tojson}}'),blockCount,...descriptors]);
+  return Buffer.concat([header,Buffer.alloc((32-header.length%32)%32),Buffer.alloc(offset)]);
+}
 const spec:CuratedModel={id:'fixture:4b',title:'Fixture',description:'Test model',estimatedDownloadBytes:bytes.length,minimumMemoryGB:8,workingMemoryGB:4,license:'Apache-2.0',sourceUrl:'https://huggingface.co/example/model',quantization:'Q4',repository:'example/model',revision:'a'.repeat(40),filename:'fixture.gguf',sha256:createHash('sha256').update(bytes).digest('hex'),architecture:'llama',toolCapable:true};
 const hardware:HardwareInfo={platform:'darwin',architecture:'arm64',cpuModel:'Fixture',cpuCores:8,totalMemoryBytes:24*GIB,availableMemoryBytes:20*GIB,freeDiskBytes:100*GIB,gpus:[{name:'Metal fixture',backend:'metal',totalMemoryBytes:20*GIB,freeMemoryBytes:20*GIB,unifiedMemory:true}]};
 const fake=fileURLToPath(new URL('./fake-engine.cjs',import.meta.url));
-async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch,options:{installedModel?:boolean;runtimeSettings?:Partial<RuntimeOptions>}={}){
-  const directory=await mkdtemp(path.join(tmpdir(),'local-agent-runtime-'));t.after(()=>rm(directory,{recursive:true,force:true}));if(options.installedModel!==false){await mkdir(path.join(directory,'models'));await writeFile(path.join(directory,'models',spec.filename),bytes);}
+async function fixture(t:TestContext,extraEnv:NodeJS.ProcessEnv={},detectedHardware:HardwareInfo=hardware,fetchImplementation?:typeof fetch,options:{installedModel?:boolean;installedBytes?:Buffer;runtimeSettings?:Partial<RuntimeOptions>}={}){
+  const directory=await mkdtemp(path.join(tmpdir(),'local-agent-runtime-'));t.after(()=>rm(directory,{recursive:true,force:true}));if(options.installedModel!==false){await mkdir(path.join(directory,'models'));await writeFile(path.join(directory,'models',spec.filename),options.installedBytes??bytes);}
   const launches:string[][]=[];
   const runtime=new LocalInferenceRuntime({dataDirectory:directory,executablePath:process.execPath,catalog:[spec],hardware:detectedHardware,startupTimeoutMs:3000,stopTimeoutMs:500,fetch:fetchImplementation,
-    env:{...process.env,OPENAI_API_KEY:'secret',LLAMA_ARG_TOOLS:'all',LLAMA_ARG_RPC:'remote:5000'},...options.runtimeSettings,
+    env:{...process.env,OPENAI_API_KEY:'secret',LLAMA_ARG_TOOLS:'all',LLAMA_ARG_RPC:'remote:5000',GGML_METAL_NO_RESIDENCY:'ambient-do-not-forward',GGML_METAL_RESIDENCY_KEEP_ALIVE_S:'999'},...options.runtimeSettings,
     spawn:(command,args,options)=>{launches.push(args);return spawn(process.execPath,[fake,...args],{...options,env:{...options.env,...extraEnv}});}});
   t.after(()=>runtime.stop());return {runtime,directory,launches};
 }
@@ -45,10 +60,239 @@ test('a genuinely empty first-run cache initializes the engine without launching
   assert.equal(runtime.getStatus().error,null);assert.equal(runtime.getStatus().state,'ready');
 });
 
+test('qualified coding models use exact long Metal profiles and real tool-result continuation',async t=>{
+  for(const id of ['qwen3.8:27b','muse-glimmer:30b']){
+    const selected={...spec,id};const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[selected]}});
+    const prepared=await runtime.prepareModel(id);assert.equal(prepared.contextTokens,32768);assert.equal(prepared.outputTokens,8192);assert.equal(prepared.toolCapable,true);assert.equal(prepared.generationPolicy?.preserveThinking,true);
+    const args=launches.find(a=>a.includes('--model'))!;assert.equal(args[args.indexOf('--batch-size')+1],'128');assert.equal(args[args.indexOf('--ubatch-size')+1],'32');assert.equal(args[args.indexOf('--log-verbosity')+1],'4');assert.equal(args.includes('--reasoning-budget'),false);assert.equal(args[args.indexOf('--fit')+1],'off');assert.equal(args[args.indexOf('--n-gpu-layers')+1],'999');assert.equal(args.includes('--fit-target'),false);
+    const env=await runtime.requestJson<{metalNoResidency?:string;metalKeepAlive?:string}>('/env');assert.equal(env.metalNoResidency,undefined);assert.equal(env.metalKeepAlive,undefined);
+    const rows=await runtime.listModels();assert.equal(rows[0].chatProbe?.diagnostic?.requestedOutputTokens,8192);assert.equal(rows[0].toolProbe?.diagnostic?.requestedOutputTokens,8192);assert.equal(rows[0].toolProbe?.diagnostic?.thinkingDisabled,id!=='muse-glimmer:30b');
+    await runtime.stop();
+  }
+});
+
+test('qualified profiles use 16K fallback for allocation or engine context reduction and never CPU/4K',async t=>{
+  for(const env of [{FAKE_QUALIFIED_PRIMARY_ALLOCATION:'1'},{FAKE_QUALIFIED_PRIMARY_SMALL_CONTEXT:'1'}]){
+    const id='qwen3.8:27b';const {runtime,launches}=await fixture(t,env,hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}]}});
+    const prepared=await runtime.prepareModel(id);assert.equal(prepared.contextTokens,16384);assert.equal(prepared.outputTokens,4096);
+    assert.deepEqual(launches.filter(a=>a.includes('--model')).map(a=>a[a.indexOf('--ctx-size')+1]),['32768','16384']);
+    assert.equal(runtime.getStatus().profile?.backend,'metal');await assert.rejects(runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});await runtime.stop();
+  }
+});
+
+test('qualified tool checks reject failed continuation and admission keeps inadequate memory blocked',async t=>{
+  const id='muse-glimmer:30b';const {runtime}=await fixture(t,{FAKE_CONTINUATION_FAIL:'1'},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}]}});
+  const prepared=await runtime.prepareModel(id);assert.equal(prepared.toolCapable,false);assert.equal((await runtime.listModels())[0].toolProbe?.status,'failed');await runtime.stop();
+  const low={...hardware,availableMemoryBytes:7.5*GIB};const blocked=await fixture(t,{},low,undefined,{runtimeSettings:{catalog:[{...spec,id,workingMemoryGB:18.3,profileMemoryGB:{32768:18.3,16384:17.5}}]}});
+  await assert.rejects(blocked.runtime.prepareModel(id),{code:'INSUFFICIENT_MEMORY'});assert.equal(blocked.launches.filter(a=>a.includes('--model')).length,0);
+  const mismatch=await fixture(t,{FAKE_QUALIFIED_SMALL_CONTEXT:'1'},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}]}});
+  await assert.rejects(mismatch.runtime.prepareModel(id),{code:'MODEL_PROFILE_MISMATCH'});assert.equal(mismatch.launches.filter(a=>a.includes('--model')).length,2);
+});
+
+test('qualified preparation rejects critical sampled memory and cannot silently use a CPU profile',async t=>{
+  const id='qwen3.8:27b',sample:ResourceMeasurements={sampledAt:new Date().toISOString(),residentBytes:GIB,availableMemoryBytes:5*GIB,pressure:'critical'};
+  const badMemory=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}],resourceProbe:async()=>({...sample,sampledAt:new Date().toISOString()})}});
+  await assert.rejects(badMemory.runtime.prepareModel(id),{code:'MODEL_MEMORY_CALIBRATION_FAILED'});assert.equal(badMemory.launches.filter(a=>a.includes('--model')).length,2);assert.equal(badMemory.runtime.getStatus().loadedModel,null);
+  const cpu=await fixture(t,{}, {...hardware,gpus:[]},undefined,{runtimeSettings:{catalog:[{...spec,id}]}});
+  await assert.rejects(cpu.runtime.prepareModel(id),{code:'MODEL_BACKEND_UNSUPPORTED'});assert.equal(cpu.launches.filter(a=>a.includes('--model')).length,0);
+  await assert.rejects(cpu.runtime.startExperimentalTrial(id),{code:'MODEL_MEMORY_MODE_UNSUPPORTED'});
+});
+
+test('fresh hardware admission and safe warm reuse do not double-count loaded qualified weights',async t=>{
+  const id='qwen3.8:27b',selected={...spec,id,workingMemoryGB:18.9,profileMemoryGB:{32768:18.9,16384:17.9}};let current=hardware;
+  const {runtime,launches}=await fixture(t,{}, {...hardware,availableMemoryBytes:7.5*GIB},undefined,{runtimeSettings:{catalog:[selected],refreshHardware:async()=>structuredClone(current),resourceIntervalMs:60000,resourceProbe:async()=>resource(18*GIB,3*GIB)}});
+  await runtime.start();assert.equal((await runtime.listModels())[0].needsPreparation,true);
+  const prepared=await runtime.prepareModel(id);assert.equal(prepared.contextTokens,32768);
+  current={...hardware,availableMemoryBytes:3*GIB,gpus:[{...hardware.gpus[0],freeMemoryBytes:2*GIB}]};await runtime.refreshHardware();
+  assert.equal(runtime.getStatus().hardware?.gpus[0].freeMemoryBytes,2*GIB);
+  const row=(await runtime.listModels())[0];assert.equal(row.fit,'recommended');assert.equal(row.needsPreparation,false);
+  assert.equal((await runtime.prepareModel(id)).contextTokens,32768);assert.equal(launches.filter(args=>args.includes('--model')).length,1);
+  await runtime.requestJson('/v1/chat/completions',{model:prepared.model,messages:[{role:'user',content:'warm request'}],max_tokens:16});
+});
+
+test('qualified pre-request memory failure stops owned inference before sending a request',async t=>{
+  const id='muse-glimmer:30b';let unsafe=false,sent=false;const nativeFetch=fetch;
+  const {runtime,launches}=await fixture(t,{},hardware,async(input,init)=>{if(String(input).endsWith('/v1/chat/completions')&&JSON.parse(String(init?.body)).messages?.[0]?.content==='guarded request')sent=true;return nativeFetch(input,init);},{runtimeSettings:{catalog:[{...spec,id}],resourceIntervalMs:60000,resourceProbe:async()=>resource(GIB,3*GIB,unsafe?'critical':'normal')}});
+  const stopped:{model:string;code:string;trialId?:string}[]=[];runtime.on('executionStopped',event=>stopped.push(event));const prepared=await runtime.prepareModel(id);unsafe=true;
+  await assert.rejects(runtime.requestJson('/v1/chat/completions',{model:prepared.model,messages:[{role:'user',content:'guarded request'}]}),{code:'MODEL_MEMORY_CALIBRATION_FAILED'});
+  assert.equal(sent,false);assert.equal(stopped.length,1);assert.equal(stopped[0].model,id);assert.equal(stopped[0].trialId,undefined);assert.equal(runtime.getStatus().loadedModel,null);assert.equal(runtime.getStatus().baseUrl,null);assert.equal(launches.filter(args=>args.includes('--model')).length,1);
+});
+
+test('qualified periodic memory monitoring is serialized and stops only its owned process',async t=>{
+  const id='qwen3.8:27b';let unsafe=false,monitoring=false,active=0,peak=0;
+  const server=createServer((_request,response)=>response.end('unrelated'));await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const {runtime}=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}],resourceIntervalMs:10,resourceProbe:async()=>{if(monitoring){active++;peak=Math.max(peak,active);await new Promise(resolve=>setTimeout(resolve,35));active--;}return resource(GIB,3*GIB,unsafe?'critical':'normal');}}});
+  const stopped:string[]=[];runtime.on('executionStopped',event=>stopped.push(event.code));await runtime.prepareModel(id);monitoring=true;await waitFor(()=>active>0);unsafe=true;
+  await waitFor(()=>runtime.getStatus().loadedModel===null);assert.equal(peak,1);assert.deepEqual(stopped,['MODEL_MEMORY_CALIBRATION_FAILED']);assert.equal(server.listening,true);assert.equal(runtime.getStatus().baseUrl,null);
+});
+
+test('a delayed qualified memory observation cannot stop a subsequently prepared profile',async t=>{
+  const id='qwen3.8:27b';let oldPid:number|undefined,hold=false,blocked=false,release:((sample:ResourceMeasurements)=>void)|undefined;
+  const {runtime}=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}],resourceIntervalMs:60000,resourceProbe:async pid=>{if(hold&&pid===oldPid){blocked=true;return new Promise(resolve=>{release=resolve;});}return resource(GIB,3*GIB);}}});
+  const prepared=await runtime.prepareModel(id);oldPid=(await runtime.requestJson<{pid:number}>('/env')).pid;hold=true;
+  const stopped:string[]=[];runtime.on('executionStopped',event=>stopped.push(event.code));
+  const oldRequest=assert.rejects(runtime.requestJson('/v1/chat/completions',{model:prepared.model,messages:[{role:'user',content:'old request'}]}),{name:'AbortError'});await waitFor(()=>blocked);
+  await runtime.setMemoryMode('low-memory');const replacement=await runtime.prepareModel(id);assert.equal(replacement.contextTokens,16384);release!(resource(GIB,3*GIB,'critical'));await oldRequest;
+  assert.equal(runtime.getStatus().loadedModel,id);assert.equal(runtime.getStatus().profile?.contextTokens,16384);assert.deepEqual(stopped,[]);assert.notEqual((await runtime.requestJson<{pid:number}>('/env')).pid,oldPid);
+});
+
+test('hardware refresh probes the current native Metal budget without loading a model',async t=>{
+  const {runtime,launches}=await fixture(t,{},hardware,undefined,{installedModel:false,runtimeSettings:{hardware:undefined,totalMemoryBytes:24*GIB,availableMemoryBytes:20*GIB}});
+  await runtime.start();const initial=launches.filter(args=>args.includes('--list-devices')).length;
+  const refreshed=await runtime.refreshHardware();assert.equal(refreshed.gpus[0].name,'Apple Test');assert.equal(refreshed.gpus[0].freeMemoryBytes,24000*1024**2);
+  assert.equal(launches.filter(args=>args.includes('--list-devices')).length,initial+1);assert.equal(launches.filter(args=>args.includes('--model')).length,0);
+});
+
+const nativePlanRows=(profile:{cacheTypeK?:string})=>`MTL0 15088 ${profile.cacheTypeK==='q8_0'?693:1173} 80\nHost 682 0 3\n`;
+const nativeMemorySample=(available=9.5*GIB,pressure:'normal'|'warning'|'critical'='normal'):ResourceMeasurements=>({...resource(GIB,available,pressure),physicalFootprintBytes:Math.ceil(1.1*GIB),rssBytes:GIB});
+
+test('mapped calibration uses a pinned allocation plan and16K F16 even when whole working memory exceeds current cache headroom',async t=>{
+  const id='qwen3.8:27b',detected={...hardware,availableMemoryBytes:9.5*GIB,gpus:[{...hardware.gpus[0],freeMemoryBytes:17.758789*GIB}]};
+  const {runtime,launches}=await fixture(t,{},detected,undefined,{runtimeSettings:{catalog:[{...spec,id,workingMemoryGB:18.9,profileMemoryGB:{32768:18.9,16384:17.9}}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});
+  const stages:string[]=[];runtime.on('status',status=>{if(status.preparationStage)stages.push(status.preparationStage);});
+  const prepared=await runtime.prepareModel(id);assert.equal(prepared.contextTokens,16384);assert.equal(prepared.outputTokens,4096);assert(prepared.nativeMemoryPlan!.workingBytes>detected.availableMemoryBytes);assert(prepared.nativeMemoryPlan!.gpuAllocationUpperBoundBytes<detected.gpus[0].freeMemoryBytes);
+  assert(stages.includes('planning'));assert(stages.includes('loading'));assert(stages.includes('probing'));assert.equal(runtime.getStatus().preparationStage,undefined);
+  const identity=JSON.parse(prepared.profileSignature!);assert.equal(identity.cacheTypeK,'f16');assert.equal(identity.cacheTypeV,'f16');assert.equal(identity.flashAttention,'on');assert.match(identity.memoryPlanDigest,/^[a-f0-9]{64}$/);
+  assert.equal(launches.filter(args=>args.includes('--model')).length,1);assert.equal((await runtime.listModels())[0].needsPreparation,false);
+  await runtime.stop();
+});
+
+test('mapped admission can recover with planned16K Q8 but never retries memory pressure',async t=>{
+  const id='muse-glimmer:30b';const fixtureOptions={catalog:[{...spec,id}],nativePlannerTestOutput:(profile:{cacheTypeK?:string})=>profile.cacheTypeK==='f16'?'MTL0 20000 1173 80\nHost 682 0 3\n':nativePlanRows(profile),resourceProbe:async()=>nativeMemorySample()};
+  const {runtime,launches}=await fixture(t,{},hardware,undefined,{runtimeSettings:fixtureOptions});const prepared=await runtime.prepareModel(id);assert.equal(prepared.contextTokens,16384);assert.equal(JSON.parse(prepared.profileSignature!).cacheTypeK,'q8_0');assert.equal(launches.filter(args=>args.includes('--model')).length,1);await runtime.stop();
+  let pressure:'normal'|'warning'='normal';const failure=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample(9.5*GIB,pressure)}});failure.runtime.on('status',status=>{if(status.preparationStage==='probing')pressure='warning';});
+  await assert.rejects(failure.runtime.prepareModel(id),{code:'MODEL_MEMORY_CALIBRATION_FAILED'});assert.equal(failure.launches.filter(args=>args.includes('--model')).length,1);assert.equal(failure.runtime.getStatus().loadedModel,null);
+});
+
+test('explicit qualified Low memory starts only16K Q8 without a higher-memory allocation fallback',async t=>{
+  for(const id of ['qwen3.8:27b','muse-glimmer:30b']){
+    const run=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});
+    await run.runtime.setMemoryMode('low-memory');const prepared=await run.runtime.prepareModel(id);assert.equal(prepared.contextTokens,16384);assert.equal(prepared.outputTokens,4096);const profile=run.runtime.getStatus().profile!;assert.equal(profile.cacheTypeK,'q8_0');assert.equal(profile.cacheTypeV,'q8_0');assert.equal(profile.flashAttention,'on');assert.equal(profile.batchTokens,64);assert.equal(profile.microBatchTokens,16);assert.equal(JSON.parse(prepared.profileSignature!).memoryMode,'low-memory');
+    await assert.rejects(run.runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});assert.equal(run.launches.filter(args=>args.includes('--model')).length,1);await run.runtime.stop();
+    const blocked=await fixture(t,{FAKE_ALLOCATE:'all'},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});await blocked.runtime.setMemoryMode('low-memory');await assert.rejects(blocked.runtime.prepareModel(id),{code:'ALLOCATION_FAILED'});const attempts=blocked.launches.filter(args=>args.includes('--model'));assert.equal(attempts.length,1);assert.equal(attempts[0][attempts[0].indexOf('--cache-type-k')+1],'q8_0');assert.equal(attempts[0][attempts[0].indexOf('--ctx-size')+1],'16384');
+  }
+});
+
+test('explicit mixed coding placement binds verified header spans, shared native arguments and startup evidence',async t=>{
+  for(const architecture of ['qwen35','muse-glimmer'] as const){
+    const payload=mixedPlacementFixture(architecture),id=architecture==='qwen35'?'qwen3.8:27b':'muse-glimmer:30b';
+    const selected={...spec,id,architecture,estimatedDownloadBytes:payload.length,sha256:createHash('sha256').update(payload).digest('hex')};
+    const directory=await mkdtemp(path.join(tmpdir(),'agent-mixed-header-'));t.after(()=>rm(directory,{recursive:true,force:true}));const file=path.join(directory,'fixture.gguf');await writeFile(file,payload);const metadata=await readGGUFMetadata(file);
+    const profile:NativeMemoryProfile={backend:'metal',contextTokens:16384,outputTokens:4096,batchTokens:64,microBatchTokens:16,cacheTypeK:'q8_0',cacheTypeV:'q8_0',flashAttention:'on',metalResidency:'disabled',nativePlacement:architecture==='qwen35'?{gpuLayers:64,decodeThreads:4,batchThreads:4,repack:false,outputOnCPU:true}:{gpuLayers:999,decodeThreads:4,batchThreads:4,repack:false,outputOnCPU:false,cpuBlockIndices:[0,1,10,11,12,13]}};
+    const placement=nativeMappedPlacement(metadata,profile)!;const env={FAKE_MAPPED_TOTAL_LAYERS:String(placement.totalLayers),FAKE_MAPPED_METAL_MIB:(placement.metalMappedBytes/1024**2).toFixed(2),FAKE_MAPPED_CPU_MIB:(placement.hostMappedBytes/1024**2).toFixed(2)};
+    let planned:NativeMemoryProfile|undefined;const settings={catalog:[selected],nativePlannerTestOutput:(p:NativeMemoryProfile)=>{planned=p;return 'MTL0 2 1 1\nHost 0 0 0';},resourceProbe:async()=>({...nativeMemorySample(),residentBytes:20*1024**2,rssBytes:20*1024**2,physicalFootprintBytes:18*1024**2})};
+    const run=await fixture(t,env,hardware,undefined,{installedBytes:payload,runtimeSettings:settings});await run.runtime.setMemoryMode('low-memory');const prepared=await run.runtime.prepareModel(id);
+    assert.equal(prepared.toolCapable,true);assert.deepEqual(prepared.nativeMemoryPlan!.mappedPlacement,placement);assert.deepEqual(JSON.parse(prepared.profileSignature!).nativePlacement,profile.nativePlacement);assert.deepEqual(planned!.nativePlacement,profile.nativePlacement);assert.equal(planned!.metalResidency,'disabled');assert.equal(prepared.nativeMemoryPlan!.metalResidency,'disabled');assert.equal(JSON.parse(prepared.profileSignature!).metalResidency,'disabled');const runtimeEnv=await run.runtime.requestJson<{metalNoResidency?:string;metalKeepAlive?:string}>('/env');assert.equal(runtimeEnv.metalNoResidency,'1');assert.equal(runtimeEnv.metalKeepAlive,undefined);
+    const args=run.launches.find(a=>a.includes('--model'))!;for(const argument of nativePlacementArguments(profile))assert(args.includes(argument));assert.equal(args.includes('--override-tensor'),true);assert.equal(args[args.indexOf('--log-verbosity')+1],'4');await assert.rejects(run.runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});await run.runtime.stop();
+    for(const bad of [{FAKE_PROFILE_WRONG_GPU_SPAN:'1'},{FAKE_PROFILE_WRONG_THREADS:'1'},{FAKE_PROFILE_REPACK:'1'},{FAKE_PROFILE_RESIDENCY:'missing'},{FAKE_PROFILE_RESIDENCY:'true'},{FAKE_PROFILE_RESIDENCY:'broken'},{FAKE_PROFILE_RESIDENCY:'conflicting'}]){
+      let probes=0;const badRun=await fixture(t,{...env,...bad},hardware,async(input,init)=>{if(String(input).endsWith('/v1/chat/completions'))probes++;return fetch(input,init);},{installedBytes:payload,runtimeSettings:settings});await badRun.runtime.setMemoryMode('low-memory');await assert.rejects(badRun.runtime.prepareModel(id),{code:'MODEL_PROFILE_MISMATCH'});assert.equal(probes,0);assert.equal(badRun.runtime.getStatus().loadedModel,null);assert.equal(badRun.launches.filter(a=>a.includes('--model')).length,1);
+    }
+  }
+});
+
+test('Q3 Automatic uses a fresh verified 16K no-residency profile and Muse derives its own physical prefix',async t=>{
+  for(const entry of [{architecture:'qwen35',outputFirst:false,embeddingLast:false},{architecture:'muse-glimmer',outputFirst:false,embeddingLast:false},{architecture:'muse-glimmer',outputFirst:true,embeddingLast:false},{architecture:'muse-glimmer',outputFirst:false,embeddingLast:true}] as const){
+    const {architecture,outputFirst,embeddingLast}=entry,id=architecture==='qwen35'?'qwen3.8:27b-q3-k-m':'muse-glimmer:30b-q3-k-m',payload=mixedPlacementFixture(architecture,true,outputFirst,false,embeddingLast),selected={...spec,id,architecture,estimatedDownloadBytes:payload.length,sha256:createHash('sha256').update(payload).digest('hex')};
+    const directory=await mkdtemp(path.join(tmpdir(),'agent-q3-header-'));t.after(()=>rm(directory,{recursive:true,force:true}));const file=path.join(directory,'fixture.gguf');await writeFile(file,payload);const metadata=await readGGUFMetadata(file);
+    const expectedCPU=architecture==='muse-glimmer'?museQ3PhysicalCPUBlocks(metadata):undefined;
+    if(expectedCPU){assert.deepEqual(expectedCPU,Array.from({length:20},(_,i)=>i));const head=museQ3CPUPlacement(metadata);assert.equal(head.outputOnCPU,outputFirst);assert.equal(head.outputNormOnCPU,false);}
+    const profile:NativeMemoryProfile={backend:'metal',contextTokens:16384,outputTokens:4096,batchTokens:128,microBatchTokens:32,generationPolicy:generationPolicyForModel(id),cacheTypeK:'q8_0',cacheTypeV:'q8_0',flashAttention:'on',metalResidency:'disabled',nativePlacement:architecture==='qwen35'?{gpuLayers:42,decodeThreads:4,batchThreads:4,repack:false,outputOnCPU:true,outputNormOnCPU:true}:{gpuLayers:999,decodeThreads:4,batchThreads:4,repack:false,...museQ3CPUPlacement(metadata)}};
+    const placement=nativeMappedPlacement(metadata,profile,id)!;if(embeddingLast)assert(placement.hostMappedBytes+placement.metalMappedBytes>payload.length);let planned=0;const env={FAKE_MAPPED_TOTAL_LAYERS:String(placement.totalLayers),FAKE_MAPPED_METAL_MIB:(placement.metalMappedBytes/1024**2).toFixed(2),FAKE_MAPPED_CPU_MIB:(placement.hostMappedBytes/1024**2).toFixed(2)};
+    const run=await fixture(t,env,hardware,undefined,{installedBytes:payload,runtimeSettings:{catalog:[selected],nativePlannerTestOutput:()=>{planned++;return 'MTL0 2 1 1\nHost 0 0 0';},resourceProbe:async()=>({...nativeMemorySample(),residentBytes:20*1024**2,rssBytes:20*1024**2,physicalFootprintBytes:18*1024**2})}});
+    await run.runtime.start();const before=(await run.runtime.listModels())[0];assert.notEqual(before.chatProbe?.status,'passed');assert.notEqual(before.toolProbe?.status,'passed');
+    const prepared=await run.runtime.prepareModel(id);assert.equal(prepared.sourceModel,id);assert.equal(prepared.contextTokens,16384);assert.equal(prepared.outputTokens,4096);assert.equal(prepared.memoryMode,'automatic');assert.equal(run.runtime.getStatus().profile!.batchTokens,128);assert.equal(run.runtime.getStatus().profile!.microBatchTokens,32);assert.equal(prepared.generationPolicy?.kind,architecture==='qwen35'?'qwen38':'muse-glimmer');assert.equal(prepared.nativeMemoryPlan!.model,id);assert.deepEqual(prepared.nativeMemoryPlan!.mappedPlacement,placement);assert.equal(JSON.parse(prepared.profileSignature!).metalResidency,'disabled');assert.deepEqual(JSON.parse(prepared.profileSignature!).nativePlacement,profile.nativePlacement);const args=run.launches.find(a=>a.includes('--model'))!;assert.equal(args[args.indexOf('--batch-size')+1],'128');assert.equal(args[args.indexOf('--ubatch-size')+1],'32');assert.equal(args[args.indexOf('--n-gpu-layers')+1],architecture==='qwen35'?'42':'999');assert.equal(planned,1);await assert.rejects(run.runtime.restartLowerProfile(),{code:'PROFILE_EXHAUSTED'});await run.runtime.stop();
+    if(!outputFirst&&!embeddingLast){
+      for(const corrupt of ['missing','n_batch','n_ubatch','conflicting']){
+        let probes=0;const rejected=await fixture(t,{...env,FAKE_PROFILE_CONTEXT_SETTINGS:corrupt},hardware,async(input,init)=>{if(String(input).endsWith('/v1/chat/completions'))probes++;return fetch(input,init);},{installedBytes:payload,runtimeSettings:{catalog:[selected],nativePlannerTestOutput:()=> 'MTL0 2 1 1\nHost 0 0 0',resourceProbe:async()=>({...nativeMemorySample(),residentBytes:20*1024**2,rssBytes:20*1024**2,physicalFootprintBytes:18*1024**2})}});
+        await assert.rejects(rejected.runtime.prepareModel(id),{code:'MODEL_PROFILE_MISMATCH'});assert.equal(probes,0);assert.equal(rejected.launches.filter(args=>args.includes('--model')).length,1);assert.equal(rejected.runtime.getStatus().loadedModel,null);
+      }
+    }
+  }
+  const payload=mixedPlacementFixture('muse-glimmer',true,false,true),selected={...spec,id:'muse-glimmer:30b-q3-k-m',architecture:'muse-glimmer',estimatedDownloadBytes:payload.length,sha256:createHash('sha256').update(payload).digest('hex')};let planned=0;
+  const invalid=await fixture(t,{},hardware,undefined,{installedBytes:payload,runtimeSettings:{catalog:[selected],nativePlannerTestOutput:()=>{planned++;return 'MTL0 2 1 1\nHost 0 0 0';}}});await assert.rejects(invalid.runtime.prepareModel(selected.id),{code:'MODEL_MEMORY_PLAN_INVALID'});assert.equal(planned,0);assert.equal(invalid.launches.filter(args=>args.includes('--model')).length,0);
+});
+
+test('Qwen Q3 checkpoint allocation is newly attested, host-budgeted and cannot change other profile limits',async t=>{
+  const id='qwen3.8:27b-q3-k-m',payload=mixedPlacementFixture('qwen35',true),selected={...spec,id,architecture:'qwen35',estimatedDownloadBytes:payload.length,sha256:createHash('sha256').update(payload).digest('hex')};
+  const directory=await mkdtemp(path.join(tmpdir(),'agent-checkpoint-header-'));t.after(()=>rm(directory,{recursive:true,force:true}));const file=path.join(directory,'fixture.gguf');await writeFile(file,payload);const metadata=await readGGUFMetadata(file);
+  const profile:NativeMemoryProfile={backend:'metal',contextTokens:16384,outputTokens:4096,batchTokens:128,microBatchTokens:32,cacheTypeK:'q8_0',cacheTypeV:'q8_0',flashAttention:'on',metalResidency:'disabled',generationPolicy:generationPolicyForModel(id),nativePlacement:{gpuLayers:42,decodeThreads:4,batchThreads:4,repack:false,outputOnCPU:true,outputNormOnCPU:true},recurrentCheckpoint:{...QWEN_Q3_CHECKPOINT_POLICY}};
+  const placement=nativeMappedPlacement(metadata,profile,id)!;const env={FAKE_MAPPED_TOTAL_LAYERS:String(placement.totalLayers),FAKE_MAPPED_METAL_MIB:(placement.metalMappedBytes/1024**2).toFixed(2),FAKE_MAPPED_CPU_MIB:(placement.hostMappedBytes/1024**2).toFixed(2)};
+  const settings={catalog:[selected],nativePlannerTestOutput:()=> 'MTL0 2 1 1\nHost 0 0 0',resourceProbe:async()=>({...nativeMemorySample(),residentBytes:20*1024**2,rssBytes:20*1024**2,physicalFootprintBytes:18*1024**2})};
+  const good=await fixture(t,{...env,FAKE_CHECKPOINT_CREATED:'two-decimal'},hardware,undefined,{installedBytes:payload,runtimeSettings:settings});const prepared=await good.runtime.prepareModel(id);
+  assert.deepEqual(JSON.parse(prepared.profileSignature!).recurrentCheckpoint,QWEN_Q3_CHECKPOINT_POLICY);assert.deepEqual(prepared.nativeMemoryPlan!.recurrentCheckpoint,QWEN_Q3_CHECKPOINT_POLICY);assert.equal(prepared.nativeMemoryPlan!.checkpointHostReserveBytes,320*1024**2);assert.equal(prepared.contextTokens,16384);assert.equal(prepared.outputTokens,4096);
+  const args=good.launches.find(a=>a.includes('--model'))!;for(const [flag,value] of [['--ctx-checkpoints','1'],['--checkpoint-min-step','8192'],['--cache-ram','0'],['--parallel','1'],['--batch-size','128'],['--ubatch-size','32'],['--cache-type-k','q8_0'],['--cache-type-v','q8_0']])assert.equal(args[args.indexOf(flag)+1],value);assert(args.includes('--no-cache-idle-slots'));assert(args.includes('--no-context-shift'));assert(args.includes('--no-repack'));assert.equal(args.includes('--draft-model'),false);
+  const stopped:string[]=[];good.runtime.on('executionStopped',event=>stopped.push(event.code));await good.runtime.requestJson('/v1/chat/completions',{model:prepared.model,messages:[{role:'user',content:'checkpoint corruption'}]}).catch(()=>{});await waitFor(()=>good.runtime.getStatus().loadedModel===null);assert.deepEqual(stopped,['MODEL_PROFILE_MISMATCH']);assert.equal(good.launches.filter(a=>a.includes('--model')).length,1);await good.runtime.stop();
+  for(const bad of [{FAKE_CHECKPOINT_POLICY:'missing'},{FAKE_CHECKPOINT_POLICY:'count'},{FAKE_CHECKPOINT_POLICY:'spacing'},{FAKE_CHECKPOINT_POLICY:'conflicting'},{FAKE_CHECKPOINT_LAYOUT:'missing'},{FAKE_CHECKPOINT_LAYOUT:'rollback'},{FAKE_CHECKPOINT_LAYOUT:'precision'},{FAKE_CHECKPOINT_CREATED:'missing'},{FAKE_CHECKPOINT_CREATED:'oversized'}]){
+    let probes=0;const run=await fixture(t,{...env,...bad},hardware,async(input,init)=>{if(String(input).endsWith('/v1/chat/completions'))probes++;return fetch(input,init);},{installedBytes:payload,runtimeSettings:settings});await assert.rejects(run.runtime.prepareModel(id),{code:'MODEL_PROFILE_MISMATCH'});assert.equal(run.runtime.getStatus().loadedModel,null);assert.equal(run.launches.filter(a=>a.includes('--model')).length,1);if('FAKE_CHECKPOINT_POLICY' in bad||'FAKE_CHECKPOINT_LAYOUT' in bad)assert.equal(probes,0);await run.runtime.stop();
+  }
+});
+
+test('mapped memory failures report exact sampled guard metrics once and preserve terminal pressure behavior',async t=>{
+  for(const guard of ['normal-pressure','available-headroom','owned-residency']){
+    let unsafe=false;const sampledAt=new Date().toISOString(),safe=nativeMemorySample();
+    const failing={...safe,sampledAt,...(guard==='normal-pressure'?{pressure:'warning' as const}:guard==='available-headroom'?{availableMemoryBytes:512*1024**2}:{residentBytes:18*GIB,rssBytes:18*GIB,physicalFootprintBytes:18*GIB})};
+    const run=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:nativePlanRows,resourceIntervalMs:60000,resourceProbe:async()=>unsafe?failing:{...safe,sampledAt:new Date().toISOString()}}});
+    const logs:string[]=[];run.runtime.on('log',text=>{if(text.startsWith('CODING_RESOURCE_FAILURE '))logs.push(text);});const prepared=await run.runtime.prepareModel('qwen3.8:27b');assert.equal(logs.length,0);unsafe=true;
+    await assert.rejects(run.runtime.requestJson('/v1/chat/completions',{model:prepared.model,messages:[{role:'user',content:'must not run'}]}),error=>{assert(error instanceof RuntimeError);assert.equal(error.code,'MODEL_MEMORY_CALIBRATION_FAILED');for(const fragment of [guard,`pressure=${failing.pressure}`,sampledAt,'available=','RSS=','physical footprint=','resident bound=','plan working='])assert(error.message.includes(fragment));return true;});
+    assert.equal(logs.length,1);assert(logs[0].length<2048);const metrics=JSON.parse(logs[0].slice('CODING_RESOURCE_FAILURE '.length));assert.deepEqual(metrics.guards,[guard]);assert.equal(metrics.sampledAt,sampledAt);assert.equal(metrics.pressure,failing.pressure);assert.equal(metrics.availableMemoryBytes,failing.availableMemoryBytes);assert.equal(metrics.rssBytes,failing.rssBytes);assert.equal(metrics.physicalFootprintBytes,failing.physicalFootprintBytes);assert.equal(metrics.residentLimitBytes,prepared.nativeMemoryPlan!.workingBytes);assert.equal(metrics.planWorkingBytes,prepared.nativeMemoryPlan!.workingBytes);assert.equal(metrics.planGpuAllocationBytes,prepared.nativeMemoryPlan!.gpuAllocationUpperBoundBytes);assert.equal(run.runtime.getStatus().loadedModel,null);assert.equal(run.launches.filter(args=>args.includes('--model')).length,1);
+  }
+});
+
+test('mapped profiles require exact native KV/flash evidence and completed tool continuation before readiness',async t=>{
+  for(const env of [{FAKE_PROFILE_WRONG_KV:'1'},{FAKE_PROFILE_FLASH_DISABLED:'1'}]){
+    const fixtureValue=await fixture(t,env,hardware,undefined,{runtimeSettings:{catalog:[{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});
+    await assert.rejects(fixtureValue.runtime.prepareModel('qwen3.8:27b'),{code:'MODEL_PROFILE_MISMATCH'});assert.equal(fixtureValue.runtime.getStatus().loadedModel,null);
+  }
+  const continuation=await fixture(t,{FAKE_CONTINUATION_FAIL:'1'},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id:'muse-glimmer:30b'}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});
+  await assert.rejects(continuation.runtime.prepareModel('muse-glimmer:30b'),{code:'MODEL_CALIBRATION_FAILED'});assert.equal(continuation.runtime.getStatus().loadedModel,null);assert.equal(continuation.launches.filter(args=>args.includes('--model')).length,1);
+});
+
+test('mapped calibration fails closed with missing physical footprint or insufficient cold workspace headroom',async t=>{
+  const missing=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>resource(GIB,9.5*GIB)}});
+  await assert.rejects(missing.runtime.prepareModel('qwen3.8:27b'),{code:'RESOURCE_MONITOR_UNAVAILABLE'});assert.equal(missing.launches.filter(args=>args.includes('--model')).length,1);
+  const insufficient=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample(5*GIB)}});
+  await assert.rejects(insufficient.runtime.prepareModel('qwen3.8:27b'),{code:'INSUFFICIENT_MEMORY'});assert.equal(insufficient.launches.filter(args=>args.includes('--model')).length,0);
+});
+
+test('mapped identity is checked again after native loading before any tool or Chat probe',async t=>{
+  let directory='',probed=false;const corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;
+  const fixtureValue=await fixture(t,{},hardware,async(input,init)=>{const response=await fetch(input,init);if(String(input).endsWith('/props'))await writeFile(path.join(directory,'models',spec.filename),corrupt);if(String(input).endsWith('/v1/chat/completions'))probed=true;return response;},{runtimeSettings:{catalog:[{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});directory=fixtureValue.directory;
+  await assert.rejects(fixtureValue.runtime.prepareModel('qwen3.8:27b'),{code:'MODEL_CHANGED'});assert.equal(probed,false);assert.equal(fixtureValue.runtime.getStatus().loadedModel,null);assert.equal(fixtureValue.launches.filter(args=>args.includes('--model')).length,1);
+});
+
+test('a metadata planner failure cannot masquerade as a recoverable inference allocation failure',async t=>{
+  let attempts=0;const fixtureValue=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:()=>{attempts++;throw new RuntimeError('MODEL_MEMORY_PLAN_FAILED','Native allocation planning failed.');},resourceProbe:async()=>nativeMemorySample()}});
+  await assert.rejects(fixtureValue.runtime.prepareModel('qwen3.8:27b'),{code:'MODEL_MEMORY_PLAN_FAILED'});assert.equal(attempts,1);assert.equal(fixtureValue.launches.filter(args=>args.includes('--model')).length,0);
+});
+
+test('metadata sampler PID disappearance defers only to that planner own bounded terminal event',async()=>{
+  const gone=new RuntimeError('ENGINE_PROBE_FAILED','Engine exited 77.');
+  const fakeChild=()=>Object.assign(new EventEmitter(),{exitCode:null as number|null,signalCode:null as NodeJS.Signals|null}) as unknown as ChildProcess;
+  const exiting=fakeChild();setTimeout(()=>{Object.assign(exiting,{exitCode:0});exiting.emit('exit',0,null);setTimeout(()=>exiting.emit('close',0,null),5);},10);
+  assert.equal(await plannerExitedAfterSamplerFailure(exiting,gone),true,'successful own planner exit must win a sampler/exit notification race');assert.equal(exiting.listenerCount('exit'),0);assert.equal(exiting.listenerCount('close'),0);
+  const live=fakeChild();assert.equal(await plannerExitedAfterSamplerFailure(live,gone),false,'a still-live planner identity failure must not be ignored');assert.equal(live.listenerCount('exit'),0);assert.equal(live.listenerCount('close'),0);
+  const alreadyExited=fakeChild();Object.assign(alreadyExited,{exitCode:0});assert.equal(await plannerExitedAfterSamplerFailure(alreadyExited,gone),true);
+  assert.equal(await plannerExitedAfterSamplerFailure(alreadyExited,new RuntimeError('RESOURCE_MONITOR_UNAVAILABLE','Malformed metrics.')),false,'unrelated telemetry failures do not receive an exit exception');
+});
+
+test('changing from mapped coding to a legacy experimental trial clears the native plan and its profile evidence',async t=>{
+  const fixtureValue=await fixture(t,{},hardware,undefined,{runtimeSettings:{catalog:[spec,{...spec,id:'qwen3.8:27b'}],nativePlannerTestOutput:nativePlanRows,resourceProbe:async()=>nativeMemorySample()}});
+  await fixtureValue.runtime.prepareModel('qwen3.8:27b');assert(fixtureValue.runtime.getStatus().nativeMemoryPlan);
+  const legacy=await fixtureValue.runtime.startExperimentalTrial(spec.id);assert.equal(legacy.contextTokens,4096);assert.equal(legacy.nativeMemoryPlan,undefined);assert.equal(fixtureValue.runtime.getStatus().nativeMemoryPlan,undefined);assert.equal(JSON.parse(legacy.profileSignature!).cacheTypeK,undefined);
+});
+
+test('a changed native sampler artifact is rejected before engine discovery or inference',async t=>{
+  const {directory}=await fixture(t);const resources=path.join(directory,'native-resources');await mkdir(path.join(resources,'metal'),{recursive:true});
+  const files=[];for(const [name,data] of [['engine','fake-engine'],['metal/agent-memory-sample','audited-sampler']] as const){const payload=Buffer.from(data);await writeFile(path.join(resources,name),payload);files.push({path:name,size:payload.length,sha256:createHash('sha256').update(payload).digest('hex')});}
+  await writeFile(path.join(resources,'manifest.json'),JSON.stringify({schemaVersion:1,engine:'llama.cpp',version:'0.6.0',commit:ENGINE_COMMIT,build:11429,target:`${process.platform}-${process.arch}`,backends:[{id:'cpu',executable:'engine'}],resourceProbe:{id:'native-resource',executable:'metal/agent-memory-sample',arguments:[],sourceSha256:'aa0d0e8417dcb97af0beea648f14ba7b344669ce7f9a364b56371144fdbd4775'},files}));
+  await writeFile(path.join(resources,'metal/agent-memory-sample'),'tampered-prober');
+  let launched=false;const runtime=new LocalInferenceRuntime({dataDirectory:directory,resourcesDirectory:resources,spawn:()=>{launched=true;throw new Error('must not launch');}});t.after(()=>runtime.stop());await assert.rejects(runtime.start(),{code:'ENGINE_DIGEST_MISMATCH'});assert.equal(launched,false);
+});
+
 test('private offline inference strips inherited secrets and reuses a verified installed model',async t=>{
   const {runtime,directory,launches}=await fixture(t);const status=await runtime.start();assert.equal(status.state,'ready');assert.equal(status.baseUrl,null);
   const prepared=await runtime.prepareModel(spec.id);assert.equal(prepared.toolCapable,true);assert.equal(prepared.model,'local-agent-fixture-4b');assert.match(prepared.apiKey,/^[a-f0-9]{64}$/);assert.equal(prepared.measuredTokensPerSecond,42);assert.equal(prepared.outputTokens,2048);assert.equal(runtime.getStatus().profile?.outputTokens,2048);
-  const env=await runtime.requestJson<{secret?:string;tools?:string;rpc?:string;flags:string[];pid:number;calibrationThinking?:boolean}>('/env');assert.equal(env.secret,undefined);assert.equal(env.tools,undefined);assert.equal(env.rpc,undefined);
+  const env=await runtime.requestJson<{secret?:string;tools?:string;rpc?:string;flags:string[];pid:number;calibrationThinking?:boolean;metalNoResidency?:string;metalKeepAlive?:string}>('/env');assert.equal(env.secret,undefined);assert.equal(env.tools,undefined);assert.equal(env.rpc,undefined);assert.equal(env.metalNoResidency,undefined);assert.equal(env.metalKeepAlive,undefined);
   for(const flag of ['--offline','--no-agent','--no-webui','--no-ui-mcp-proxy','--no-cache-prompt','--no-cache-idle-slots','--no-context-shift'])assert(env.flags.includes(flag));
   assert.equal(env.flags[env.flags.indexOf('--cache-ram')+1],'0');assert.equal(env.flags[env.flags.indexOf('--parallel')+1],'1');assert.equal(env.flags[env.flags.indexOf('--host')+1],'127.0.0.1');
   assert.equal(env.flags[env.flags.indexOf('--predict')+1],'2048');assert.equal(env.flags[env.flags.indexOf('--ctx-size')+1],'8192');
@@ -237,7 +481,11 @@ test('generic imports are checksummed, persisted and cannot gain tools for unval
 });
 
 test('an imported validated architecture can enable tools only after native template confirmation and explicit calibration',async t=>{
-  const {runtime,directory}=await fixture(t);const custom=ggufFixture('qwen35','Custom Qwen');const source=path.join(directory,'custom-qwen.gguf');await writeFile(source,custom);const imported=await runtime.importModel(source);assert.equal(imported.toolCapable,false);await runtime.start();const prepared=await runtime.prepareModel(imported.model);assert.equal(prepared.toolCapable,false);const passed=await runtime.calibrateModel(imported.model);assert.equal(passed.toolCapable,true);assert.equal(passed.measuredTokensPerSecond,42);
+  const {runtime,directory}=await fixture(t);const custom=ggufFixture('qwen35','Custom Qwen');const source=path.join(directory,'custom-qwen.gguf');await writeFile(source,custom);const imported=await runtime.importModel(source);assert.equal(imported.toolCapable,false);await runtime.start();assert.equal((await runtime.listModels()).find(m=>m.id===imported.model)?.toolValidationEligible,true);const prepared=await runtime.prepareModel(imported.model);assert.equal(prepared.toolCapable,true);assert.equal(prepared.measuredTokensPerSecond,42);const passed=await runtime.calibrateModel(imported.model);assert.equal(passed.toolCapable,true);assert.equal(passed.measuredTokensPerSecond,42);
+});
+
+test('supported generic imports remain chat-only when actual tool calibration fails or the trusted fixture skips it',async t=>{
+  for(const skip of [false,true]){const {runtime,directory}=await fixture(t,skip?{}:{FAKE_CALIBRATE_FAIL:'1'},hardware,undefined,{runtimeSettings:{skipCalibration:skip}});const source=path.join(directory,'supported-import.gguf');await writeFile(source,ggufFixture('qwen35','Supported import fixture'));const imported=await runtime.importModel(source);assert.equal(imported.toolCapable,false);const prepared=await runtime.prepareModel(imported.model);assert.equal(prepared.toolCapable,false);const row=(await runtime.listModels()).find(model=>model.id===imported.model)!;assert.equal(row.toolCapable,false);assert.notEqual(row.toolProbe?.status,'passed');if(skip)assert.equal(row.toolProbe?.diagnostic,undefined);else assert.equal(row.toolProbe?.status,'failed');}
 });
 
 test('Slow mode can unload an idle model and chooses a smaller batch on the next load',async t=>{
@@ -264,10 +512,10 @@ test('an accelerated loader failure falls back to the independently pinned CPU e
 });
 
 test('memory fit respects unified Metal budget, active application pressure, OS reserve and all MoE weights',()=>{
-  const lowGPU={...hardware,gpus:[{...hardware.gpus[0],freeMemoryBytes:3*GIB}]};assert.equal(classifyModel(spec,lowGPU).fit,'slow');assert.equal(classifyModel(spec,{...hardware,availableMemoryBytes:128*1024**2}).fit,'insufficient');assert.equal(classifyModel(MODEL_CATALOG[4],hardware).fit,'insufficient');
-  const larger={...hardware,availableMemoryBytes:20*GIB,gpus:[{...hardware.gpus[0],freeMemoryBytes:17.7*GIB}]};assert.equal(classifyModel(MODEL_CATALOG[3],larger).fit,'slow');
+  const lowGPU={...hardware,gpus:[{...hardware.gpus[0],freeMemoryBytes:3*GIB}]};assert.equal(classifyModel(spec,lowGPU).fit,'slow');assert.equal(classifyModel(spec,{...hardware,availableMemoryBytes:128*1024**2}).fit,'insufficient');assert.equal(classifyModel(MODEL_CATALOG.find(m=>m.id==='gemma4:31b')!,hardware).fit,'insufficient');
+  const larger={...hardware,availableMemoryBytes:20*GIB,gpus:[{...hardware.gpus[0],freeMemoryBytes:17.7*GIB}]};assert.equal(classifyModel(MODEL_CATALOG.find(m=>m.id==='gemma4:26b')!,larger).fit,'slow');
   assert.equal(parseDevices('BLAS: Accelerate (24000 MiB, 24000 MiB free)\nMetal0: Apple M5 (18186 MiB, 18186 MiB free)','metal','darwin').length,1);
-  assert.equal(parseMacAvailableMemory('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 2.\nPages inactive: 3.\nPages speculative: 4.\nPages purgeable: 1.'),9*16384);
+  assert.equal(parseMacAvailableMemory('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 2.\nPages inactive: 3.\nPages speculative: 4.\nPages purgeable: 1.'),7*16384);
 });
 
 test('malformed GGUF array bounds fail before allocating attacker-chosen sizes',async t=>{

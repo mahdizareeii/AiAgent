@@ -12,14 +12,18 @@ API key, subscription, Ollama, or separately installed model server is required.
 Download model weights once, or import a local GGUF. Local Chat and project work
 then operate offline. Internet research is an optional plugin and starts off.
 
-**Version: 0.5.0-alpha.1.** This release simplifies task controls and introduces
-experimental SSD expert streaming on Apple Silicon. The current model-specific
-results, genuine capture status, failures, and package identity are kept in the
-[alpha.5 validation report](docs/alpha5-validation.md). The preceding release's
-results remain in the [alpha.4 report](docs/alpha4-validation.md); they are not
-new alpha.5 test results.
+**Version: 0.6.0-alpha.4.** Conversation navigation, workspace creation, model
+preferences, draft saving, and cached imports are repaired in this release.
+See the [0.6 release notes and validation limits](docs/0.6.0-alpha.1.md).
+The local Apple Silicon build is written to `release/0.6.0-alpha.4/`; building a
+package does not publish it to GitHub. Stronger-model support on 8 GB remains
+unverified until the required whole-OS measurements pass.
 
-Download the current platform package from the
+The [alpha.5 validation report](docs/alpha5-validation.md) and
+[alpha.4 report](docs/alpha4-validation.md) retain their original measurements.
+Screenshots below show the earlier alpha.5 interface and are historical evidence.
+
+Published platform packages are available from the
 [GitHub Releases](https://github.com/mahdizareeii/AiAgent/releases) page. Each
 tagged release includes platform-specific installers and an aggregate
 `SHA256SUMS` file. The current alpha's validation report records the exact
@@ -97,8 +101,13 @@ the new worker. The normal pinned engine and Qwen fallback remain available.
 
 | Model | Download | Route |
 | --- | ---: | --- |
+| Qwen3.8 27B Q4_K_M | 15.66 GiB | Local Metal; 32K or 16K context after preparation |
+| Muse Glimmer 30B Q4_K_M | 15.61 GiB | Local Metal; continuous reasoning; 32K or 16K context after preparation |
 | Qwen3.5 4B Q4_K_M | 2.55 GiB | Normal local inference |
 | Qwen3.5 9B Q4_K_M | 5.29 GiB | Normal local inference |
+| Qwen3.5 9B Q3_K_S | 4.02 GiB | CPU 4K candidate; 8 GB quality and latency unverified |
+| Qwen3.5 9B UD-IQ3_XXS | 3.74 GiB | CPU 4K candidate; 8 GB quality and latency unverified |
+| Qwen3.5 9B UD-IQ2_M | 3.40 GiB | CPU 4K candidate; 8 GB quality and latency unverified |
 | Gemma 4 12B QAT Q4_0 | 6.50 GiB | Normal local inference |
 | Gemma 4 26B A4B QAT Q4_0 | 13.45 GiB | Normal or experimental SSD expert streaming |
 | Gemma 4 31B QAT Q4_0 | 16.44 GiB | Normal inference; dense-model SSD streaming unavailable |
@@ -107,7 +116,9 @@ the new worker. The normal pinned engine and Qwen fallback remain available.
 Artifacts use pinned publisher revisions and SHA-256 checksums. Split models are
 usable only after every shard passes verification. Downloads are resumable,
 cancellable, and bounded to four independent shard streams. Import all parts of
-an exact supported split GGUF together. Download eligibility depends on storage;
+an exact supported split GGUF together, or select its first recognized shard
+when the complete pinned sibling set is beside it. Desktop shortcuts resolve to
+the source files. Download eligibility depends on storage;
 low RAM does not prevent acquiring weights.
 
 For a supported installed model, choose **Try from SSD** directly on its card.
@@ -163,6 +174,14 @@ bundle every development platform or control arbitrary desktop applications.
 Denied actions stay denied. Single-use approvals, authoritative settlement,
 revisioned snapshots, exact UTF-8 editing, and action receipts protect against
 stale panels, repeated edits, and automatic replay.
+
+Qwen3.8 and Muse coding runs use an offline policy: research tools are disabled
+and approved macOS commands permit loopback networking only. Each task freezes a
+plan before edits, verifies its file predicates and exact approved test commands,
+and repairs missing checks within the same live task. Passing plan checks does
+not establish that the model captured every requirement. The plan and evidence
+remain visible. See [local coding qualification](docs/coding-reliability.md) for
+model pins, memory requirements, and the repeatable task suite.
 
 ## Get started
 

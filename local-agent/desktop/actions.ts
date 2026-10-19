@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { access, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { cancelledActionText, commandTimeoutLimits, commandTimeoutText, interruptedTurnText } from './action-protocol.ts';
 import type { ApprovalUtility } from './renderer/types.ts';
@@ -52,8 +53,17 @@ export interface LocalActionsOptions {
   historyDirectory: string;
   onPermission: (permission: ActionPermission, signal?: AbortSignal) => Promise<boolean>;
   onTool?: (event: ActionToolEvent) => void;
+  /** Host-only freshness boundary, before any potential effect/approval and finally on settlement. */
+  onReadbackEffect?: (event: { id: string; operation: string; phase: 'begin' | 'settled' }) => void;
   resultChars?: number;
   utilities?: { fileEditing: boolean; terminal: boolean };
+  verificationCheckIds?: readonly string[];
+  /** Exact command criteria from the current frozen host brief; never model arguments. */
+  frozenVerification?: { turnId: string; requestHash: string; workspacePath: string; signal: AbortSignal;
+    commands: readonly { id: string; kind: 'command'; command: string; cwd: string }[] };
+  onBeforeVerificationCommand?: (id: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<void>;
+  /** App-owned policy, never a model argument or an approval grant. */
+  networkAccess?: 'local-only';
 }
 
 interface FileVersion { content: string | null; hash: string | null; device: number | null; inode: number | null; mode: number; }
@@ -88,6 +98,23 @@ const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest(
 const cancelled = () => new ActionError('CANCELLED', cancelledActionText);
 const contained = (root: string, file: string) => { const relative = path.relative(root, file); return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); };
 
+export const LOCAL_ONLY_COMMAND_PROFILE = '(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-bind (local ip "localhost:*"))';
+const proxyEnvironmentNames = new Set(['http_proxy', 'https_proxy', 'all_proxy', 'npm_config_proxy', 'npm_config_https_proxy', 'node_use_env_proxy']);
+/** Prevent inherited forwarding settings from routing an approved local-only command through a proxy. */
+export function localOnlyCommandEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => !proxyEnvironmentNames.has(name.toLowerCase())));
+}
+export async function localOnlyCommandLaunch(command: string, platform: NodeJS.Platform = process.platform): Promise<{ executable: string; args: string[] }> {
+  if (platform !== 'darwin') throw new ActionError('LOCAL_NETWORK_POLICY_UNAVAILABLE', 'Local-only commands require the supported macOS network policy. No command was run; there is no unrestricted fallback.');
+  const executable = '/usr/bin/sandbox-exec';
+  try {
+    const info = await lstat(executable);
+    if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) !== 0 || await realpath(executable) !== executable) throw new Error('The system policy executable is not trusted.');
+    await access(executable, constants.X_OK);
+  } catch (error) { throw new ActionError('LOCAL_NETWORK_POLICY_UNAVAILABLE', 'The trusted macOS network policy executable is unavailable. No command was run; there is no unrestricted fallback.', { cause: error instanceof Error ? error.message : String(error) }); }
+  return { executable, args: ['-p', LOCAL_ONLY_COMMAND_PROFILE, '/bin/sh', '-c', command] };
+}
+
 function assertSafeName(relative: string): void {
   for (const component of relative.split(/[\\/]/)) {
     if (/^(?:\.git|\.ssh|\.aws|\.gnupg)$/i.test(component) || /^\.env(?:\.|$)/i.test(component) || /^id_(?:rsa|ed25519|ecdsa|dsa)(?:\.|$)/i.test(component) || /\.(?:pem|key|p12|pfx)$/i.test(component) || /(?:^|[._-])(?:secrets?|tokens?|credentials|passwords?)(?:[._-]|$)/i.test(component)) {
@@ -121,7 +148,8 @@ export const ACTION_TOOL_SCHEMAS = [
   { name: 'edit_file', description: 'Propose one exact text replacement in a project file. Copy old_text from read_file.text exactly, preserving whitespace, BOM and line endings; locations are separate metadata. Never add/remove line-number prefixes. Two identical failed edits against unchanged content stop mutations for this turn. The user reviews a diff and approves before any file changes. Result reports changed/unchanged and the verified SHA-256.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
   { name: 'write_file', description: 'Propose creating or replacing a project text file. The user reviews a diff and approves before any file changes.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
   { name: 'create_files', description: 'Propose 1–20 new project text files in one reviewed batch. Parent folders are created automatically; existing files cannot be replaced. Total content <=512 KiB. One approval shows every file and grouped undo is available.', inputSchema: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } } }, required: ['files'], additionalProperties: false } },
-  { name: 'run_command', description: 'Propose a shell command in the project. The user approves its exact command, working directory and time limit. timeout_ms defaults to 60000; explicitly select up to 600000 for dependency setup. Result metadata gives log_id, output_complete and next_offset; when output_complete is true, use the shown output without another log read. Interrupted commands preserve partial work and are never automatically repeated. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'integer', ...commandTimeoutLimits, description: 'Approved execution time limit in milliseconds, 100–600000; default 60000. Longer dependency setup requires an explicit value.' } }, required: ['command'], additionalProperties: false } },
+  { name: 'run_verification', description: 'For frozen acceptance commands, use run_verification with exactly one command criterion check_id from the current frozen task brief. The host supplies its exact command and cwd; do not retype paths or shell quoting. The normal command approval, timeout, local network policy and verification ledger still apply; the ID grants no permission. Unknown, manual and file/preservation IDs cannot execute. Commands are never automatically replayed after denial, interruption or task resume.', inputSchema: { type: 'object', properties: { check_id: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$' }, timeout_ms: { type: 'integer', ...commandTimeoutLimits } }, required: ['check_id'], additionalProperties: false } },
+  { name: 'run_command', description: 'Propose an implementation or debugging shell command in the project. For frozen acceptance, use run_verification with one command check_id; implementation receipts do not satisfy acceptance. Legacy exact verification command/cwd/purpose/checkIds remain supported. The user approves its exact command, working directory and time limit; verification metadata grants no permission. timeout_ms defaults to 60000; explicitly select up to 600000 for dependency setup. Result metadata gives log_id, output_complete and next_offset; when output_complete is true, use the shown output without another log read. Interrupted commands preserve partial work and are never automatically repeated. This is not an operating-system sandbox; approved commands have the user account’s access.', inputSchema: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string' }, purpose: { type: 'string', enum: ['implementation', 'verification'] }, checkIds: { type: 'array', maxItems: 12, uniqueItems: true, items: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$' } }, timeout_ms: { type: 'integer', ...commandTimeoutLimits, description: 'Approved execution time limit in milliseconds, 100–600000; default 60000. Longer dependency setup requires an explicit value.' } }, required: ['command'], additionalProperties: false } },
 ] as const;
 
 /**
@@ -131,6 +159,8 @@ export const ACTION_TOOL_SCHEMAS = [
  */
 export class LocalActions {
   private options: LocalActionsOptions;
+  private verificationScope?: { turnId: string; requestHash: string; workspacePath: string; signal: AbortSignal };
+  private verificationCommands = new Map<string, Readonly<{ id: string; kind: 'command'; command: string; cwd: string }>>();
   private mutationQueue: Promise<unknown> = Promise.resolve();
   private failingEdits = new Map<string, number>();
   private editLoopStopped = false;
@@ -139,32 +169,101 @@ export class LocalActions {
 
   constructor(options: LocalActionsOptions) {
     if (!path.isAbsolute(options.projectPath) || !path.isAbsolute(options.historyDirectory)) throw new ActionError('INVALID_PATH', 'Project and history directories must be absolute paths.');
-    this.options = options;
+    this.options = { ...options, verificationCheckIds: options.verificationCheckIds ? Object.freeze([...options.verificationCheckIds]) : undefined };
+    const frozen = options.frozenVerification;
+    if (frozen) {
+      if (typeof frozen.turnId !== 'string' || !frozen.turnId.trim() || frozen.turnId.length > 256 || frozen.turnId.includes('\0')
+        || !/^[a-f0-9]{64}$/.test(frozen.requestHash) || frozen.workspacePath !== options.projectPath || !path.isAbsolute(frozen.workspacePath)
+        || !(frozen.signal instanceof AbortSignal) || !Array.isArray(frozen.commands) || frozen.commands.length > 12)
+        throw new ActionError('INVALID_ARGUMENT', 'Frozen verification requires the exact selected workspace, current task identity and bound turn signal.');
+      for (const row of frozen.commands) {
+        if (!row || row.kind !== 'command' || typeof row.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(row.id) || this.verificationCommands.has(row.id)
+          || typeof row.command !== 'string' || !row.command.trim() || row.command.length > 8192 || row.command.includes('\0')
+          || Buffer.from(row.command,'utf8').toString('utf8') !== row.command || typeof row.cwd !== 'string' || !row.cwd.trim() || row.cwd.length > 1024
+          || row.cwd.includes('\0') || path.isAbsolute(row.cwd) || row.cwd.split(/[\\/]/).includes('..'))
+          throw new ActionError('INVALID_ARGUMENT', 'Frozen verification accepts only unique current command criteria and their exact bounded command/cwd.');
+        this.verificationCommands.set(row.id,Object.freeze({ id:row.id,kind:'command',command:row.command,cwd:row.cwd }));
+      }
+      if (JSON.stringify([...this.verificationCommands.keys()]) !== JSON.stringify(this.options.verificationCheckIds ?? []))
+        throw new ActionError('INVALID_ARGUMENT', 'Frozen command IDs must exactly match the current command verification ledger.');
+      this.verificationScope=Object.freeze({turnId:frozen.turnId,requestHash:frozen.requestHash,workspacePath:frozen.workspacePath,signal:frozen.signal});
+    }
+    // Retain only the private immutable projection, never the caller's mutable map.
+    delete this.options.frozenVerification;
+  }
+
+  private verificationArguments(args:Record<string,unknown>):Record<string,unknown>{
+    const allowed=[...this.verificationCommands.keys()], guidance=`Allowed current frozen command check_ids: ${JSON.stringify(allowed)}. Use run_verification with exactly one check_id; manual/file/preservation criteria cannot execute.`;
+    if(!this.verificationScope)throw new ActionError('INVALID_ARGUMENT',`No current frozen command map is bound. ${guidance}`);
+    if(Object.keys(args).some(key=>!['check_id','timeout_ms'].includes(key)))throw new ActionError('INVALID_ARGUMENT',`Only check_id and optional timeout_ms are accepted; command/cwd/purpose/checkIds overrides are forbidden. ${guidance}`);
+    if(typeof args.check_id!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(args.check_id))throw new ActionError('INVALID_ARGUMENT',`check_id must be one exact frozen command ID. ${guidance}`);
+    const checkId=args.check_id;const criterion=this.verificationCommands.get(checkId);
+    if(!criterion)throw new ActionError('INVALID_ARGUMENT',`Unknown or non-command check_id. ${guidance}`);
+    const original=Object.freeze({check_id:checkId,...(args.timeout_ms!==undefined?{timeout_ms:args.timeout_ms}:{})});
+    return {command:criterion.command,cwd:criterion.cwd,purpose:'verification',checkIds:[checkId],...(args.timeout_ms!==undefined?{timeout_ms:args.timeout_ms}:{}),
+      verification_intent:Object.freeze({tool:'run_verification',arguments:original,turnId:this.verificationScope.turnId,requestHash:this.verificationScope.requestHash,workspacePath:this.verificationScope.workspacePath})};
+  }
+  /** Guidance only: never infers a criterion or changes command/receipt metadata. */
+  private verificationRecoveryGuidance():string{
+    const legacy='Legacy verification requires purpose:"verification", nonempty matching checkIds and the exact frozen command/cwd. Implementation command receipts do not satisfy acceptance.';
+    if(!this.verificationScope)return `No command ran. ${legacy} No current frozen ID map is bound.`;
+    if(this.verificationScope.signal.aborted)return 'This frozen task is closed. No command ran; start a new task rather than replaying old actions.';
+    const ids=[...this.verificationCommands.keys()];
+    if(!ids.length)return `No executable frozen command criteria are available in this task. No command ran. Implementation command receipts do not satisfy acceptance; file/manual/preservation IDs cannot run commands.`;
+    return `For frozen acceptance, call run_verification(${JSON.stringify({check_id:ids[0]})}) (example using one current command ID; choose the criterion being verified). Allowed current command check_ids: ${JSON.stringify(ids)}. The host supplies exact command/cwd and requests approval. No command ran for this rejected request. ${legacy}`;
+  }
+
+  /** Reject a single implementation spelling mistake; never repair or execute it. */
+  private rejectQuoteStrippedFrozenCommand(command:string,cwd:string):void{
+    if(process.platform==='win32'||!this.verificationScope||this.verificationScope.signal.aborted)return;
+    const rows=[...this.verificationCommands.values()].filter(row=>row.cwd===cwd);
+    if(rows.some(row=>row.command===command))return;
+    const matches=rows.filter(row=>{
+      const frozen=row.command,quote=frozen[0];if(quote!=="'"&&quote!=='"')return false;
+      const close=frozen.indexOf(quote,1);if(close<0)return false;
+      const executable=frozen.slice(1,close),suffix=frozen.slice(close+1);
+      if(!path.isAbsolute(executable)||!executable.includes(' ')||executable.trim()!==executable||
+        [...executable].some(char=>!/[\p{L}\p{N}]/u.test(char)&&!'/ ._:-'.includes(char)))return false;
+      // Deliberately narrow POSIX words: unknown quoting, escapes, expansions,
+      // shell operators, cwd aliases and near matches keep their normal path.
+      if(![' ','\t'].includes(suffix[0])||!suffix.trim()||
+        [...suffix].some(char=>!/[A-Za-z0-9]/.test(char)&&!' \t_./:@%+=,-'.includes(char)))return false;
+      return command===executable+suffix;
+    });
+    if(matches.length!==1)return;
+    const checkId=matches[0].id;
+    throw new ActionError('INVALID_ARGUMENT',`This looks like frozen command ${JSON.stringify(checkId)} with the executable's quotes removed. No command ran. For that frozen command, call run_verification(${JSON.stringify({check_id:checkId})}). This also works when the first check is expected to fail. The host supplies the exact command/cwd and requests normal approval. Allowed current command check_ids: ${JSON.stringify([...this.verificationCommands.keys()])}.`);
   }
 
   async execute(tool: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<ActionResult> {
     const id = randomUUID();
-    const title = tool === 'run_command' ? 'Run command' : tool === 'read_command_output' ? 'Read command output' : tool === 'create_files' ? 'Create project files' : tool === 'edit_file' ? 'Edit file' : 'Write file';
-    this.options.onTool?.({ id, title, status: 'pending', input: args });
+    const title = tool === 'run_command' || tool === 'run_verification' ? 'Run command' : tool === 'read_command_output' ? 'Read command output' : tool === 'create_files' ? 'Create project files' : tool === 'edit_file' ? 'Edit file' : 'Write file';
+    const signal=this.verificationScope?AbortSignal.any([this.verificationScope.signal,...(options.signal?[options.signal]:[])]):options.signal;
+    const effect = tool !== 'read_command_output';
+    let effectStarted = false;
     try {
-      if (options.signal?.aborted) throw cancelled();
+      if (effect) { effectStarted = true; this.options.onReadbackEffect?.({ id, operation: tool, phase: 'begin' }); }
+      if(tool==='run_verification')args=this.verificationArguments(args);
+      else if(args.verification_intent!==undefined)throw new ActionError('INVALID_ARGUMENT','verification_intent is reserved for a host-expanded frozen ID action.');
+      this.options.onTool?.({ id, title, status: 'pending', input: args });
+      if (signal?.aborted) throw cancelled();
       if (this.commandReadLoopStopped) throw new ActionError('LOG_READ_LOOP_STOPPED', repeatedCommandReadFailureText);
       if (this.editLoopStopped && tool !== 'read_command_output') throw new ActionError('EDIT_LOOP_STOPPED', 'This turn stopped after two identical failed edits. No further file changes or commands may run. Report the observed blocker and use a new task for an explicitly revised action.');
       let output: ActionResult;
       if (tool === 'read_command_output') output = await this.readCommandOutput(args);
-      else if (tool === 'run_command') {
+      else if (tool === 'run_command' || tool === 'run_verification') {
         if (this.options.utilities?.terminal === false) throw new ActionError('DISABLED_TOOL', 'Terminal commands are disabled.');
-        output = await this.runCommand(id, args, options.signal);
+        output = await this.runCommand(id, args, signal);
       }
       else if (tool === 'create_files') {
         if (this.options.utilities?.fileEditing === false) throw new ActionError('DISABLED_TOOL', 'File editing is disabled.');
-        output = await this.serial(() => this.createFiles(id, args, options.signal), true);
+        output = await this.serial(() => this.createFiles(id, args, signal), true);
       }
       else if (tool === 'edit_file' || tool === 'write_file') {
         if (this.options.utilities?.fileEditing === false) throw new ActionError('DISABLED_TOOL', 'File editing is disabled.');
         // Serialize edits and undo, including approval, so approved previews
         // cannot race another app action. External changes are rechecked too.
-        output = await this.serial(() => this.writeFile(tool, id, args, options.signal), true);
+        output = await this.serial(() => this.writeFile(tool, id, args, signal), true);
       } else throw new ActionError('UNKNOWN_TOOL', `Unknown action tool: ${tool}`);
       this.options.onTool?.({ id, title, status: output.isError ? 'failed' : 'completed', input: args, output });
       return output;
@@ -180,6 +279,8 @@ export class LocalActions {
       }
       this.options.onTool?.({ id, title, status: 'failed', input: args, output });
       return output;
+    } finally {
+      if (effectStarted) this.options.onReadbackEffect?.({ id, operation: tool, phase: 'settled' });
     }
   }
 
@@ -325,7 +426,7 @@ export class LocalActions {
         relativePath: target.relative, before: null, beforeHash: null, afterHash: hash(content), mode: 0o600, applied: false, undone: false } });
     }
     await this.permission({ requestId: id, title: `Create ${planned.length} project ${planned.length === 1 ? 'file' : 'files'}`,
-      arguments: args, preview: planned.map(item => diffPreview(item.target.relative, null, item.content)).join('\n\n'), workspacePath: planned[0].target.root,
+      arguments: { ...args, files: planned.map(item => ({ path: item.target.relative, content: item.content })) }, preview: planned.map(item => diffPreview(item.target.relative, null, item.content)).join('\n\n'), workspacePath: planned[0].target.root,
       utility: 'fileEditing', alwaysApproveAllowed: true }, signal);
     for (const item of planned) {
       const checked = await this.target(item.target.relative);
@@ -413,7 +514,10 @@ export class LocalActions {
     if (before.content === content) return mutationResult('The file already has the proposed content. No change was needed. Verify with read_file; do not rewrite it.', {
       ok: true, operation: tool, path: target.relative, status: 'unchanged', changed: false, sha256: before.hash, bytes: Buffer.byteLength(content, 'utf8'),
     });
-    await this.permission({ requestId: id, title: `${before.content === null ? 'Create' : 'Change'} ${target.relative}`, arguments: args, preview: diffPreview(target.relative, before.content, content), workspacePath: target.root,
+    // Approvals identify the checked project target, regardless of whether a
+    // model copied an absolute path from read_file or supplied a relative path.
+    // Keep raw tool input as intent metadata; it cannot expand this permission.
+    await this.permission({ requestId: id, title: `${before.content === null ? 'Create' : 'Change'} ${target.relative}`, arguments: { ...args, path: target.relative }, preview: diffPreview(target.relative, before.content, content), workspacePath: target.root,
       utility: 'fileEditing', alwaysApproveAllowed: true }, signal);
     const checked = await this.target(file);
     const current = await this.fileVersion(checked.absolute);
@@ -447,26 +551,48 @@ export class LocalActions {
     const target = await this.target(requestedCwd, true);
     const timeout = args.timeout_ms === undefined ? commandTimeoutLimits.default : args.timeout_ms;
     if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < commandTimeoutLimits.minimum || timeout > commandTimeoutLimits.maximum) throw new ActionError('INVALID_TIMEOUT', 'timeout_ms must be an integer between 100 and 600000.');
+    const purpose = args.purpose ?? 'implementation';
+    if (!['implementation', 'verification'].includes(String(purpose))) throw new ActionError('INVALID_ARGUMENT', `${this.verificationRecoveryGuidance()} purpose must be "implementation" or "verification".`);
+    const checkIds = args.checkIds ?? [];
+    if (!Array.isArray(checkIds) || checkIds.length > 12 || new Set(checkIds).size !== checkIds.length || checkIds.some(value => typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value))) throw new ActionError('INVALID_ARGUMENT', `${this.verificationRecoveryGuidance()} checkIds must be an array of at most 12 unique IDs, each 1–64 letters, digits, underscores or hyphens and starting with a letter or digit.`);
+    if (purpose === 'verification' ? !checkIds.length || checkIds.some(value => !this.options.verificationCheckIds?.includes(value)) : checkIds.length > 0) throw new ActionError('INVALID_ARGUMENT', purpose === 'verification'
+      ? `${this.verificationRecoveryGuidance()} Verification requires nonempty known frozen command criterion checkIds and the exact frozen command/cwd.`
+      : `${this.verificationRecoveryGuidance()} Implementation/debugging commands require purpose:"implementation" with checkIds:[].`);
+    if(purpose==='implementation')this.rejectQuoteStrippedFrozenCommand(command,requestedCwd);
+    const windows = process.platform === 'win32';
+    const launch = this.options.networkAccess === 'local-only' ? await localOnlyCommandLaunch(command)
+      : { executable: windows ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh', args: windows ? ['/d', '/s', '/c', command] : ['-c', command] };
     await this.permission({ requestId: id, title: 'Run command with your account permissions', arguments: { ...args, timeout_ms: timeout }, command, cwd: target.absolute }, signal);
     const checked = await this.target(requestedCwd, true);
     if (checked.root !== target.root || checked.absolute !== target.absolute) throw new ActionError('STALE_PREVIEW', 'The command working directory changed while approval was pending.');
     if (signal?.aborted) throw cancelled();
+    if (purpose === 'verification') {
+      await this.options.onBeforeVerificationCommand?.(id, args, signal);
+      const ready = await this.target(requestedCwd, true);
+      if (ready.root !== target.root || ready.absolute !== target.absolute) throw new ActionError('STALE_PREVIEW', 'The command working directory changed before verification could start.');
+    }
+    if (signal?.aborted) throw cancelled();
     this.options.onTool?.({ id, title: 'Run command', status: 'running', input: args });
-    const windows = process.platform === 'win32';
     const logDirectory = path.join(this.options.historyDirectory, 'command-logs');
     await mkdir(logDirectory, { recursive: true, mode: 0o700 });
     const recordPath = path.join(logDirectory, `${id}.json`);
-    await writeFile(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout, state: 'started', startedAt: new Date().toISOString() }), { mode: 0o600, flag: 'wx' });
+    const verificationIntent=args.verification_intent;
+    await writeFile(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout, purpose, checkIds,
+      ...(verificationIntent?{verificationIntent}:{}),
+      ...(this.options.networkAccess ? { networkAccess: this.options.networkAccess } : {}), state: 'started', startedAt: new Date().toISOString() }), { mode: 0o600, flag: 'wx' });
     const log = await open(path.join(logDirectory, `${id}.log`), 'wx', 0o600);
     try {
       if (signal?.aborted) {
         await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout, state: 'interrupted', finishedAt: new Date().toISOString() }), 0o600);
         throw cancelled();
       }
-      const child = spawn(windows ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh', windows ? ['/d', '/s', '/c', command] : ['-c', command], { cwd: target.absolute, env: process.env, shell: false, detached: !windows, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(launch.executable, launch.args, { cwd: target.absolute, env: this.options.networkAccess === 'local-only' ? localOnlyCommandEnvironment(process.env) : process.env, shell: false, detached: !windows, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const outcome = await this.commandResult(child, timeout, signal, async chunk => { await log.writeFile(chunk); });
       await log.sync();
       await this.atomicWrite(recordPath, JSON.stringify({ id, command, cwd: target.absolute, timeoutMs: timeout,
+        purpose, checkIds,
+        ...(verificationIntent?{verificationIntent}:{}),
+        ...(this.options.networkAccess ? { networkAccess: this.options.networkAccess } : {}),
         state: signal?.aborted || ['COMMAND_TIMEOUT', 'COMMAND_INTERRUPTED'].includes(outcome.errorCode ?? '') ? 'interrupted' : outcome.isError ? 'failed' : 'completed',
         exitCode: outcome.exitCode, exitSignal: outcome.exitSignal,
         ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}), finishedAt: new Date().toISOString() }), 0o600);
@@ -481,7 +607,9 @@ export class LocalActions {
       } catch { /* The durable identity remains valid. */ }
       const outputComplete = outputBytes === previewBytes;
       const nextOffset = outputComplete ? null : previewBytes;
-      const evidence = { ok: !outcome.isError, operation: 'run_command', log_id: logId, durable_id: id, output_complete: outputComplete, next_offset: nextOffset, exit_code: exitCode, exit_signal: exitSignal, ...(outcome.errorCode ? { error: outcome.errorCode } : {}) };
+      const evidence = { ok: !outcome.isError, operation: 'run_command', ...(args.purpose !== undefined ? { action_id: id, command_sha256: hash(command), purpose, check_ids: checkIds } : {}),
+        ...(verificationIntent?{verification_intent:verificationIntent,command_cwd:target.absolute}:{}),
+        ...(this.options.networkAccess ? { network_access: this.options.networkAccess } : {}), log_id: logId, durable_id: id, output_complete: outputComplete, next_offset: nextOffset, exit_code: exitCode, exit_signal: exitSignal, ...(outcome.errorCode ? { error: outcome.errorCode } : {}) };
       const metadata = JSON.stringify(evidence);
       const guidance = outputComplete ? 'All saved output is shown above; no log read is needed.'
         : `Read remaining output with read_command_output using id ${JSON.stringify(logId)} and offset ${nextOffset}.`;
@@ -627,6 +755,8 @@ export class LocalActions {
 
   /** Undo the most recent matching edit; unrelated user edits are never overwritten. */
   undo(): Promise<number> {
+    const id = randomUUID();
+    this.options.onReadbackEffect?.({ id, operation: 'undo', phase: 'begin' });
     return this.serial(async () => {
       const root = await realpath(this.options.projectPath);
       let names: string[];
@@ -667,7 +797,7 @@ export class LocalActions {
         return restored;
       }
       return 0;
-    });
+    }).finally(() => this.options.onReadbackEffect?.({ id, operation: 'undo', phase: 'settled' }));
   }
 }
 

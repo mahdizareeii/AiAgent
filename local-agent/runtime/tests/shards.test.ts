@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,lstat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {test,type TestContext} from 'node:test';
@@ -53,17 +53,34 @@ test('verified secondary shared metadata remains bound to the first shard and ca
   const template=await fixture(t,shard(1,1,[string('tokenizer.chat_template','different template')]));await assert.rejects(template.runtime.inspectModel(template.spec.id),{code:'MODEL_SHARD_MISMATCH'});
 });
 
-test('group import uses only explicitly selected complete files and verifies its copied identity',async t=>{
+test('the first pinned shard discovers complete siblings and group import reuses their verified cache identity',async t=>{
   const {runtime,spec,root,first,second}=await fixture(t);const picked=path.join(root,'selected');await mkdir(picked);
   const sources=spec.artifacts!.map(a=>path.join(picked,a.filename));await writeFile(sources[0],first);await writeFile(sources[1],second);await rm(path.join(root,'models'),{recursive:true});
-  await assert.rejects(runtime.importModel(sources[0]),{code:'MODEL_SHARDS_REQUIRED'});await assert.rejects(runtime.importModel(sources[1]),{code:'MODEL_SHARDS_REQUIRED'});assert.equal((await runtime.listModels())[0].installed,false);
+  await assert.rejects(runtime.importModel(sources[1]),{code:'MODEL_SHARDS_REQUIRED'});assert.equal((await runtime.listModels())[0].installed,false);
+  const desktop=path.join(root,'Desktop models');await mkdir(desktop);const alias=path.join(desktop,'Choose first shard.gguf');await symlink(sources[0],alias);assert.equal((await runtime.importModel(alias)).model,spec.id);
+  assert.equal((await lstat(path.join(root,'models',spec.filename))).isSymbolicLink(),false);
   const imported=await runtime.importModelFiles([...sources].reverse());assert.equal(imported.model,spec.id);assert.equal(imported.artifactDigests?.length,2);assert.equal((await runtime.listModels())[0].integrity,'verified');assert.deepEqual(await readFile(sources[0]),first);assert.deepEqual(await readFile(sources[1]),second);
+});
+
+test('first-shard import reports a missing sibling and does not install a partial model',async t=>{
+  const {runtime,spec,root,first}=await fixture(t);await rm(path.join(root,'models'),{recursive:true});const selected=path.join(root,spec.filename);await writeFile(selected,first);
+  await assert.rejects(runtime.importModel(selected),(error:any)=>error.code==='MODEL_SHARDS_REQUIRED'&&error.message.includes(spec.artifacts![1].filename));assert.equal((await runtime.listModels())[0].installed,false);
+});
+
+test('first-shard import identifies a corrupted sibling by filename before publishing a cache set',async t=>{
+  const {runtime,spec,root,first,second}=await fixture(t);await rm(path.join(root,'models'),{recursive:true});const corrupt=Buffer.from(second);corrupt[corrupt.length-1]^=1;await writeFile(path.join(root,spec.filename),first);await writeFile(path.join(root,spec.artifacts![1].filename),corrupt);
+  await assert.rejects(runtime.importModel(path.join(root,spec.filename)),(error:any)=>error.code==='MODEL_DIGEST_MISMATCH'&&error.message.includes(spec.artifacts![1].filename));assert.equal((await runtime.listModels())[0].installed,false);
 });
 
 test('corrupt selected group import fails before copying and preserves source files',async t=>{
   const {runtime,spec,root,first,second}=await fixture(t);const picked=path.join(root,'selected');await mkdir(picked);const sources=spec.artifacts!.map(a=>path.join(picked,a.filename));const corrupt=Buffer.from(second);corrupt[corrupt.length-1]^=1;
   await writeFile(sources[0],first);await writeFile(sources[1],corrupt);await rm(path.join(root,'models'),{recursive:true});
   await assert.rejects(runtime.importModelFiles(sources),{code:'MODEL_DIGEST_MISMATCH'});assert.equal((await runtime.listModels())[0].installed,false);assert.deepEqual(await readFile(sources[1]),corrupt);
+});
+
+test('a retained cache shard plus a new sibling is verified only after staging hardlinks are removed',async t=>{
+  const {runtime,spec,root,second}=await fixture(t);const cachedFirst=path.join(root,'models',spec.filename);await rm(path.join(root,'models',spec.artifacts![1].filename));const selected=path.join(root,'selected');await mkdir(selected);const newSecond=path.join(selected,spec.artifacts![1].filename);await writeFile(newSecond,second);
+  const imported=await runtime.importModelFiles([cachedFirst,newSecond]);const row=(await runtime.listModels())[0];assert.equal(row.integrity,'verified');assert.equal(row.digest,imported.digest);assert.equal((await runtime.inspectModel(spec.id)).digest,imported.digest);
 });
 
 test('split SSD identity requires native uncached complete checksums for every pinned shard',async t=>{

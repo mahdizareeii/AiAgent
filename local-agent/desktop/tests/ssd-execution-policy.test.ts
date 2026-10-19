@@ -38,8 +38,8 @@ test('v4 upgrade preserves exact histories and cancels legacy mmap readiness inf
   const session = { id: '596c9bc7-bacc-44bf-9f43-9eb5108acb5d', title: 'Saved', updatedAt: '2026-10-10', mode: 'coding', taskEffort: 'standard',
     projectPath: '/saved', files: [{ name: 'a.txt', path: '/saved/a.txt' }], messages: [{ role: 'assistant', content: 'Literal 1: text\r\n' }] };
   const upgraded = migrateState({ ...emptyState(), version: 4, memoryMode: 'experimental-disk', selectedModel: 'gemma4:26b', sessions: [session] });
-  assert.equal(upgraded.version, 5); assert.equal(upgraded.memoryMode, 'automatic'); assert.equal(upgraded.ssdTaskHours, 4);
+  assert.equal(upgraded.version, 7); assert.equal(upgraded.memoryMode, 'automatic'); assert.equal(upgraded.ssdTaskHours, 4);
   assert.equal(upgraded.selectedModel, 'gemma4:26b');
-  assert.deepEqual(upgraded.sessions[0], { ...session, executionBudgetMs: NORMAL_TASK_BUDGET_MS });
+  assert.deepEqual(upgraded.sessions[0], { ...session, workspaceId: 'workspace-21f970492a9ea5bfdf2125c2a5b37d15', preferredModel: 'gemma4:26b', executionBudgetMs: NORMAL_TASK_BUDGET_MS });
   assert.deepEqual(migrateState({ ...upgraded, memoryMode: 'ssd-experts', ssdTaskHours: 8 }), { ...upgraded, memoryMode: 'ssd-experts', ssdTaskHours: 8 });
 });

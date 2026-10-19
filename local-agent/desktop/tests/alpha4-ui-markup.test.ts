@@ -289,7 +289,11 @@ test('SSD attempt history is closed inside Advanced and never establishes curren
   assert.match(html, /Tool-format probe · Unverified/);
   assert.match(html, /title="2026-10-13T08:00:00Z"/);
   for (const value of ['past-trial', 'past-profile', 'past-model-digest', 'past-template', 'past-engine', 'past-patch']) assert.ok(html.includes(value));
-  assert.equal(fixture.modelReadyForConversation(oldStatus as AgentStatus, null), false);
+  assert.equal(fixture.modelReadyForConversation(oldStatus as AgentStatus, null), fixture.modelReadyForConversation({ ...oldStatus, trialHistory: [] } as AgentStatus, null), 'A historical entry never changes readiness; an unrelated saved mode follows the normal idle Send route.');
+  const blockedStatus = { ...oldStatus, models: status.models.map(model => ({ ...model, fit: 'insufficient' as const })),
+    experimentalTrial: { id: 'current-unverified', modelId: status.selectedModel!, mode: 'ssd-experts' as const, state: 'passed' as const, probePassed: false, toolProbePassed: false } } as AgentStatus;
+  assert.equal(fixture.modelReadyForConversation(blockedStatus, null), false, 'Same-model insufficient SSD use still requires current successful proof.');
+  assert.equal(fixture.modelReadyForConversation({ ...blockedStatus, trialHistory: [] }, null), false);
   assert.doesNotMatch(html, />Use historical|>Resume attempt|Load and Chat probe passed/);
 });
 
@@ -376,14 +380,14 @@ test('the task interface has one workspace choice and one model button without r
   assert.doesNotMatch(html, /Task mode:|Agent approach|Careful Agent|Standard Agent|strategy-note|model-settings/);
 });
 
-test('Working retains actual thinking, tool inputs, results, and execution status when expanded', () => {
+test('Working expands actual thinking and status while closed tool payloads remain unmounted', () => {
   const html = fixture.working({ active: true, expanded: true, thinking: 'Inspect existing files first.', tools: [{ id: 'read', title: 'read_file', status: 'completed', input: { path: 'notes.txt' }, output: 'Verified exact content' }] });
   assert.match(html, /<details class="working-details is-active" open=""/);
   assert.match(html, /<summary class="working-status" aria-label="Working"/);
   assert.match(html, /Inspect existing files first\./);
   assert.match(html, /read_file/);
-  assert.match(html, /notes\.txt/);
-  assert.match(html, /Verified exact content/);
+  assert.doesNotMatch(html, /notes\.txt/);
+  assert.doesNotMatch(html, /Verified exact content/);
   assert.match(html, />completed<\/span>/);
   const noThinking = fixture.working({ active: false, expanded: true, tools: [] });
   assert.match(noThinking, /This model did not provide thinking text/);

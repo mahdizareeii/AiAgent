@@ -353,7 +353,7 @@ test('packaged MCP stdio bridge routes an edit through the real host and obeys d
     await writeFile(path.join(run.projectPath, 'app.txt'), 'before');
     await client.connect(transport);
     const listed = await client.listTools();
-    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ['create_files', 'edit_file', 'read_command_output', 'run_command', 'write_file']);
+    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ['create_files', 'edit_file', 'read_command_output', 'run_command', 'run_verification', 'write_file']);
     const result = await client.callTool({ name: 'edit_file', arguments: { path: 'app.txt', old_text: 'before', new_text: 'after' } });
     assert.equal(result.isError, true);
     assert.equal(approvals, 1);
@@ -479,7 +479,7 @@ test('MCP bridge excludes batch creation when file editing is disabled', { timeo
   const client = new Client({ name: 'local-agent-disabled-create-test', version: '0.3.0' });
   try {
     await client.connect(transport);
-    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['read_command_output', 'run_command']);
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['read_command_output', 'run_command', 'run_verification']);
     const denied = await client.callTool({ name: 'create_files', arguments: { files: [{ path: 'no.txt', content: 'disabled' }] } });
     assert.equal(denied.isError, true);
     assert.equal(approvals, 0);

@@ -1,0 +1,660 @@
+{
+  "modelSha256": "3d0fd1c8ad6c37fdac38e20b02de80149a5d93b8c457c39e8a27100c8bf62d64",
+  "templateSha256": "0b5c439b5b14126c0ae8b14ca93240c3cef1e7e29d684102b07f10727523dbdb",
+  "architecture": "qwen3next",
+  "backend": "cpu",
+  "cpuKernel": "standard",
+  "useExtraBufts": false,
+  "cpuRepackTensorCount": 0,
+  "baseCommit": "d81235049384534c167caea52b85a694f6103d14",
+  "workerPatchSha256": "83139a4fbe858827d75f5050defefa69413718c45335ca5c18e49919c3944bb8",
+  "report": "validation/qwen3-coder-next-80b-standard-cpu-8k.json",
+  "scope": "representative-experts-and-two-hybrid-layers",
+  "profile": {
+    "contextTokens": 8192,
+    "outputTokens": 2048,
+    "batchTokens": 64,
+    "microBatchTokens": 16,
+    "cacheSlotsPerLayer": 30,
+    "cacheTypeK": "f16",
+    "cacheTypeV": "f16",
+    "swaFull": false,
+    "slots": 1,
+    "ioWorkers": 2,
+    "ioMode": "darwin-nocache",
+    "decodeThreads": 4,
+    "batchThreads": 4,
+    "kvUnified": true,
+    "nRsSeq": 0,
+    "checkpoints": 0
+  },
+  "schemaVersion": 1,
+  "passed": true,
+  "absoluteTolerance": 1e-05,
+  "relativeTolerance": 1e-05,
+  "measuredProof": {
+    "protocol": "qwen80-standard-cpu-hybrid-v2-8k",
+    "sourceArtifactSetVerified": true,
+    "expertParityPassed": true,
+    "completeHybridEvidence": true,
+    "sourceFingerprintUnchanged": true,
+    "ownedProcessesStopped": true,
+    "nodesCompared": 449,
+    "elementsCompared": 16901864,
+    "expertLayoutsSurveyed": 2,
+    "representativeGroupsCompared": 4,
+    "elementsOutsideTolerance": 0,
+    "mismatchedIds": 0,
+    "nonfinite": 0,
+    "selectedPairsContributeOnce": true,
+    "comparisonSha256": "a4c997b7fb7b1517b19d322ed48257590870be30343802f37d4526a03fd5a770",
+    "processReportSha256": "86f378b8c702431894ef4266e8481196b88749522ef5c3c59a960e2969282a56",
+    "expertParityLogSha256": "64401f718b45942c7d99daf397c92fae443e366b26edb122534a2833af82988e"
+  },
+  "resourceManifestSha256": "49a6159bdf5f2bf1310c25221bca3666a114f72555583055fff96838833fb615",
+  "nativeResourceIdentity": {
+    "schemaVersion": 1,
+    "baseCommit": "d81235049384534c167caea52b85a694f6103d14",
+    "patchSha256": "83139a4fbe858827d75f5050defefa69413718c45335ca5c18e49919c3944bb8",
+    "target": "darwin-arm64",
+    "backends": [
+      {
+        "id": "metal",
+        "executable": "worker/llama-server-ssd",
+        "libraryDirectory": "worker",
+        "arguments": []
+      },
+      {
+        "id": "cpu",
+        "executable": "worker/llama-server-ssd",
+        "libraryDirectory": "worker",
+        "arguments": [
+          "--device",
+          "none",
+          "--n-gpu-layers",
+          "0",
+          "--no-op-offload",
+          "--no-repack",
+          "--threads",
+          "4",
+          "--threads-batch",
+          "4"
+        ]
+      }
+    ],
+    "planner": {
+      "schemaVersion": 1,
+      "executable": "worker/llama-plan-ssd",
+      "libraryDirectory": "worker",
+      "arguments": [],
+      "sourceSha256": "2f4ae06772ecbf438743244a74bc3a6373ca08f6acd2aa8f43ef9b6b9c0aeee8"
+    },
+    "integrity": {
+      "schemaVersion": 1,
+      "executable": "worker/llama-hash-ssd",
+      "arguments": [],
+      "sourceSha256": "10f79312404b3ccf21a220770ac070aadb49fb2fbe8ef002861e939e6d368851"
+    },
+    "nativeFiles": [
+      {
+        "path": "worker/libggml-base.0.26.0.dylib",
+        "size": 777728,
+        "sha256": "543832479356508dd7c877fe305465cc91e97dbd2191d77c728141384f2af686"
+      },
+      {
+        "path": "worker/libggml-base.0.dylib",
+        "size": 777728,
+        "sha256": "543832479356508dd7c877fe305465cc91e97dbd2191d77c728141384f2af686"
+      },
+      {
+        "path": "worker/libggml-cpu.0.26.0.dylib",
+        "size": 1003136,
+        "sha256": "85ef1f69f60d0cf5017dfa6cf6fae3dfc1d436673f239fcb699aa9072b3fbf72"
+      },
+      {
+        "path": "worker/libggml-cpu.0.dylib",
+        "size": 1003136,
+        "sha256": "85ef1f69f60d0cf5017dfa6cf6fae3dfc1d436673f239fcb699aa9072b3fbf72"
+      },
+      {
+        "path": "worker/libggml-metal.0.26.0.dylib",
+        "size": 5525200,
+        "sha256": "fbd600826f216a76b4764c92d39d3185b76167ff7a258629f570bc3ba6af0167"
+      },
+      {
+        "path": "worker/libggml-metal.0.dylib",
+        "size": 5525200,
+        "sha256": "fbd600826f216a76b4764c92d39d3185b76167ff7a258629f570bc3ba6af0167"
+      },
+      {
+        "path": "worker/libggml.0.26.0.dylib",
+        "size": 77888,
+        "sha256": "c4dda5920c2318806eaa75747cbe615bdc78ca011069e38e1b52ed740acf6c83"
+      },
+      {
+        "path": "worker/libggml.0.dylib",
+        "size": 77888,
+        "sha256": "c4dda5920c2318806eaa75747cbe615bdc78ca011069e38e1b52ed740acf6c83"
+      },
+      {
+        "path": "worker/libllama-common.0.6.0.dylib",
+        "size": 5089088,
+        "sha256": "dad4beeaeaf89ce2855f06eb265e7ac8d853ed724c91da89799eac134779e4de"
+      },
+      {
+        "path": "worker/libllama-common.0.dylib",
+        "size": 5089088,
+        "sha256": "dad4beeaeaf89ce2855f06eb265e7ac8d853ed724c91da89799eac134779e4de"
+      },
+      {
+        "path": "worker/libllama-server-impl.dylib",
+        "size": 3334304,
+        "sha256": "26ce4c37ed9c3864c22b6e9c32c0b4c5114088dc75f81ede58a687fdabb30fe2"
+      },
+      {
+        "path": "worker/libllama.0.6.0.dylib",
+        "size": 3420464,
+        "sha256": "c3b0b45d59c9ce629dc2c02cbed019f7326a75ac7022cdf3ba9fc6ca88043af7"
+      },
+      {
+        "path": "worker/libllama.0.dylib",
+        "size": 3420464,
+        "sha256": "c3b0b45d59c9ce629dc2c02cbed019f7326a75ac7022cdf3ba9fc6ca88043af7"
+      },
+      {
+        "path": "worker/libmtmd.0.6.0.dylib",
+        "size": 1400240,
+        "sha256": "0a57e5eca6f511cbf8150aee4d06e678a311c5a66f3abd239c7d3c640cbf822a"
+      },
+      {
+        "path": "worker/libmtmd.0.dylib",
+        "size": 1400240,
+        "sha256": "0a57e5eca6f511cbf8150aee4d06e678a311c5a66f3abd239c7d3c640cbf822a"
+      },
+      {
+        "path": "worker/llama-hash-ssd",
+        "size": 59456,
+        "sha256": "79976de29c801d1473dcaffb5b3b42e4751697e9822145ed89ef54f7180dd290"
+      },
+      {
+        "path": "worker/llama-plan-ssd",
+        "size": 78496,
+        "sha256": "9cf6cf6d2292d92c374425e89c9f872369d8022622349d08122615dae86c9e9d"
+      },
+      {
+        "path": "worker/llama-server-ssd",
+        "size": 51424,
+        "sha256": "4a5137baed983d4d3e9f413d05a11ccdb7230bd55ac4a09437945456fc708312"
+      }
+    ]
+  },
+  "nativeResourceDigest": "70e9f8329e6157a61a79180d41f7f867e59be719c75f8815dfc4b5d2ee60b131",
+  "resolvedNativeLayout": {
+    "contextTokens": 8192,
+    "contextPerSequence": 8192,
+    "batchTokens": 64,
+    "microBatchTokens": 16,
+    "slots": 1,
+    "kvUnified": true,
+    "nRsSeq": 0,
+    "cacheTypeK": "f16",
+    "cacheTypeV": "f16"
+  },
+  "source": {
+    "repository": "Qwen/Qwen3-Coder-Next-GGUF",
+    "revision": "b82fb7382639d97b38fa7672e526c760c2fb358e",
+    "architecture": "qwen3next",
+    "artifactSetDigest": "3d0fd1c8ad6c37fdac38e20b02de80149a5d93b8c457c39e8a27100c8bf62d64",
+    "templateSha256": "0b5c439b5b14126c0ae8b14ca93240c3cef1e7e29d684102b07f10727523dbdb",
+    "geometry": {
+      "layers": 48,
+      "expertsPerLayer": 512,
+      "activeExperts": 10,
+      "minimumSlotsPerLayer": 30,
+      "expectedRoutedTensorGroups": 48,
+      "originalTensorDescriptors": 807
+    },
+    "artifacts": [
+      {
+        "filename": "Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf",
+        "path": "/Users/mehdizareei/Documents/ChatGPT/AiAgent/.cache/coding-reliability/large-models/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf",
+        "sha256": "6bcfc9f9c37901eeb92172e2ab871224dab36a453d263bcb2547f737409534da",
+        "sizeBytes": 15524827040,
+        "bytesRead": 15524827040,
+        "ioMode": "darwin-nocache",
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97801290,
+          "sizeBytes": 15524827040,
+          "mtimeSeconds": 1792013997,
+          "mtimeNanoseconds": 186454036,
+          "ctimeSeconds": 1792014009,
+          "ctimeNanoseconds": 490042705
+        }
+      },
+      {
+        "filename": "Qwen3-Coder-Next-Q4_K_M-00002-of-00004.gguf",
+        "path": "/Users/mehdizareei/Documents/ChatGPT/AiAgent/.cache/coding-reliability/large-models/Qwen3-Coder-Next-Q4_K_M-00002-of-00004.gguf",
+        "sha256": "817def0691ee9d08bf3dc4444be7aed29c9e52091e8fa9d97901ce7e7f6f01d3",
+        "sizeBytes": 14872168352,
+        "bytesRead": 14872168352,
+        "ioMode": "darwin-nocache",
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97801289,
+          "sizeBytes": 14872168352,
+          "mtimeSeconds": 1792013864,
+          "mtimeNanoseconds": 723989771,
+          "ctimeSeconds": 1792013876,
+          "ctimeNanoseconds": 460894718
+        }
+      },
+      {
+        "filename": "Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf",
+        "path": "/Users/mehdizareei/Documents/ChatGPT/AiAgent/.cache/coding-reliability/large-models/Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf",
+        "sha256": "23aa634d47dca9b4ca3ea249384e6f01951b24c83cdc076f37f6f43d6c99883f",
+        "sizeBytes": 14503294496,
+        "bytesRead": 14503294496,
+        "ioMode": "darwin-nocache",
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97801288,
+          "sizeBytes": 14503294496,
+          "mtimeSeconds": 1792013730,
+          "mtimeNanoseconds": 553818529,
+          "ctimeSeconds": 1792013751,
+          "ctimeNanoseconds": 907552254
+        }
+      },
+      {
+        "filename": "Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf",
+        "path": "/Users/mehdizareei/Documents/ChatGPT/AiAgent/.cache/coding-reliability/large-models/Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf",
+        "sha256": "249c768cc5f130dc731567d6edcbdacc48e14dec9e02c5dbe2b2185d2c5bdb2b",
+        "sizeBytes": 3510702144,
+        "bytesRead": 3510702144,
+        "ioMode": "darwin-nocache",
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97801291,
+          "sizeBytes": 3510702144,
+          "mtimeSeconds": 1792004786,
+          "mtimeNanoseconds": 461733789,
+          "ctimeSeconds": 1792004787,
+          "ctimeNanoseconds": 918728869
+        }
+      }
+    ]
+  },
+  "fixture": {
+    "fixtureSha256": "fc2fb56cc6b96fa8c45eb955e464cd3780e7b9754cc0f90c8f4049a13184fe3b",
+    "fixtureFingerprint": {
+      "device": 16777231,
+      "inode": 97924193,
+      "sizeBytes": 2572189056,
+      "mtimeSeconds": 1792035484,
+      "mtimeNanoseconds": 671025653,
+      "ctimeSeconds": 1792035484,
+      "ctimeNanoseconds": 691421504
+    },
+    "selectedOriginalLayers": [
+      0,
+      3
+    ],
+    "recurrentLayers": [
+      true,
+      false
+    ]
+  },
+  "measuredRun": {
+    "evidenceDirectory": "/Users/mehdizareei/Documents/ChatGPT/AiAgent/.cache/ssd-engine/qwen80-proof-run-8k-v2",
+    "evidenceInventory": {
+      "source-proof.json": {
+        "sha256": "f6e48d4698dfb2e04836d15c1fcddec48a77cc6b62ec98011236cfcc0db6741b",
+        "sizeBytes": 3527,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924190,
+          "sizeBytes": 3527,
+          "mtimeSeconds": 1792035372,
+          "mtimeNanoseconds": 411003720,
+          "ctimeSeconds": 1792035372,
+          "ctimeNanoseconds": 411003720
+        }
+      },
+      "fixture.json": {
+        "sha256": "87f652a40d6218a7f6ce2a6e82605ea0213df16fd8ffb8e722046c4a06f35bd7",
+        "sizeBytes": 22084,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924322,
+          "sizeBytes": 22084,
+          "mtimeSeconds": 1792035486,
+          "mtimeNanoseconds": 378818677,
+          "ctimeSeconds": 1792035486,
+          "ctimeNanoseconds": 378818677
+        }
+      },
+      "expert-parity.log": {
+        "sha256": "64401f718b45942c7d99daf397c92fae443e366b26edb122534a2833af82988e",
+        "sizeBytes": 20371,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924191,
+          "sizeBytes": 20371,
+          "mtimeSeconds": 1792035385,
+          "mtimeNanoseconds": 220013092,
+          "ctimeSeconds": 1792035385,
+          "ctimeNanoseconds": 220013092
+        }
+      },
+      "comparison.json": {
+        "sha256": "a4c997b7fb7b1517b19d322ed48257590870be30343802f37d4526a03fd5a770",
+        "sizeBytes": 165487,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924349,
+          "sizeBytes": 165487,
+          "mtimeSeconds": 1792035497,
+          "mtimeNanoseconds": 576256316,
+          "ctimeSeconds": 1792035497,
+          "ctimeNanoseconds": 576256316
+        }
+      },
+      "shard1-integrity.log": {
+        "sha256": "66ccf16ebf9935e5140ce087de8eda89d66f4085cb8ba3e0ed92da7a9724b1c5",
+        "sizeBytes": 1776,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924173,
+          "sizeBytes": 1776,
+          "mtimeSeconds": 1792035350,
+          "mtimeNanoseconds": 622455884,
+          "ctimeSeconds": 1792035350,
+          "ctimeNanoseconds": 622455884
+        }
+      },
+      "shard2-integrity.log": {
+        "sha256": "e50de47ad205c43dd45fb71950bd3d10ec7daee7c3bbe5d5089ab6a001d23a3c",
+        "sizeBytes": 1776,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924179,
+          "sizeBytes": 1776,
+          "mtimeSeconds": 1792035360,
+          "mtimeNanoseconds": 780384371,
+          "ctimeSeconds": 1792035360,
+          "ctimeNanoseconds": 780384371
+        }
+      },
+      "shard3-integrity.log": {
+        "sha256": "3c9f63da126f9d4da290b87c0b17188a9fa257c2067ad91191a26bdc459e6738",
+        "sizeBytes": 1776,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924185,
+          "sizeBytes": 1776,
+          "mtimeSeconds": 1792035369,
+          "mtimeNanoseconds": 886587069,
+          "ctimeSeconds": 1792035369,
+          "ctimeNanoseconds": 886587069
+        }
+      },
+      "shard4-integrity.log": {
+        "sha256": "3334c9215c85b8aec3850ddb050961119f9acd2b2c74c3532665a12a34b05c6b",
+        "sizeBytes": 1160,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924189,
+          "sizeBytes": 1160,
+          "mtimeSeconds": 1792035372,
+          "mtimeNanoseconds": 264324176,
+          "ctimeSeconds": 1792035372,
+          "ctimeNanoseconds": 264324176
+        }
+      },
+      "fixture-integrity.log": {
+        "sha256": "56a0e4a5c6b908cb632089ab651922d1e8ea190fe954f94906fbf0e2868aafd8",
+        "sizeBytes": 958,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924321,
+          "sizeBytes": 958,
+          "mtimeSeconds": 1792035486,
+          "mtimeNanoseconds": 281001134,
+          "ctimeSeconds": 1792035486,
+          "ctimeNanoseconds": 281001134
+        }
+      },
+      "plan-ordinary.json": {
+        "sha256": "18c474018cebe95b75871fb2bc1f0a1ef2675b5799e16106875330c8f92d0818",
+        "sizeBytes": 3898,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924329,
+          "sizeBytes": 3898,
+          "mtimeSeconds": 1792035487,
+          "mtimeNanoseconds": 653210700,
+          "ctimeSeconds": 1792035487,
+          "ctimeNanoseconds": 653210700
+        }
+      },
+      "plan-ordinary.log": {
+        "sha256": "4c6b013cef26b57e6b46548281f6e93387d9726d7c73b03672b99bbbf645b31b",
+        "sizeBytes": 39813,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924323,
+          "sizeBytes": 39813,
+          "mtimeSeconds": 1792035487,
+          "mtimeNanoseconds": 686807479,
+          "ctimeSeconds": 1792035487,
+          "ctimeNanoseconds": 686807479
+        }
+      },
+      "plan-streamed.json": {
+        "sha256": "049a772fd28f3f86cf368528bec099d14e795139784a230b5a1cd8b01b10ecf8",
+        "sizeBytes": 3909,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924333,
+          "sizeBytes": 3909,
+          "mtimeSeconds": 1792035488,
+          "mtimeNanoseconds": 48991586,
+          "ctimeSeconds": 1792035488,
+          "ctimeNanoseconds": 48991586
+        }
+      },
+      "plan-streamed.log": {
+        "sha256": "2daa8ea9379693fc4c2e22ae222f01ef4ea6f8d8d5874db22cca43f2acd697b3",
+        "sizeBytes": 40437,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924330,
+          "sizeBytes": 40437,
+          "mtimeSeconds": 1792035488,
+          "mtimeNanoseconds": 98204295,
+          "ctimeSeconds": 1792035488,
+          "ctimeNanoseconds": 98204295
+        }
+      },
+      "ordinary.json": {
+        "sha256": "19f612569a92717504b2951df8e41842413576f40ce03aa6059f4b24881b5fe5",
+        "sizeBytes": 412328,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924338,
+          "sizeBytes": 412328,
+          "mtimeSeconds": 1792035489,
+          "mtimeNanoseconds": 310856932,
+          "ctimeSeconds": 1792035489,
+          "ctimeNanoseconds": 310856932
+        }
+      },
+      "ordinary.log": {
+        "sha256": "1570f2f198e4881ec6954392c3e5bca28e9e0eeb15567a3c2187c9687f2be7a2",
+        "sizeBytes": 70579,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924334,
+          "sizeBytes": 70579,
+          "mtimeSeconds": 1792035489,
+          "mtimeNanoseconds": 322229692,
+          "ctimeSeconds": 1792035489,
+          "ctimeNanoseconds": 322229692
+        }
+      },
+      "streamed.json": {
+        "sha256": "906e7cde83a8ddc65a2606ac23fc3b463c76b35f61cf8f8145e5b3754ac1832a",
+        "sizeBytes": 669261,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924344,
+          "sizeBytes": 669261,
+          "mtimeSeconds": 1792035490,
+          "mtimeNanoseconds": 534420245,
+          "ctimeSeconds": 1792035490,
+          "ctimeNanoseconds": 534420245
+        }
+      },
+      "streamed.log": {
+        "sha256": "18623878045bef0df2ee2531494ebad9b129cd13df7fe12eb666f64ce192fd22",
+        "sizeBytes": 71816,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924339,
+          "sizeBytes": 71816,
+          "mtimeSeconds": 1792035490,
+          "mtimeNanoseconds": 589172668,
+          "ctimeSeconds": 1792035490,
+          "ctimeNanoseconds": 589172668
+        }
+      },
+      "ordinary.bin": {
+        "sha256": "a37fd39e4a13ea1aa45af729f3ca40a568f7947089b9fd501dbd54a928b04c8d",
+        "sizeBytes": 97713840,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924337,
+          "sizeBytes": 97713840,
+          "mtimeSeconds": 1792035489,
+          "mtimeNanoseconds": 267434102,
+          "ctimeSeconds": 1792035489,
+          "ctimeNanoseconds": 267434102
+        }
+      },
+      "streamed.bin": {
+        "sha256": "d151c4339a98c69f4144849be8a01c8cf5cd4570d1d8d736ee02bf13d66bd590",
+        "sizeBytes": 244607520,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924342,
+          "sizeBytes": 244607520,
+          "mtimeSeconds": 1792035490,
+          "mtimeNanoseconds": 522008484,
+          "ctimeSeconds": 1792035490,
+          "ctimeNanoseconds": 522008484
+        }
+      },
+      "compare.log": {
+        "sha256": "35a482cbe5886de594acfe35cf301629810b431dd7e2338891660600a9ef5ff2",
+        "sizeBytes": 14608,
+        "fingerprint": {
+          "device": 16777231,
+          "inode": 97924345,
+          "sizeBytes": 14608,
+          "mtimeSeconds": 1792035497,
+          "mtimeNanoseconds": 576659191,
+          "ctimeSeconds": 1792035497,
+          "ctimeNanoseconds": 576659191
+        }
+      }
+    },
+    "resourceSummary": {
+      "sampleCount": 5522,
+      "ownedChildSampleCount": 196,
+      "minimumAvailableRamBytes": 9594093568,
+      "maximumControllerRssBytes": 41910272,
+      "maximumControllerPhysicalFootprintBytes": 35733840,
+      "maximumOwnedChildRssBytes": 2769797120,
+      "maximumOwnedChildPhysicalFootprintBytes": 2725284432,
+      "allPressureNormal": true
+    },
+    "steps": [
+      {
+        "name": "shard1-integrity",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 9.755596708
+      },
+      {
+        "name": "shard2-integrity",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 9.205138999999999
+      },
+      {
+        "name": "shard3-integrity",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 8.942476334000002
+      },
+      {
+        "name": "shard4-integrity",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 2.2247269580000015
+      },
+      {
+        "name": "expert-parity",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 12.909696375
+      },
+      {
+        "name": "fixture-integrity",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 1.6668274159999896
+      },
+      {
+        "name": "plan-ordinary",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 1.4539656670000056
+      },
+      {
+        "name": "plan-streamed",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 0.28814929200001416
+      },
+      {
+        "name": "ordinary",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 1.1585689169999966
+      },
+      {
+        "name": "streamed",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 1.4135589159999995
+      },
+      {
+        "name": "compare",
+        "exitCode": 0,
+        "stopReason": null,
+        "wallSeconds": 6.715614458999994
+      }
+    ]
+  },
+  "remainingCoverageGaps": [
+    "Original recurrent chain depth and other attention/recurrent layer positions",
+    "All 48 transformer layers and accumulated numerical drift",
+    "Long-context positions and complete2048-token generation; cases use short teacher-forced sequences inside8K capacity",
+    "Metal execution and uploads",
+    "Full-model Chat/tool/Agent quality"
+  ],
+  "issuedAppConsent": false,
+  "coverageStatement": "Representative actual expert layouts and original hybrid layers 0/3 only. This does not establish all 48 layers, Metal, full-model Chat/tools, coding completion, language quality, weak-machine support, or app consent."
+}

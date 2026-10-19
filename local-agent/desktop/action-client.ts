@@ -3,7 +3,7 @@ import { actionRequestAbortedText, actionRequestDeadlines, actionRequestTimeoutT
 
 /** Native HTTP avoids fetch's shorter implicit header timeout while a user reviews an action. */
 export async function invokeLocalAction(endpoint: string, tool: string, args: object,
-  signal?: AbortSignal, timeoutMs = tool === 'run_command' ? actionRequestDeadlines.command : actionRequestDeadlines.normal): Promise<any> {
+  signal?: AbortSignal, timeoutMs = tool === 'run_command' || tool === 'run_verification' ? actionRequestDeadlines.command : actionRequestDeadlines.normal): Promise<any> {
   if (!/^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{64}$/.test(endpoint)) throw new Error('Missing app-owned action endpoint.');
   if (signal?.aborted) throw new Error(actionRequestAbortedText);
   const body = JSON.stringify({ tool, args });

@@ -12,7 +12,7 @@ export interface ActionHost {
 }
 
 const requestSchema = z.object({
-  tool: z.enum(['edit_file', 'write_file', 'create_files', 'run_command', 'read_command_output']),
+  tool: z.enum(['edit_file', 'write_file', 'create_files', 'run_command', 'run_verification', 'read_command_output']),
   args: z.record(z.string(), z.unknown()),
 });
 const failure = (error: unknown): ActionResult => ({

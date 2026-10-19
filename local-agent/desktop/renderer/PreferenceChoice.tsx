@@ -3,9 +3,9 @@ import type { KeyboardEvent } from 'react';
 import Icon from './Icons';
 import { choiceKey, type ChoiceOption } from './choice-flow';
 
-export default function PreferenceChoice<Value extends string>({ label, value, options, onChange, disabled, title, placeholder = 'Choose', className = '', minimumWidth = 180 }: {
+export default function PreferenceChoice<Value extends string>({ label, value, options, onChange, disabled, title, placeholder = 'Choose', className = '', minimumWidth = 180, testId }: {
   label: string; value: Value; options: ChoiceOption<Value>[]; onChange: (value: Value) => void;
-  disabled?: boolean; title?: string; placeholder?: string; className?: string; minimumWidth?: number;
+  disabled?: boolean; title?: string; placeholder?: string; className?: string; minimumWidth?: number; testId?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -76,7 +76,7 @@ export default function PreferenceChoice<Value extends string>({ label, value, o
   return <div className={`preference-choice ${className}`} ref={root} onBlur={event => {
     if (!restoreFocus.current && !event.currentTarget.contains(event.relatedTarget as Node | null)) close(false);
   }}>
-    <button type="button" className="choice-trigger" ref={trigger} disabled={disabled} title={title}
+    <button data-testid={testId} type="button" className="choice-trigger" ref={trigger} disabled={disabled} title={title}
       aria-label={`${label}: ${selected?.label ?? placeholder}`} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${id}-listbox`}
       onKeyDown={onKey} onClick={() => {
         if (open) close(false);

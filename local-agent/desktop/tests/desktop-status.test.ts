@@ -17,6 +17,17 @@ const current = (state: RuntimeStatus['state'] = 'ready', error: RuntimeStatus['
 const verified = (model: string): VerifiedModel => ({ model, digest: 'a'.repeat(64), sizeBytes: 100,
   capabilities: ['completion'], verifiedAt: '2026-10-10T00:00:00Z', toolCapable: false });
 
+test('status forwards actual portable plan and loaded identity without manufacturing readiness', () => {
+  const plan = { source: 'actual-plan-fixture' } as unknown as NonNullable<RuntimeStatus['portableMemoryPlan']>;
+  const source = { ...current('loading'), loadedModel: 'qwen3.5:4b', portableMemoryPlan: plan };
+  const exposed = desktopRuntimeStatus(source);
+  assert.equal(exposed.portableMemoryPlan, plan); assert.equal(exposed.loadedModel, source.loadedModel);
+  assert.equal(exposed.ready, false); assert.equal(exposed.state, 'loading');
+  const unavailable = desktopRuntimeStatus(source, 'Missing component');
+  assert.equal(unavailable.portableMemoryPlan, undefined); assert.equal(unavailable.loadedModel, undefined);
+  assert.equal(unavailable.ready, false); assert.equal(source.portableMemoryPlan, plan);
+});
+
 test('renamed app retains its regular storage and explicit profiles remain isolated', () => {
   const appData = path.resolve('/retained/Application Support');
   const regular = resolveStorage(appData);
@@ -28,6 +39,12 @@ test('renamed app retains its regular storage and explicit profiles remain isola
   assert.equal(isolated.modelCachePath, path.join(isolated.path, 'gguf-runtime', 'models'));
   assert.notEqual(isolated.path, regular.path);
   assert.deepEqual(resolveStorage(appData, ''), regular);
+});
+
+test('discovery preserves the exact host portable preparation route without promoting its evidence', async () => {
+  const spec = MODEL_CATALOG[0];
+  const catalog = await discoverDesktopModels({ listModels: async () => [{ ...spec, ...classifyModel(spec, hardware), fit: 'slow', preparationProfile: 'portable-cpu-4k-v1', installed: true, sizeBytes: spec.estimatedDownloadBytes, digest: null, blockedReason: null, toolCapable: false, toolValidationEligible: true, needsPreparation: true }] }, hardware);
+  const row = catalog.models[0]; assert.equal(row.preparationProfile, 'portable-cpu-4k-v1'); assert.equal(row.needsPreparation, true); assert.equal(row.digest, undefined); assert.equal(row.toolCapable, false); assert.equal(row.toolValidationEligible, true); assert.equal(row.chatProbe, undefined);
 });
 
 test('an empty model library is normal onboarding with a ready engine', async () => {
@@ -48,6 +65,11 @@ test('engine initialization stays distinguishable from real failures and missing
   assert.equal(starting.ready, false);
   assert.equal(starting.state, 'starting');
   assert.equal(starting.error, undefined);
+  for (const preparationStage of ['planning', 'loading', 'probing'] as const) {
+    const preparing = desktopRuntimeStatus({ ...current('loading'), preparationStage });
+    assert.equal(preparing.ready, false);
+    assert.equal(preparing.preparationStage, preparationStage);
+  }
   const failed = desktopRuntimeStatus(current('error', { code: 'ENGINE_DIGEST_MISMATCH', message: 'Reinstall the damaged engine.' }));
   assert.equal(failed.ready, false);
   assert.equal(failed.state, 'error');

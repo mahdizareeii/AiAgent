@@ -19,7 +19,7 @@ import { GooseBackend } from '../local-agent/desktop/backend.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const platform = process.platform;
-const defaults = { darwin: 'release/mac-arm64', win32: 'release/win-unpacked', linux: 'release/linux-unpacked' };
+const defaults = { darwin: 'release/0.6.0-alpha.2/mac-arm64', win32: 'release/0.6.0-alpha.2/win-unpacked', linux: 'release/0.6.0-alpha.2/linux-unpacked' };
 if (!defaults[platform]) throw new Error(`Unsupported native smoke platform: ${platform}`);
 const artifactRoot = path.resolve(process.argv[2] ?? path.join(root, defaults[platform]));
 let electronExecutable;
@@ -122,7 +122,7 @@ try {
     const transport = new StdioClientTransport({ command, args, env, cwd: directory, stderr: 'pipe' });
     let stderr = '';
     transport.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
-    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.5.0-alpha.1' });
+    const client = new Client({ name: 'local-agent-packaged-smoke', version: '0.6.0-alpha.2' });
     connections.push({ client, transport });
     try { await bounded(client.connect(transport), `${label} initialization`); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}${stderr ? `\n${stderr}` : ''}`); }
@@ -135,7 +135,7 @@ try {
     ELECTRON_RUN_AS_NODE: '1', LOCAL_AGENT_ACTION_URL: host.url,
   }), 'Packaged Electron/ASAR MCP bridge');
   const bridgeTools = await bounded(bridge.listTools(), 'Bridge tool listing');
-  assert.deepEqual(bridgeTools.tools.map(tool => tool.name).sort(), ['create_files', 'edit_file', 'read_command_output', 'run_command', 'write_file']);
+  assert.deepEqual(bridgeTools.tools.map(tool => tool.name).sort(), ['create_files', 'edit_file', 'read_command_output', 'run_command', 'run_verification', 'write_file']);
   const denied = await bounded(bridge.callTool({ name: 'write_file', arguments: {
     path: 'smoke.txt', content: 'must not be written\n',
   } }), 'Denied packaged write');

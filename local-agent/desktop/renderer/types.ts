@@ -2,11 +2,15 @@ export type Mode = 'coding' | 'research' | 'assistant';
 export type TaskEffort = 'standard' | 'careful';
 export type MemoryMode = 'automatic' | 'low-memory' | 'experimental-disk' | 'ssd-experts';
 export interface TaskCheck { id: string; title: string; status: 'passed' | 'failed' | 'unverified'; detail: string; toolId?: string;
-  evidence?: { operation?: string; path?: string; sha256?: string; changed?: boolean; actionId?: string; complete?: boolean }; }
+  purpose?: 'operation' | 'acceptance'; checkIds?: string[];
+  evidence?: { operation?: string; path?: string; sha256?: string; changed?: boolean; actionId?: string; complete?: boolean; commandSha256?: string; inputDigest?: string; dependencyDigests?: Record<string, string> }; }
 export interface TaskOutcome {
   status: 'completed' | 'blocked' | 'cancelled' | 'timed-out' | 'incomplete';
   finishReason: string; checks: TaskCheck[];
-  model?: { id: string; digest: string; runtime: string; contextTokens: number; backend: string; memoryMode: MemoryMode };
+  verification?: 'passed' | 'failed' | 'unverified';
+  taskBrief?: import('../task-verification').TaskBrief;
+  model?: { id: string; digest: string; runtime: string; contextTokens: number; backend: string; memoryMode: MemoryMode;
+    profileSignature?: string; nativeMemoryPlanDigest?: string; portableMemoryPlanDigest?: string; calibrationMeasurements?: import('../../runtime/memory').ResourceMeasurements };
 }
 export interface ExperimentalTrialView {
   probes?: { chat?: FixedProbeDiagnostic; tools?: FixedProbeDiagnostic };
@@ -26,7 +30,7 @@ export interface ExperimentalTrialView {
 }
 /** Bounded responses from the runtime's fixed local checks, never user tasks. */
 export interface FixedProbeDiagnostic {
-  kind: 'chat' | 'tools'; passed: boolean; requestedOutputTokens: number; thinkingDisabled: true;
+  kind: 'chat' | 'tools'; passed: boolean; requestedOutputTokens: number; thinkingDisabled: boolean;
   finishReason: string | null; content: string | null; reasoning: string | null;
   outputTokens: number | null; reasoningTokens: number | null;
   toolCalls: { name: string | null; arguments: string | null }[]; toolCallCount: number; truncated: boolean;
@@ -104,6 +108,7 @@ export interface ExecutionProfile {
   cpuThreads?: number;
   label?: string;
   batchTokens?: number; microBatchTokens?: number; memoryMode?: MemoryMode; profileSignature?: string;
+  cacheTypeK?: 'f16' | 'q8_0'; cacheTypeV?: 'f16' | 'q8_0'; flashAttention?: 'on';
 }
 
 export interface LocalModel {
@@ -131,6 +136,8 @@ export interface LocalModel {
   toolValidationEligible?: boolean;
   historicalBindingVerified?: boolean;
   needsPreparation?: boolean;
+  /** Host-selected route; allocation, live memory and quality checks remain separate. */
+  preparationProfile?: 'portable-cpu-4k-v1';
   measuredTokensPerSecond?: number;
   sourceUrl?: string;
   digest?: string;
@@ -163,7 +170,15 @@ export interface SessionSummary {
   resumable?: boolean;
   mode?: Mode;
   taskEffort?: TaskEffort;
+  workspaceId?: string;
+  projectPath?: string;
+  preferredModel?: string | null;
 }
+
+export interface WorkspaceSummary { id: string; path: string; name: string; updatedAt: string; }
+export interface NavigationRoute { screen: 'conversation' | 'models' | 'plugins'; sessionId?: string; }
+export interface NavigationState { current: NavigationRoute; back: NavigationRoute[]; }
+export interface ModelImportResult { modelId: string; selection: 'selected' | 'unchanged'; message: string; nextAction?: 'select' | 'check' | 'hardware'; }
 
 export interface AgentStatus {
   runtime: {
@@ -173,6 +188,11 @@ export interface AgentStatus {
     error?: string;
     errorCode?: string;
     engineIdentity?: string;
+    preparationStage?: 'planning' | 'loading' | 'probing';
+    nativeMemoryPlan?: import('../../runtime/memory').NativeMemoryPlan;
+    portableMemoryPlan?: import('../../runtime/portable-admission').PortableCPUAllocationPlan;
+    portableAdmissionDiagnostic?: import('../../runtime/portable-admission').PortableCPUAdmissionDiagnostic;
+    loadedModel?: string | null;
   };
   modelsError?: string;
   storage?: { profile: 'regular' | 'isolated'; path: string; modelCachePath: string };
@@ -191,6 +211,10 @@ export interface AgentStatus {
   validationRecords?: ModelValidationRecord[];
   activeSessionId?: string;
   activeTurnId?: string;
+  currentSessionId?: string;
+  workspaces?: WorkspaceSummary[];
+  defaultWorkspaceId?: string;
+  navigation?: NavigationState;
   downloadingModel?: string | null;
   downloadProgress?: DownloadProgress | null;
   models: LocalModel[];
@@ -219,12 +243,15 @@ export interface ChatMessage {
 export interface AgentSession {
   id: string;
   messages: ChatMessage[];
+  files?: Attachment[];
   /** Composer state saved for an idle chat and restored on navigation. */
   draft?: string;
   draftFiles?: Attachment[];
   draftRevision?: number;
   mode: Mode;
   projectPath?: string;
+  workspaceId?: string;
+  preferredModel?: string | null;
   stage?: StageProgress;
   taskEffort?: TaskEffort;
 }
@@ -267,6 +294,7 @@ export interface PermissionSnapshot { revision: number; sessionId: string; turnI
 
 export type AgentEvent = (
   | { type: 'status' }
+  | { type: 'flush-drafts'; requestId: string }
   | ({ type: 'download' } & DownloadProgress)
   | ({ type: 'stage' } & StageProgress)
   | { type: 'message'; text: string; role: 'assistant'; thinking?: boolean }
@@ -278,43 +306,49 @@ export type AgentEvent = (
   | { type: 'error'; text?: string; error?: string }
 ) & { sessionId?: string; turnId?: string };
 
+export interface WorkspaceScope { workspacePath?: string; workspaceId?: string; sessionId?: string; }
+
 export interface LocalAgentBridge {
   status(): Promise<AgentStatus>;
   setup(options: Record<string, never>): Promise<AgentStatus>;
-  importModel(): Promise<void>;
+  importModel(): Promise<ModelImportResult | null>;
+  refreshHardware(): Promise<AgentStatus>;
   calibrateModel(id: string): Promise<void>;
   setUtilities(preferences: UtilityPreferences): Promise<void>;
   setPlugins(preferences: PluginPreferences): Promise<void>;
   getApprovalPolicies(): Promise<ApprovalPolicy[]>;
-  setApprovalPolicy(options: { workspacePath: string; utility: ApprovalUtility }): Promise<ApprovalPolicy[]>;
-  revokeApprovalPolicy(options: { workspacePath: string; utility?: ApprovalUtility }): Promise<ApprovalPolicy[]>;
-  listResearchNotes(options?: { workspacePath?: string; query?: string }): Promise<ResearchNote[]>;
-  saveResearchNote(note: Omit<ResearchNote, 'id'> & { id?: string; workspacePath?: string }): Promise<ResearchNote>;
-  deleteResearchNotes(options: { ids: string[]; workspacePath?: string }): Promise<number>;
-  clearResearchNotebook(options?: { workspacePath?: string }): Promise<number>;
-  exportResearchNotebook(options?: { workspacePath?: string; format?: 'json' | 'markdown' }): Promise<string>;
+  setApprovalPolicy(options: WorkspaceScope & { utility: ApprovalUtility }): Promise<ApprovalPolicy[]>;
+  revokeApprovalPolicy(options: WorkspaceScope & { utility?: ApprovalUtility }): Promise<ApprovalPolicy[]>;
+  listResearchNotes(options?: WorkspaceScope & { query?: string }): Promise<ResearchNote[]>;
+  saveResearchNote(note: Omit<ResearchNote, 'id'> & { id?: string } & WorkspaceScope): Promise<ResearchNote>;
+  deleteResearchNotes(options: WorkspaceScope & { ids: string[] }): Promise<number>;
+  clearResearchNotebook(options?: WorkspaceScope): Promise<number>;
+  exportResearchNotebook(options?: WorkspaceScope & { format?: 'json' | 'markdown' }): Promise<string>;
   setSlowMode(enabled: boolean): Promise<void>;
-  setExecutionPreferences(options: { memoryMode?: MemoryMode; taskEffort?: TaskEffort; ssdTaskHours?: 4 | 8 }): Promise<void>;
+  setExecutionPreferences(options: { sessionId?: string; memoryMode?: MemoryMode; taskEffort?: TaskEffort; ssdTaskHours?: 4 | 8 }): Promise<void>;
   startModelTrial?(id: string, route: 'ssd-experts'): Promise<void>;
   tryExperimentalModel(id: string): Promise<void>;
   cancelModelTrial(trialId: string): Promise<void>;
   createModelValidationTask(id: string): Promise<{ sessionId: string; prompt: string }>;
   downloadModel(id: string): Promise<void>;
   cancelDownload(): Promise<void>;
-  selectModel(id: string): Promise<void>;
+  selectModel(id: string, sessionId?: string): Promise<void>;
   searchOllamaModels(query: string): Promise<OllamaCatalogModel[]>;
   selectProject(): Promise<string | null>;
   createProject(options: { name: string }): Promise<string | null>;
   selectFiles(): Promise<Attachment[]>;
-  createSession(options: { mode: Mode; projectPath?: string; taskEffort?: TaskEffort }): Promise<{ id: string }>;
+  createSession(options: { mode: Mode; projectPath?: string; workspaceId?: string; taskEffort?: TaskEffort }): Promise<{ id: string }>;
   loadSession(id: string): Promise<AgentSession>;
+  navigate(route: NavigationRoute, replace?: boolean): Promise<AgentStatus>;
+  back(): Promise<AgentStatus>;
+  draftsFlushed(requestId: string, error?: string): Promise<void>;
   saveDraft(options: { sessionId: string; draft: string; files: Attachment[]; revision: number }): Promise<{ saved: boolean; revision: number }>;
   send(options: { sessionId: string; text: string; files?: Attachment[] }): Promise<void>;
   cancel(sessionId?: string): Promise<void>;
   resume(sessionId: string): Promise<void>;
   approvals(sessionId: string): Promise<PermissionSnapshot>;
   respondPermission(options: { requestId: string; approved: boolean; sessionId?: string; turnId?: string }): Promise<{ status: 'settled' | 'expired'; revision: number }>;
-  undo(): Promise<{ restored: number }>;
+  undo(sessionId: string): Promise<{ restored: number }>;
   onEvent(callback: (event: AgentEvent) => void): () => void;
 }
 

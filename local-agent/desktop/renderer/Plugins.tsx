@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Icon from './Icons';
 import type { AgentStatus, ApprovalUtility } from './types';
 
 interface Props {
   status: AgentStatus | null;
+  sessionId?: string;
   disabled: boolean;
   onEnable: (enabled: boolean) => Promise<void>;
   onWebResearch: (enabled: boolean) => Promise<void>;
@@ -17,7 +18,10 @@ const approvalUtilities: { id: ApprovalUtility; label: string; description: stri
   { id: 'fileEditing', label: 'Create & edit files', description: 'Remember file change approvals in this workspace.' },
 ];
 
-export default function Plugins({ status, disabled, onEnable, onWebResearch, onSetApproval, onRevokeApproval }: Props) {
+export default function Plugins({ status, sessionId, disabled, onEnable, onWebResearch, onSetApproval, onRevokeApproval }: Props) {
+  const scopeKey = `${sessionId ?? ''}:${status?.projectPath ?? ''}`;
+  const scopeRef = useRef(scopeKey); scopeRef.current = scopeKey;
+  const scope = { sessionId, workspacePath: status?.projectPath };
   const enabled = status?.plugins.taskResearch === true;
   const internetAllowed = status?.utilities.webResearch === true;
   const [notes, setNotes] = useState<Awaited<ReturnType<NonNullable<typeof window.localAgent>['listResearchNotes']>>>([]);
@@ -26,25 +30,26 @@ export default function Plugins({ status, disabled, onEnable, onWebResearch, onS
   const [selectedNotes, setSelectedNotes] = useState<Set<string>>(new Set());
   useEffect(() => {
     let live = true;
-    if (status?.projectPath && window.localAgent) void window.localAgent.listResearchNotes({ workspacePath: status.projectPath }).then(value => { if (live) setNotes(value); }).catch(() => { if (live) setNotes([]); });
+    setNotes([]); setSelectedNotes(new Set()); setNoteQuery('');
+    if (status?.projectPath && window.localAgent) void window.localAgent.listResearchNotes({ ...scope, workspacePath: status.projectPath }).then(value => { if (live) setNotes(value); }).catch(() => { if (live) setNotes([]); });
     else setNotes([]);
     return () => { live = false; };
-  }, [status?.projectPath]);
+  }, [status?.projectPath, sessionId]);
   async function searchNotes(query = noteQuery) {
     if (!window.localAgent || !status?.projectPath) return;
-    setNotesBusy(true); try { setNotes(await window.localAgent.listResearchNotes({ workspacePath: status.projectPath, query })); } finally { setNotesBusy(false); }
+    const key = scopeKey; setNotesBusy(true); try { const value = await window.localAgent.listResearchNotes({ ...scope, workspacePath: status.projectPath, query }); if (scopeRef.current === key) setNotes(value); } finally { if (scopeRef.current === key) setNotesBusy(false); }
   }
   async function deleteNotes() {
     if (!window.localAgent || !status?.projectPath || !selectedNotes.size) return;
-    setNotesBusy(true); try { await window.localAgent.deleteResearchNotes({ workspacePath: status.projectPath, ids: [...selectedNotes] }); setSelectedNotes(new Set()); await searchNotes(); } finally { setNotesBusy(false); }
+    setNotesBusy(true); try { await window.localAgent.deleteResearchNotes({ ...scope, workspacePath: status.projectPath, ids: [...selectedNotes] }); setSelectedNotes(new Set()); await searchNotes(); } finally { setNotesBusy(false); }
   }
   async function clearNotes() {
     if (!window.localAgent || !status?.projectPath || !notes.length || !window.confirm('Clear the saved Research notebook for this workspace?')) return;
-    setNotesBusy(true); try { await window.localAgent.clearResearchNotebook({ workspacePath: status.projectPath }); setSelectedNotes(new Set()); setNotes([]); } finally { setNotesBusy(false); }
+    setNotesBusy(true); try { await window.localAgent.clearResearchNotebook({ ...scope, workspacePath: status.projectPath }); setSelectedNotes(new Set()); setNotes([]); } finally { setNotesBusy(false); }
   }
   async function exportNotes(format: 'json' | 'markdown') {
     if (!window.localAgent || !status?.projectPath) return;
-    const text = await window.localAgent.exportResearchNotebook({ workspacePath: status.projectPath, format });
+    const text = await window.localAgent.exportResearchNotebook({ ...scope, workspacePath: status.projectPath, format });
     const blob = new Blob([text], { type: format === 'json' ? 'application/json' : 'text/markdown' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `research-notebook.${format === 'json' ? 'json' : 'md'}`; anchor.click(); URL.revokeObjectURL(url);
   }
   return <div className="plugins-content">
@@ -71,6 +76,7 @@ export default function Plugins({ status, disabled, onEnable, onWebResearch, onS
     </section>
     <section className="plugin-card approval-policies" aria-labelledby="approval-policies-title">
       <div className="plugin-card-heading"><span className="plugin-icon"><Icon name="shield" size={23} /></span><div><h2 id="approval-policies-title">Workspace approvals</h2><p>Remember local utility approvals</p></div></div>
+      {status?.projectPath && <p className="muted">Workspace: <code>{status.projectPath}</code></p>}
       <p className="plugin-description">These policies apply only to the selected workspace. Terminal commands always require a fresh review. Revoke any remembered utility below.</p>
       {!status?.projectPath && <p className="muted">Choose a workspace before saving an approval policy.</p>}
       {approvalUtilities.map(utility => {

@@ -5,7 +5,7 @@ import PreferenceChoice from './PreferenceChoice';
 import ProbeDiagnostics from './ProbeDiagnostics';
 import TrialHistory from './TrialHistory';
 import KernelDiagnostics from './KernelDiagnostics';
-import { modelFitAllowsUse, runtimePresentation } from './status-flow';
+import { modelFitAllowsUse, modelRequiresSlowModeToggle, runtimePresentation, usesPortablePreparation } from './status-flow';
 import { acquisitionReason, canTrySsd, currentValidation, measuredMemory, memoryModes, modelEvidence, trialDisplaysError } from './model-controls';
 import type { AgentStatus, DownloadProgress, LocalModel, MemoryMode, Mode, StageProgress, TaskEffort, OllamaCatalogModel } from './types';
 
@@ -50,6 +50,8 @@ interface Props {
   calibrating: string | null; trialModel: string | null; validating: string | null; importing: boolean;
   download: DownloadProgress | null; stage: StageProgress | null; error: string | null; hasBridge: boolean;
   errorTrialId?: string;
+  selectionLocked?: boolean; importMessage?: string | null;
+  onRefreshHardware?: () => Promise<void>;
   cancellingDownload?: boolean;
   taskEffort?: TaskEffort; taskPreferencesLocked?: boolean;
   dialogRef: RefObject<HTMLDivElement | null>;
@@ -92,8 +94,8 @@ function ModelDetails({ model, status }: { model: LocalModel; status: AgentStatu
   return <details className="model-details"><summary>Abilities & details</summary>
     <p className="guidance-note">These examples describe intended uses. Installed software and enabled tools determine what the app can execute. Research requires the optional plugin; web access starts off.</p>
     <ul className="ability-descriptions">{guidance.map(item => <li key={item.id}><strong><Icon name={guidanceIcons[item.id]} size={14} />{item.label}</strong><p>{item.description} <span>{item.examples.join(' · ')}</span></p></li>)}</ul>
-    <div className="model-specs"><span>{/Q4[_ ]/i.test(model.quantization) ? '4-bit weights · ' : ''}{model.quantization || 'GGUF'} · {model.license || 'License not reported'}</span><span>{model.workingMemoryGB > 0 ? `~${model.workingMemoryGB.toFixed(1)} GiB estimated ordinary working memory` : 'Working memory not estimated'}</span><span>{model.toolCapable ? 'Tool-compatible template; task quality needs its own checks.' : model.toolValidationEligible ? 'Preparation checks tool format before task tools run.' : 'Chat only until tool format is validated.'}</span>{model.emitsThinking === false && <span>This model does not emit thinking blocks. Working shows its actual tool activity.</span>}{model.artifacts && model.artifacts.length > 1 && <span>{model.artifacts.length} GGUF parts · every part must be verified</span>}{model.measuredTokensPerSecond !== undefined && <span>{model.measuredTokensPerSecond.toFixed(1)} tokens/sec measured · not a quality score</span>}</div>
-    {estimate && <div className="model-memory"><h5>Ordinary memory estimate · 8K context</h5><dl>{[
+    <div className="model-specs"><span>{/Q4[_ ]/i.test(model.quantization) ? '4-bit weights · ' : ''}{model.quantization || 'GGUF'} · {model.license || 'License not reported'}</span><span>{model.workingMemoryGB > 0 ? `~${model.workingMemoryGB.toFixed(1)} GiB estimated ordinary working memory` : 'Working memory not estimated'}</span><span>{model.toolCapable ? 'Tool-compatible template; task quality needs its own checks.' : model.toolValidationEligible ? 'Run Chat & tool checks before coding with an imported model.' : 'Chat only until tool format is validated.'}</span>{model.emitsThinking === false && <span>This model does not emit thinking blocks. Working shows its actual tool activity.</span>}{model.artifacts && model.artifacts.length > 1 && <span>{model.artifacts.length} GGUF parts · every part must be verified</span>}{model.measuredTokensPerSecond !== undefined && <span>{model.measuredTokensPerSecond.toFixed(1)} tokens/sec measured · not a quality score</span>}</div>
+    {estimate && <div className="model-memory"><h5>Ordinary memory estimate{model.id === 'qwen3.8:27b' || model.id === 'muse-glimmer:30b' ? ' · 32K target, 16K fallback' : ' · selected context profile'}</h5><dl>{[
       ['Model weights', estimate.weightsBytes], ['Context workspace', estimate.contextBytes], ['Scratch space', estimate.scratchBytes], ['Reserved for OS', estimate.osReserveBytes], ['System budget', estimate.systemBudgetBytes], ['GPU budget', estimate.gpuBudgetBytes],
     ].map(([label, bytes]) => <div key={String(label)}><dt>{label}</dt><dd>{memory(Number(bytes))}</dd></div>)}</dl><p>Estimated, not measured peak memory. Apple unified memory is counted once.</p></div>}
     {model.ssdEligibility && <p>{model.ssdEligibility.reason}{model.ssdEligibility.minimumSlotsPerLayer ? ` Minimum ${model.ssdEligibility.minimumSlotsPerLayer} cache slots per layer.` : ''}</p>}
@@ -126,7 +128,7 @@ export default function ModelSetup(props: Props) {
   const { status, ready, busy, setupBusy, calibrating, importing, download, stage, error, hasBridge } = props;
   const trialActive = !!props.trialModel || ['loading', 'calibrating'].includes(status?.experimentalTrial?.state ?? '');
   const locked = busy || setupBusy || importing || !!calibrating || !!download || trialActive || !!props.validating;
-  const closeLocked = busy || setupBusy || importing || !!calibrating || trialActive || !!props.validating;
+  const closeLocked = setupBusy || importing || !!calibrating || trialActive || !!props.validating;
   const duplicateTrialFailure = !setupBusy && !importing && !calibrating && !download && !props.trialModel && !props.validating
     && trialDisplaysError(error, status?.experimentalTrial, props.errorTrialId);
   const hardware = status?.hardware;
@@ -139,6 +141,9 @@ export default function ModelSetup(props: Props) {
     <h2 id="setup-title">{firstModel ? 'Your AI, on your computer.' : 'Choose your local model'}</h2><p className="setup-description">Download or import a free model. Everything needed for local inference is included.</p>
     {engine.phase === 'error' && <div className="setup-error" role="alert"><strong>Local engine needs attention</strong><p>{engine.message}</p><button className="text-button" disabled={!hasBridge || locked} onClick={() => void props.onSetup()}>Retry engine</button></div>}
     {hardware && <p className="computer-summary"><Icon name="monitor" size={15} />This computer · {memory(hardware.totalMemoryBytes)} memory · {hardware.freeDiskBytes > 0 ? `${memory(hardware.freeDiskBytes)} free storage` : 'storage being checked'}</p>}
+    {props.importMessage && <p className="model-import-result" role="status">{props.importMessage}</p>}
+    {busy && <p role="status">A task is running. Downloads, imports, and model checks are available after it finishes or you stop it. You can browse this library and choose a preference for another conversation.</p>}
+    {props.onRefreshHardware && <button className="secondary-button" disabled={!hasBridge || setupBusy} onClick={() => void props.onRefreshHardware?.()}>Refresh hardware</button>}
     {download && <ModelDownloadStatus download={download} models={status?.models ?? []} cancelling={props.cancellingDownload} onCancel={props.onCancelDownload} />}
     <section className="model-section" aria-label="Model library"><div className="model-section-heading"><p>Choose by the work you need. Larger models can be slower; check their recorded results.</p><button className="secondary-button import-model" disabled={!hasBridge || locked} onClick={() => void props.onImport()}><Icon name="folder" size={14} />{importing ? 'Importing…' : 'Import GGUF'}</button></div>
       {status?.modelsError && <div className="setup-error" role="alert"><strong>Model library unavailable</strong><p>{status.modelsError}</p><button className="text-button" disabled={locked || !hasBridge} onClick={() => void props.onSetup()}>Retry model library</button></div>}
@@ -147,7 +152,7 @@ export default function ModelSetup(props: Props) {
         const repairable = !!model.verificationError && !!model.sourceUrl;
         const allowed = modelFitAllowsUse(status, model.id);
         const selected = status.selectedModel === model.id && model.installed && allowed && !model.verificationError && !model.useBlocker && !model.blockedReason;
-        const slow = model.fit === 'slow' && !status.slowMode && memoryMode === 'automatic';
+        const slow = modelRequiresSlowModeToggle(status, model);
         const oversized = model.fit === 'insufficient';
         const ssd = canTrySsd(model);
         const downloadBlocked = acquisitionReason(model);
@@ -156,11 +161,12 @@ export default function ModelSetup(props: Props) {
         const useReason = slow && model.useBlocker?.code === 'SLOW_MODE_REQUIRED' ? undefined : model.useBlocker?.message || model.blockedReason;
         const guidance = intendedUses(model);
         return <article className={`model-card ${selected ? 'model-selected' : ''}`} key={model.id}>
-          <div className="model-card-top"><h4>{model.name}</h4><div className="model-card-labels"><span className={`fit-pill fit-${model.fit}`}>{model.fit === 'recommended' ? 'Recommended' : model.fit === 'slow' ? 'Slow mode' : 'Insufficient memory'}</span>{status.recommendation === model.id && <span className="recommendation-pill">Suggested first</span>}<span className="model-size">{model.downloadGB > 0 ? `${model.downloadGB.toFixed(1)} GiB` : 'Local import'}</span></div></div>
+          <div className="model-card-top"><h4>{model.name}</h4><div className="model-card-labels"><span className={`fit-pill fit-${model.fit}`}>{model.fit === 'recommended' ? 'Recommended' : model.fit === 'slow' ? usesPortablePreparation(model) ? 'CPU mode' : 'Slow mode' : 'Insufficient memory'}</span>{status.recommendation === model.id && <span className="recommendation-pill">Suggested first</span>}<span className="model-size">{model.downloadGB > 0 ? `${model.downloadGB.toFixed(1)} GiB` : 'Local import'}</span></div></div>
           <p className="model-description">{model.description}</p><div className="model-abilities" aria-label="Intended uses · guidance">{guidance.map(item => <span key={item.id} title={`${item.description} Examples: ${item.examples.join(', ')}. Intended use, not a verified result.`}><Icon name={guidanceIcons[item.id]} size={14} />{item.label}</span>)}</div><p className="model-fit-reason">{model.fitReason}</p>
           {oversized && <p className="ssd-card-note">{model.ssdEligibility?.supported ? 'Try a bounded expert cache from SSD. This may take hours.' : model.ssdEligibility?.reason || 'This configuration needs more usable memory or a smaller quantization.'}</p>}
           <ul className="model-evidence" aria-label="Recorded model evidence">{modelEvidence(status, model).map(item => <li key={item.label} className={`evidence-${item.status}`} title={item.detail}><span>{item.label}</span><strong>{item.status === 'passed' ? 'Passed' : item.status === 'failed' ? 'Failed' : 'Unverified'}</strong></li>)}</ul>
-          {progress ? <p className="model-fit-reason">Downloading · progress shown above</p> : <div className="model-buttons"><button className={selected ? 'selected-model-button' : 'secondary-button model-action'} disabled={locked || !hasBridge || selected || !!status.modelsError || (primaryDownload ? !!downloadBlocked : primarySsd ? !ssd : !status.runtime.ready || oversized || !!model.verificationError || !!useReason)} onClick={() => primaryDownload ? void props.onDownload(model.id) : primarySsd ? void props.onTryModel(model.id) : void props.onSelect(model.id)}><Icon name={selected ? 'check' : primaryDownload ? 'download' : primarySsd ? 'monitor' : 'arrow'} size={15} />{selected ? 'Selected' : repairable ? 'Download again' : primaryDownload ? 'Download' : primarySsd ? 'Try from SSD' : slow ? 'Use in slow mode' : 'Use model'}</button>{(primaryDownload ? downloadBlocked : primarySsd ? model.trialBlocker?.message : useReason) && <p className="blocked-reason">{primaryDownload ? downloadBlocked : primarySsd ? model.trialBlocker?.message : useReason}</p>}</div>}
+          {progress ? <p className="model-fit-reason">Downloading · progress shown above</p> : <div className="model-buttons"><button className={selected ? 'selected-model-button' : 'secondary-button model-action'} disabled={(primaryDownload || primarySsd ? locked : props.selectionLocked ?? locked) || !hasBridge || selected || !!status.modelsError || (primaryDownload ? !!downloadBlocked : primarySsd ? !ssd : oversized || !!model.verificationError || !!useReason)} onClick={() => primaryDownload ? void props.onDownload(model.id) : primarySsd ? void props.onTryModel(model.id) : void props.onSelect(model.id)}><Icon name={selected ? 'check' : primaryDownload ? 'download' : primarySsd ? 'monitor' : 'arrow'} size={15} />{selected ? 'Selected' : repairable ? 'Download again' : primaryDownload ? 'Download' : primarySsd ? 'Try from SSD' : slow ? 'Use in slow mode' : 'Use model'}</button>{(primaryDownload ? downloadBlocked : primarySsd ? model.trialBlocker?.message : useReason) && <p className="blocked-reason">{primaryDownload ? downloadBlocked : primarySsd ? model.trialBlocker?.message : useReason}</p>}</div>}
+          {model.installed && <div className="model-required-checks"><p>{model.toolCapable ? 'Tool format is available. Task quality requires its separate checks.' : 'Before coding, run the Chat and tool checks for this imported model.'}</p><button className="secondary-button" disabled={locked || !hasBridge || !!model.verificationError || !allowed || !status.runtime.ready} title={locked ? 'Finish or stop the current task before checking another model.' : model.verificationError || (!allowed ? model.fitReason : !status.runtime.ready ? 'Prepare the local engine before checking this model.' : 'Runs local Chat and tool checks.')} onClick={() => void props.onCalibrate(model.id)}>{calibrating === model.id ? 'Checking…' : 'Check Chat & tools'}</button></div>}
           <ModelDetails model={model} status={status} />
         </article>;
       })}</div>{!status && <p className="muted">Connecting to the local runtime…</p>}

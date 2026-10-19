@@ -43,6 +43,21 @@ def result_chars(requested: int | None = None) -> int:
     return min(configured, requested or configured)
 
 
+def file_read_chars(requested: int | None = None) -> int:
+    """A smaller host default does not narrow explicit reads or receipt budgets."""
+    limit = result_chars(requested)
+    configured = os.environ.get("LOCAL_AGENT_FILE_READ_DEFAULT_CHARS")
+    if configured is None:
+        return limit
+    try:
+        default = int(configured)
+        if not 500 <= default <= result_chars():
+            raise ValueError()
+    except ValueError as exc:
+        raise ToolError("invalid_configuration", "LOCAL_AGENT_FILE_READ_DEFAULT_CHARS must be between 500 and the host result limit.") from exc
+    return default if requested is None else limit
+
+
 def _check_cancel(cancel_event: threading.Event | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise ToolError("cancelled", "Reading was cancelled.")
@@ -273,7 +288,7 @@ class Grants:
                   cancel_event: threading.Event | None = None) -> dict:
         if not 1 <= start_line <= 1_000_000_000 or not 1 <= max_lines <= 500:
             raise ToolError("invalid_range", "Use start_line >= 1 and max_lines between 1 and 500.")
-        budget = result_chars(max_chars)
+        budget = file_read_chars(max_chars)
         with self.open(path, MAX_FILE_BYTES) as (canonical, stream):
             if not is_text(canonical):
                 raise ToolError("unsupported_file", "This tool reads code, text, and Markdown. Use read_pdf for PDFs.")

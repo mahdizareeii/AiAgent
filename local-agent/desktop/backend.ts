@@ -11,6 +11,8 @@ import { appendThinking } from './thinking.ts';
 import { repeatedCommandReadFailureText, repeatedEditFailureText } from './actions.ts';
 import { taskInstructions } from './agent-policy.ts';
 import { providerTimeoutSeconds } from './execution-policy.ts';
+import { modelGenerationOptions, type ModelGenerationPolicy } from '../runtime/index.ts';
+import { hasReaderCapability } from './reader-capability.ts';
 
 export interface BackendOptions {
   executable: string;
@@ -25,11 +27,14 @@ export interface BackendOptions {
   apiKey: string;
   contextTokens: number;
   outputTokens: number;
+  generationPolicy?: ModelGenerationPolicy;
   utilities: UtilityPreferences;
   plugins?: PluginPreferences;
   grantedRoots: string[];
   grantedFiles: string[];
   actionUrl?: string;
+  /** Private native-read receipt ingress, supplied only by the current frozen host. */
+  readbackUrl?: string;
   skillsDirectory?: string;
   currentDate?: string;
   taskEffort?: 'standard' | 'careful';
@@ -42,16 +47,37 @@ export interface BackendOptions {
 
 export interface BackendCompletion { stopReason: string; }
 export const backendStepLimits = { standard: 25, careful: 40 } as const;
+const localProviderName = 'free_local_agent';
+const preservesThinking = (options: BackendOptions) => options.generationPolicy?.preserveThinking === true;
+
+/** Per-turn declarative provider settings are exclusively for the authenticated local gateway. */
+export function backendProviderConfig(options: BackendOptions) {
+  if (!preservesThinking(options)) return;
+  if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(options.baseUrl)) throw new Error('Inference must use the app-owned loopback endpoint.');
+  return { name: localProviderName, engine: 'openai', display_name: 'Free Local Agent',
+    api_key_env: 'LOCAL_AGENT_INFERENCE_KEY', base_url: `${options.baseUrl}/v1/chat/completions`,
+    supports_streaming: true, requires_auth: true, dynamic_models: false, skip_canonical_filtering: true,
+    preserves_thinking: true,
+    timeout_seconds: providerTimeoutSeconds(options.executionBudgetMs),
+    models: [{ name: options.model, context_limit: options.contextTokens, reasoning: true,
+      request_params: modelGenerationOptions(options.generationPolicy, 'coding', options.taskEffort) }] };
+}
 
 const platformExtensions = ['analyze', 'todo', 'apps', 'chatrecall', 'extensionmanager',
   'scheduler', 'summon', 'summarize', 'code_execution', 'developer', 'orchestrator', 'tom', 'skills'];
 const actionsEnabled = (options: BackendOptions) => options.mode === 'coding' &&
   (options.utilities.fileEditing || options.utilities.terminal);
+const readerEnabled = (options: BackendOptions) => options.mode !== 'assistant' ||
+  hasReaderCapability(effectiveUtilities(options.mode, options.utilities, options.plugins), options.grantedRoots, options.grantedFiles);
 
 /** Goose's extension limit must accommodate the bridge's longest approved operation. */
 export function backendExtensions(options: BackendOptions) {
-  const extensions = [{ type: 'mcp', timeout: 180,
-    server: { name: 'local_files_and_research', command: options.researchExecutable, args: [] as string[], env: [] } }];
+  const extensions: { type: string; timeout: number; server: { name: string; command: string; args: string[]; env: never[] } }[] = [];
+  // A plain conversation has no granted files or public-network capability.
+  // Avoid launching a Python MCP process and advertising unusable file tools.
+  // Coding/research keep their established tool contract unchanged.
+  if (readerEnabled(options)) extensions.push({ type: 'mcp', timeout: 180,
+    server: { name: 'local_files_and_research', command: options.researchExecutable, args: [], env: [] } });
   if (actionsEnabled(options)) extensions.push({ type: 'mcp', timeout: actionRequestDeadlines.command / 1000,
     server: { name: 'reviewed_actions', command: options.nodeExecutable, args: [options.bridgeExecutable], env: [] } });
   return extensions;
@@ -172,7 +198,7 @@ export function agentPrompt(options: BackendOptions, request: string, researchSk
     capabilities.push(`Selected project: ${JSON.stringify(options.cwd)}. Project mutation paths are relative; never repeat its folder name.`);
     capabilities.push(`Output limit: ${options.outputTokens} tokens per response; keep file batches small enough for complete tool arguments.`);
   } else if (options.appPolicyProvided !== true) capabilities.push('This turn has no file-writing or command tools.');
-  if (effectiveUtilities(options.mode, options.utilities, options.plugins).fileReading) {
+  if (readerEnabled(options) && effectiveUtilities(options.mode, options.utilities, options.plugins).fileReading) {
     capabilities.push('Read granted attachments using their supplied absolute paths.');
   }
   const research = researchSkill && taskResearchEnabled(options)
@@ -189,19 +215,26 @@ export function backendEnvironment(options: BackendOptions): NodeJS.ProcessEnv {
     if (process.env[key]) env[key] = process.env[key];
   }
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(options.baseUrl)) throw new Error('Inference must use the app-owned loopback endpoint.');
+  if (options.readbackUrl && (options.mode !== 'coding' || !effectiveUtilities(options.mode, options.utilities, options.plugins).fileReading
+    || !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/[a-f0-9]{64}$/.test(options.readbackUrl))) throw new Error('The private readback receipt channel is unavailable.');
   if (actionsEnabled(options) && (!options.actionUrl || !/^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{64}$/.test(options.actionUrl))) {
     throw new Error('Project actions require the app-owned approval host.');
   }
-  return { ...env, GOOSE_PATH_ROOT: options.dataDirectory, GOOSE_PROVIDER: 'openai',
+  return { ...env, GOOSE_PATH_ROOT: options.dataDirectory, GOOSE_PROVIDER: preservesThinking(options) ? localProviderName : 'openai',
     GOOSE_MODEL: options.model, GOOSE_MODE: 'auto', GOOSE_TELEMETRY_OFF: '1', GOOSE_DISABLE_KEYRING: '1',
     GOOSE_CONTEXT_LIMIT: String(options.contextTokens), GOOSE_MAX_TURNS: String(backendStepLimits[options.taskEffort ?? 'standard']),
     OPENAI_BASE_URL: `${options.baseUrl}/v1`, OPENAI_BASE_PATH: 'v1/chat/completions', OPENAI_API_KEY: options.apiKey,
     GOOSE_MAX_TOKENS: String(options.outputTokens),
+    GOOSE_STATE_MACHINE: '0', GOOSE_AUTO_COMPACT_THRESHOLD: '0', GOOSE_TOOL_PAIR_SUMMARIZATION: 'false',
+    ...(preservesThinking(options) ? { LOCAL_AGENT_INFERENCE_KEY: options.apiKey } : {}),
     OPENAI_TIMEOUT: String(providerTimeoutSeconds(options.executionBudgetMs)),
     LOCAL_AGENT_MODE: options.mode, LOCAL_AGENT_GRANTED_ROOTS: JSON.stringify(options.grantedRoots),
     LOCAL_AGENT_UTILITIES: JSON.stringify(effectiveUtilities(options.mode, options.utilities, options.plugins)),
     LOCAL_AGENT_TOOL_RESULT_CHARS: String(Math.min(4000, Math.floor(options.contextTokens / 2))),
+    // Default source pages leave room for exact tool metadata; explicit reads retain the existing hard cap.
+    LOCAL_AGENT_FILE_READ_DEFAULT_CHARS: String(Math.max(500, Math.min(4000, Math.floor(options.contextTokens / 8), Math.floor(options.contextTokens / 2)))),
     LOCAL_AGENT_GRANTED_FILES: JSON.stringify(options.grantedFiles),
+    ...(options.readbackUrl ? { LOCAL_AGENT_READBACK_URL: options.readbackUrl } : {}),
     LOCAL_AGENT_ACTION_URL: actionsEnabled(options) ? options.actionUrl : '', ELECTRON_RUN_AS_NODE: '1',
   };
 }
@@ -238,12 +271,19 @@ export class GooseBackend {
     this.throwIfAborted();
     if (this.stopped) throw new Error('Agent startup cancelled.');
     // Each turn has its own isolated configuration, and only our exact MCP servers.
-    const config = { GOOSE_PROVIDER: 'openai', GOOSE_MODEL: o.model, GOOSE_MODE: 'auto',
+    const provider = backendProviderConfig(o);
+    const config = { GOOSE_PROVIDER: provider ? localProviderName : 'openai', GOOSE_MODEL: o.model, GOOSE_MODE: 'auto',
       GOOSE_TELEMETRY_ENABLED: false, GOOSE_CONTEXT_LIMIT: o.contextTokens, CONTEXT_FILE_NAMES: [],
+      GOOSE_STATE_MACHINE: 0, GOOSE_AUTO_COMPACT_THRESHOLD: 0, GOOSE_TOOL_PAIR_SUMMARIZATION: false,
       extensions: Object.fromEntries(platformExtensions.map(name => [name,
         { type: 'platform', name, enabled: false }])) };
     // JSON is a valid YAML document; avoid interpolating YAML values.
     await writeFile(path.join(o.dataDirectory, 'config', 'config.yaml'), JSON.stringify(config), { mode: 0o600 });
+    if (provider) {
+      const providersDirectory = path.join(o.dataDirectory, 'config', 'custom_providers');
+      await mkdir(providersDirectory, { recursive: true });
+      await writeFile(path.join(providersDirectory, `${localProviderName}.json`), JSON.stringify(provider), { mode: 0o600 });
+    }
     this.throwIfAborted();
     if (this.stopped) throw new Error('Agent startup cancelled.');
     this.child = spawn(o.executable, ['acp'], { cwd: o.cwd, env: backendEnvironment(o),
@@ -301,11 +341,12 @@ export class GooseBackend {
       clientInfo: { name: 'free-local-agent-desktop', version: '0.5.0-alpha.1' },
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }), 30_000);
     if (this.stopped) throw new Error('Agent startup cancelled.');
+    const extensions = backendExtensions(o);
     const session = await this.withTimeout(this.connection.newSession({ cwd: o.cwd, mcpServers: [],
-      _meta: { enabledExtensions: backendExtensions(o), sessionTitle: 'Free Local Agent', client: 'free-local-agent' } }), 60_000);
+      _meta: { enabledExtensions: extensions, sessionTitle: 'Free Local Agent', client: 'free-local-agent' } }), 60_000);
     this.gooseSessionId = session.sessionId;
     const results = session._meta?.extensionResults;
-    const expected = actionsEnabled(o) ? ['local_files_and_research', 'reviewed_actions'] : ['local_files_and_research'];
+    const expected = extensions.map(extension => extension.server.name);
     if (!Array.isArray(results) || results.length !== expected.length || new Set(results.map(result => result && typeof result === 'object' ? result.name : undefined)).size !== expected.length || results.some(result =>
       !result || typeof result !== 'object' || result.success !== true || !expected.includes(String(result.name)))) {
       await this.stop();

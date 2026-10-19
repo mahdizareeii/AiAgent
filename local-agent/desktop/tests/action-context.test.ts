@@ -1,8 +1,52 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { ActionContext } from '../action-context.ts';
 import { BudgetedInference, compactionPartition, type ChatBody, type InferenceRuntime } from '../inference-gateway.ts';
-import type { ActionToolEvent } from '../actions.ts';
+import { LocalActions,type ActionToolEvent } from '../actions.ts';
+
+test('frozen-ID closed receipts bind original intent and exact expanded host command/workspace/task',async()=>{
+  const directory=await realpath(await mkdtemp(path.join(tmpdir(),'local-agent-id-context-'))),workspace=path.join(directory,'project'),controller=new AbortController();
+  try{
+    await mkdir(workspace);const history=new ActionContext(),events:ActionToolEvent[]=[],command='printf verified';
+    const actions=new LocalActions({projectPath:workspace,historyDirectory:path.join(directory,'history'),verificationCheckIds:['required-check'],
+      frozenVerification:{turnId:'task-A',requestHash:'a'.repeat(64),workspacePath:workspace,signal:controller.signal,commands:[{id:'required-check',kind:'command',command,cwd:'.'}]},
+      onBeforeVerificationCommand:async()=>{},onPermission:async()=>true,onTool:event=>{events.push(event);history.record(event);}});
+    const result=await actions.execute('run_verification',{check_id:'required-check'}),text=result.content.map(part=>part.text).join(' ');
+    const call={id:'model-id-call',function:{name:'reviewed_actions__run_verification',arguments:'{"check_id":"required-check"}'}};
+    const closed=history.find(call,text);assert(closed);assert.equal(closed.operation,'run_command');assert.equal(closed.status,'completed');assert.deepEqual(closed.evidence.check_ids,['required-check']);
+    assert.equal((closed.evidence.verification_intent as any).turnId,'task-A');assert.equal((closed.evidence.verification_intent as any).workspacePath,workspace);
+    assert.deepEqual(history.find(call,result.structuredContent),closed);
+    for(const args of [{check_id:'another'},{check_id:'required-check',timeout_ms:1000},{check_id:'required-check',command},
+      {check_id:'required-check',turnId:'task-B'}])assert.equal(history.find({...call,function:{...call.function,arguments:JSON.stringify(args)}},text),undefined);
+    assert.equal(history.find({...call,function:{name:'reviewed_actions__run_command',arguments:JSON.stringify(events.find(event=>event.status==='completed')!.input)}},text),undefined);
+    const completed=events.find(event=>event.status==='completed')!,receipt=result.structuredContent!;
+    for(const change of [{operation:'run_verification'},{command_sha256:'f'.repeat(64)},{command_cwd:path.join(workspace,'other')},{action_id:'other-host'},
+      {check_ids:['another']},{exit_code:1},{verification_intent:{...(receipt.verification_intent as object),turnId:'task-B'}},
+      {verification_intent:{...(receipt.verification_intent as object),requestHash:'b'.repeat(64)}},
+      {verification_intent:{...(receipt.verification_intent as object),workspacePath:path.join(workspace,'other')}}]){
+      const tampered=new ActionContext();tampered.record({...completed,output:{...result,structuredContent:{...receipt,...change}}});assert.equal(tampered.find(call,text),undefined);
+    }
+    const user={role:'user',content:'Verify without replay.'},messages:ChatBody['messages']=[{role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:text}];
+    const partition=compactionPartition([user,...messages,...latest],history);assert.deepEqual(partition.actionIndexes,[1,2]);assert.equal(partition.actions[0]&&(partition.actions[0] as any).operation,'run_command');
+  }finally{controller.abort();await rm(directory,{recursive:true,force:true});}
+});
+
+test('denied, failed and unknown frozen-ID calls cannot become verified closed receipts',async()=>{
+  const directory=await realpath(await mkdtemp(path.join(tmpdir(),'local-agent-id-denial-context-'))),workspace=path.join(directory,'project'),controller=new AbortController();
+  try{
+    await mkdir(workspace);
+    for(const command of ['exit 0','exit 7']){
+      const history=new ActionContext(),actions=new LocalActions({projectPath:workspace,historyDirectory:path.join(directory,command==='exit 0'?'denied':'failed'),verificationCheckIds:['required-check'],
+        frozenVerification:{turnId:'task',requestHash:'a'.repeat(64),workspacePath:workspace,signal:controller.signal,commands:[{id:'required-check',kind:'command',command,cwd:'.'}]},
+        onBeforeVerificationCommand:async()=>{},onPermission:async()=>command!=='exit 0',onTool:event=>history.record(event)});
+      for(const id of ['required-check','unknown']){const result=await actions.execute('run_verification',{check_id:id});assert.equal(result.isError,true);
+        assert.equal(history.find({id:'model-call',function:{name:'reviewed_actions__run_verification',arguments:JSON.stringify({check_id:id})}},result.content.map(part=>part.text).join(' ')),undefined);}
+    }
+  }finally{controller.abort();await rm(directory,{recursive:true,force:true});}
+});
 
 function recordedFile(content = 'exact UTF-8\r\n1: literal\n') {
   const args = { path: 'app.txt', content };

@@ -18,6 +18,11 @@ export function desktopRuntimeStatus(current: RuntimeStatus, missingComponents?:
   return { ready: current.state === 'ready' && !missingComponents,
     state: missingComponents ? 'error' : current.state, version: current.version ?? undefined,
     engineIdentity: current.engineIdentity,
+    preparationStage: missingComponents ? undefined : current.preparationStage,
+    nativeMemoryPlan: missingComponents ? undefined : current.nativeMemoryPlan,
+    portableMemoryPlan: missingComponents ? undefined : current.portableMemoryPlan,
+    portableAdmissionDiagnostic: missingComponents ? undefined : current.portableAdmissionDiagnostic,
+    loadedModel: missingComponents ? undefined : current.loadedModel,
     error: missingComponents ?? error?.message,
     errorCode: missingComponents ? 'AGENT_COMPONENTS_MISSING' : error?.code };
 }
@@ -31,7 +36,7 @@ function desktopModel(row: AvailableModel): LocalModel {
     integrity: row.integrity, artifacts: row.artifacts?.map(artifact => ({ ...artifact })),
     acquisitionBlocker: row.acquisitionBlocker, useBlocker: row.useBlocker, trialBlocker: row.trialBlocker,
     ssdEligibility: row.ssdEligibility, chatProbe: row.chatProbe, toolProbe: row.toolProbe,
-    historicalBindingVerified: row.historicalBindingVerified, needsPreparation: row.needsPreparation,
+    historicalBindingVerified: row.historicalBindingVerified, needsPreparation: row.needsPreparation, preparationProfile: row.preparationProfile,
     templateHash: row.templateHash ?? row.chatProbe?.templateHash ?? row.toolProbe?.templateHash,
     taskGuidance: row.taskGuidance?.map(guidance => ({ ...guidance, examples: [...guidance.examples] })), emitsThinking: row.emitsThinking };
 }

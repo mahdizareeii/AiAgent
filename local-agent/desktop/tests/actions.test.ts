@@ -7,6 +7,9 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { ACTION_TOOL_SCHEMAS, LocalActions, repeatedCommandReadFailureText, type ActionPermission, type LocalActionsOptions } from '../actions.ts';
 import { commandTimeoutLimits, commandTimeoutText } from '../action-protocol.ts';
+import { grantApprovalPolicy, hasApprovalPolicy } from '../approval-policies.ts';
+import { TaskVerificationLedger, type TaskBrief } from '../task-verification.ts';
+import { createActionHost } from '../action-host.ts';
 
 async function setup(onPermission: (permission: ActionPermission) => Promise<boolean> = async () => true,
   options: Partial<Pick<LocalActionsOptions, 'resultChars' | 'utilities' | 'onTool'>> = {}) {
@@ -32,6 +35,94 @@ function commandLogMetadata(text: string): { log_id: string; durable_id: string;
   return JSON.parse(text.split('\n')[0]);
 }
 
+function frozenCommandOptions(run:{projectPath:string},controller:AbortController,command:string,cwd='.'){
+  return {verificationCheckIds:['required-check'],frozenVerification:{turnId:'current-turn',requestHash:'a'.repeat(64),workspacePath:run.projectPath,signal:controller.signal,
+    commands:[{id:'required-check',kind:'command' as const,command,cwd}]}};
+}
+
+test('run_verification uses exact frozen command/cwd through normal approval and real ledger receipts',async()=>{
+  const run=await setup(),controller=new AbortController(),permissions:ActionPermission[]=[],events:any[]=[];
+  try{
+    await mkdir(path.join(run.projectPath,'nested'));await writeFile(path.join(run.projectPath,'source.txt'),'exact');
+    await writeFile(path.join(run.projectPath,'nested','check.js'),"const fs=require('fs');if(fs.readFileSync('../source.txt','utf8')!=='exact')process.exit(7);process.stdout.write('verified');");
+    const request='Verify the exact source.',command=`"${process.execPath}" "check.js"`,brief:TaskBrief={version:1,requestHash:createHash('sha256').update(request).digest('hex'),goal:request,deliverables:['source.txt'],criteria:[
+      {id:'required-check',description:'actual script validates the source',kind:'command',command,cwd:'nested',paths:['source.txt','nested/check.js']},
+      {id:'protected-script',description:'preserve the verifier',kind:'preserve_file',path:'nested/check.js'}]};
+    const ledger=new TaskVerificationLedger(brief,run.projectPath);await ledger.captureProtectedInputs(request);
+    const options=frozenCommandOptions(run,controller,command,'nested');options.frozenVerification.requestHash=brief.requestHash;
+    const actions=new LocalActions({projectPath:run.projectPath,historyDirectory:run.historyDirectory,...options,
+      onPermission:async permission=>{permissions.push(permission);return true;},onBeforeVerificationCommand:(id,args,signal)=>ledger.beforeVerificationCommand(id,args,signal),
+      onTool:event=>{events.push(event);ledger.recordHostAction(event);}});
+    const result=await actions.execute('run_verification',{check_id:'required-check'});
+    assert.equal(result.isError,undefined);assert.equal(permissions.length,1);assert.equal(permissions[0].command,command);assert.equal(permissions[0].cwd,path.join(run.projectPath,'nested'));
+    assert.equal(result.structuredContent?.operation,'run_command');assert.equal(result.structuredContent?.purpose,'verification');assert.deepEqual(result.structuredContent?.check_ids,['required-check']);
+    const completed=events.find(event=>event.status==='completed');assert.equal(completed.input.command,command);assert.equal(completed.input.cwd,'nested');
+    assert.deepEqual(completed.input.verification_intent.arguments,{check_id:'required-check'});assert.equal(completed.input.verification_intent.turnId,'current-turn');
+    assert((await ledger.evaluate()).every(check=>check.status==='passed'));
+    assert.equal(await readFile(path.join(run.projectPath,'source.txt'),'utf8'),'exact');
+  }finally{controller.abort();await run.cleanup();}
+});
+
+test('frozen ID execution rejects overrides, unknown/file/manual IDs and spoofed host intent before approval',async()=>{
+  const run=await setup(),controller=new AbortController();let approvals=0;
+  try{
+    const actions=new LocalActions({projectPath:run.projectPath,historyDirectory:run.historyDirectory,...frozenCommandOptions(run,controller,'exit 0'),onPermission:async()=>{approvals++;return true;}});
+    for(const args of [{check_id:'unknown'},{check_id:'protected-script'},{check_id:'manual-review'},{check_id:['required-check']},
+      {check_id:'required-check',command:'exit 0'},{check_id:'required-check',cwd:'.'},{check_id:'required-check',checkIds:['required-check']},
+      {check_id:'required-check',purpose:'verification'},{check_id:'required-check',verification_intent:{}}]){
+      const result=await actions.execute('run_verification',args);assert.equal(result.errorCode,'INVALID_ARGUMENT');assert.match(result.content[0].text,/required-check/);
+    }
+    const spoof=await actions.execute('run_command',{command:'exit 0',verification_intent:{tool:'run_verification'}});assert.equal(spoof.errorCode,'INVALID_ARGUMENT');assert.equal(approvals,0);
+    const schema=ACTION_TOOL_SCHEMAS.find(tool=>tool.name==='run_verification')!;assert.deepEqual(schema.inputSchema.required,['check_id']);assert.equal(schema.inputSchema.additionalProperties,false);
+  }finally{controller.abort();await run.cleanup();}
+});
+
+test('frozen command map is copied and stale task signals defeat fresh action signals and late approval',async()=>{
+  const run=await setup(),controller=new AbortController();let approve:((value:boolean)=>void)|undefined;let requested=0;
+  try{
+    const options=frozenCommandOptions(run,controller,'echo exact > marker.txt');
+    const actions=new LocalActions({projectPath:run.projectPath,historyDirectory:run.historyDirectory,...options,onPermission:async permission=>{assert.equal(permission.command,'echo exact > marker.txt');requested++;return new Promise(resolve=>{approve=resolve;});}});
+    options.frozenVerification.commands[0].command='echo forged > marker.txt';options.verificationCheckIds[0]='other';
+    const pending=actions.execute('run_verification',{check_id:'required-check'},{signal:new AbortController().signal});
+    while(!approve)await new Promise(resolve=>setTimeout(resolve,1));controller.abort();approve(true);
+    assert.equal((await pending).errorCode,'CANCELLED');assert.equal(requested,1);
+    assert.equal((await actions.execute('run_verification',{check_id:'required-check'},{signal:new AbortController().signal})).errorCode,'CANCELLED');
+    assert.equal(requested,1);assert.deepEqual(await readdir(run.projectPath),[]);
+  }finally{controller.abort();await run.cleanup();}
+});
+
+test('frozen scope cannot bind another workspace or non-command criteria',async()=>{
+  const run=await setup(),controller=new AbortController();
+  try{
+    const options=frozenCommandOptions(run,controller,'exit 0');
+    for(const change of [{workspacePath:path.join(run.projectPath,'other')},{requestHash:'bad'},{commands:[{id:'required-check',kind:'manual',command:'exit 0',cwd:'.'}]},
+      {commands:[...options.frozenVerification.commands,...options.frozenVerification.commands]}])
+      assert.throws(()=>new LocalActions({projectPath:run.projectPath,historyDirectory:run.historyDirectory,...options,frozenVerification:{...options.frozenVerification,...change} as any,onPermission:async()=>true}));
+  }finally{controller.abort();await run.cleanup();}
+});
+
+test('frozen ID commands retain terminal-disable and approved timeout bounds',async()=>{
+  const run=await setup(),controller=new AbortController();let approvals=0;
+  try{
+    const options={projectPath:run.projectPath,historyDirectory:run.historyDirectory,...frozenCommandOptions(run,controller,'exit 0'),onPermission:async()=>{approvals++;return true;}};
+    const disabled=new LocalActions({...options,utilities:{fileEditing:true,terminal:false}});
+    assert.equal((await disabled.execute('run_verification',{check_id:'required-check'})).errorCode,'DISABLED_TOOL');
+    const actions=new LocalActions(options);
+    for(const timeout_ms of [0,99,600001,NaN,'100'])assert.equal((await actions.execute('run_verification',{check_id:'required-check',timeout_ms})).errorCode,'INVALID_TIMEOUT');
+    assert.equal(approvals,0);
+  }finally{controller.abort();await run.cleanup();}
+});
+
+test('denying a frozen ID command stops the current action host without replay or new approval',async()=>{
+  const run=await setup(),controller=new AbortController();let approvals=0;let host:Awaited<ReturnType<typeof createActionHost>>|undefined;
+  try{
+    const actions=new LocalActions({projectPath:run.projectPath,historyDirectory:run.historyDirectory,...frozenCommandOptions(run,controller,'echo forbidden > marker.txt'),onPermission:async()=>{approvals++;return false;}});
+    host=await createActionHost(actions,controller.signal);
+    const call=async()=>await(await fetch(host!.url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tool:'run_verification',args:{check_id:'required-check'}})})).json();
+    assert.equal((await call()).errorCode,'PERMISSION_DENIED');assert.equal((await call()).errorCode,'TURN_DENIED');assert.equal(approvals,1);assert.deepEqual(await readdir(run.projectPath),[]);
+  }finally{controller.abort();if(host){await host.drain();host.server.closeAllConnections();await new Promise<void>(resolve=>host!.server.close(()=>resolve()));}await run.cleanup();}
+});
+
 test('a denied write or command performs no mutation', async () => {
   const run = await setup(async () => false);
   try {
@@ -56,6 +147,168 @@ test('the permission preview identifies the exact replacement', async () => {
     assert.equal(await run.actions.undo(), 1);
     assert.equal(await readFile(path.join(run.projectPath, 'app.txt'), 'utf8'), 'first\nbefore\nlast\n');
     assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('absolute and relative file proposals have the same checked approval target and preview', async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => { permissions.push(permission); return false; });
+  try {
+    const absolute = path.join(run.projectPath, 'stats.mjs');
+    await writeFile(absolute, 'before\n');
+    for (const tool of ['write_file', 'edit_file']) {
+      const content = tool === 'write_file' ? { content: 'after\n' } : { old_text: 'before', new_text: 'after' };
+      const relativeArgs = { path: 'stats.mjs', ...content };
+      const absoluteArgs = { path: absolute, ...content };
+      assert.equal((await run.actions.execute(tool, relativeArgs)).errorCode, 'PERMISSION_DENIED');
+      assert.equal((await run.actions.execute(tool, absoluteArgs)).errorCode, 'PERMISSION_DENIED');
+      const [relativePermission, absolutePermission] = permissions.slice(-2);
+      assert.deepEqual(absolutePermission.arguments, relativePermission.arguments);
+      assert.deepEqual(absolutePermission.arguments, relativeArgs);
+      assert.equal(absolutePermission.preview, relativePermission.preview);
+      assert.equal(absolutePermission.title, relativePermission.title);
+      assert.equal(absolutePermission.workspacePath, run.projectPath);
+      assert.equal(absoluteArgs.path, absolute, 'Canonical approval must not rewrite the raw tool intent.');
+    }
+    assert.equal(await readFile(absolute, 'utf8'), 'before\n');
+    await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+  } finally { await run.cleanup(); }
+});
+
+test('a canonical relative allowlist approves an absolute target with verified evidence, no repeat mutation and undo', async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => {
+    permissions.push(permission);
+    return permission.arguments.path === 'stats.mjs';
+  });
+  try {
+    const absolute = path.join(run.projectPath, 'stats.mjs');
+    await writeFile(absolute, 'before\n');
+    const expectedHash = createHash('sha256').update('after\n').digest('hex');
+    const written = await run.actions.execute('write_file', { path: absolute, content: 'after\n' });
+    assert.equal(written.isError, undefined);
+    assert.equal(written.structuredContent?.path, 'stats.mjs');
+    assert.equal(written.structuredContent?.sha256, expectedHash);
+    assert.equal(await readFile(absolute, 'utf8'), 'after\n');
+    const repeated = await run.actions.execute('write_file', { path: 'stats.mjs', content: 'after\n' });
+    assert.equal(repeated.structuredContent?.changed, false);
+    assert.equal(repeated.structuredContent?.sha256, expectedHash);
+    assert.equal(permissions.length, 1, 'An already completed mutation is not repeated or approved again.');
+    const snapshots = await readdir(run.historyDirectory);
+    assert.equal(snapshots.length, 1);
+    const snapshot = JSON.parse(await readFile(path.join(run.historyDirectory, snapshots[0]), 'utf8'));
+    assert.equal(snapshot.projectPath, run.projectPath);
+    assert.equal(snapshot.relativePath, 'stats.mjs');
+    assert.equal(snapshot.afterHash, expectedHash);
+    assert.equal(await run.actions.undo(), 1);
+    assert.equal(await readFile(absolute, 'utf8'), 'before\n');
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('batch approvals canonicalize every validated absolute or relative path and retain grouped undo', async () => {
+  const permissions: ActionPermission[] = [];
+  const run = await setup(async permission => {
+    permissions.push(permission);
+    return JSON.stringify(permission.arguments.files) === JSON.stringify([
+      { path: 'src/first.mjs', content: 'first\n' }, { path: 'src/second.mjs', content: 'second\n' },
+    ]);
+  });
+  try {
+    const rawFiles = [{ path: path.join(run.projectPath, 'src/first.mjs'), content: 'first\n' }, { path: './src/second.mjs', content: 'second\n' }];
+    const created = await run.actions.execute('create_files', { files: rawFiles });
+    assert.equal(created.isError, undefined);
+    assert.equal(permissions.length, 1);
+    assert.equal(permissions[0].workspacePath, run.projectPath);
+    assert.deepEqual(created.structuredContent?.files, [
+      { path: 'src/first.mjs', changed: true, sha256: createHash('sha256').update('first\n').digest('hex'), bytes: 6 },
+      { path: 'src/second.mjs', changed: true, sha256: createHash('sha256').update('second\n').digest('hex'), bytes: 7 },
+    ]);
+    assert.equal(rawFiles[0].path, path.join(run.projectPath, 'src/first.mjs'));
+    assert.equal(rawFiles[1].path, './src/second.mjs');
+    assert.equal(await run.actions.undo(), 2);
+    assert.deepEqual(await readdir(run.projectPath), []);
+    assert.equal(await run.actions.undo(), 0);
+  } finally { await run.cleanup(); }
+});
+
+test('canonicalization does not admit outside prefix lookalikes, escapes, symlinks, or credential paths', async () => {
+  let approvals = 0;
+  const run = await setup(async () => { approvals++; return true; });
+  try {
+    const outside = path.join(run.directory, 'project-other');
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'keep.mjs'), 'keep\n');
+    await mkdir(path.join(run.projectPath, 'actual'));
+    await symlink(outside, path.join(run.projectPath, 'outward'), process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(path.join(run.projectPath, 'actual'), path.join(run.projectPath, 'inward'), process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(path.join(outside, 'keep.mjs'), path.join(run.projectPath, 'linked.mjs'));
+    const forbidden = [
+      [path.join(outside, 'keep.mjs'), 'OUTSIDE_PROJECT'],
+      ['../project-other/keep.mjs', 'OUTSIDE_PROJECT'],
+      [run.projectPath, 'OUTSIDE_PROJECT'],
+      [path.join(run.projectPath, 'outward/keep.mjs'), 'SYMLINK_PATH'],
+      [path.join(run.projectPath, 'inward/new.mjs'), 'SYMLINK_PATH'],
+      [path.join(run.projectPath, 'linked.mjs'), 'SYMLINK_PATH'],
+      [path.join(run.projectPath, '.env'), 'PROTECTED_PATH'],
+      [path.join(run.projectPath, '.git/config'), 'PROTECTED_PATH'],
+    ];
+    for (const [file, code] of forbidden) {
+      assert.equal((await run.actions.execute('write_file', { path: file, content: 'changed\n' })).errorCode, code, file);
+      assert.equal((await run.actions.execute('create_files', { files: [{ path: 'safe.mjs', content: 'safe\n' }, { path: file, content: 'changed\n' }] })).errorCode, code, file);
+    }
+    assert.equal(approvals, 0);
+    assert.equal(await readFile(path.join(outside, 'keep.mjs'), 'utf8'), 'keep\n');
+    await assert.rejects(lstat(path.join(run.projectPath, 'safe.mjs')), { code: 'ENOENT' });
+    await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+  } finally { await run.cleanup(); }
+});
+
+test('absolute target approval still rejects a changed input hash and a swapped parent', async () => {
+  for (const change of ['content', 'parent']) {
+    let run: Awaited<ReturnType<typeof setup>>;
+    run = await setup(async permission => {
+      assert.equal(permission.arguments.path, 'src/stats.mjs');
+      if (change === 'content') await writeFile(path.join(run.projectPath, 'src/stats.mjs'), 'user version\n');
+      else {
+        await rm(path.join(run.projectPath, 'src'), { recursive: true });
+        await symlink(path.join(run.directory, 'outside'), path.join(run.projectPath, 'src'), process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      return true;
+    });
+    try {
+      await mkdir(path.join(run.projectPath, 'src'));
+      await mkdir(path.join(run.directory, 'outside'));
+      await writeFile(path.join(run.directory, 'outside/stats.mjs'), 'outside version\n');
+      await writeFile(path.join(run.projectPath, 'src/stats.mjs'), 'before\n');
+      const written = await run.actions.execute('write_file', { path: path.join(run.projectPath, 'src/stats.mjs'), content: 'agent version\n' });
+      assert.equal(written.errorCode, change === 'content' ? 'STALE_PREVIEW' : 'SYMLINK_PATH');
+      assert.equal(await readFile(path.join(run.projectPath, 'src/stats.mjs'), 'utf8'), change === 'content' ? 'user version\n' : 'outside version\n');
+      assert.equal(await readFile(path.join(run.directory, 'outside/stats.mjs'), 'utf8'), 'outside version\n');
+      assert.equal(await run.actions.undo(), 0);
+      await assert.rejects(lstat(run.historyDirectory), { code: 'ENOENT' });
+    } finally { await run.cleanup(); }
+  }
+});
+
+test('canonical file names retain exact deny policies and workspace-scoped approval grants', async () => {
+  const deniedPermissions: ActionPermission[] = [];
+  const run = await setup(async permission => { deniedPermissions.push(permission); return permission.arguments.path === 'stats.mjs'; });
+  try {
+    await writeFile(path.join(run.projectPath, 'check.mjs'), 'immutable checks\n');
+    assert.equal((await run.actions.execute('write_file', { path: path.join(run.projectPath, 'check.mjs'), content: 'weakened checks\n' })).errorCode, 'PERMISSION_DENIED');
+    assert.equal(deniedPermissions[0].arguments.path, 'check.mjs');
+    assert.equal(await readFile(path.join(run.projectPath, 'check.mjs'), 'utf8'), 'immutable checks\n');
+    const policies = grantApprovalPolicy([], run.projectPath, 'fileEditing');
+    const approve = async (permission: ActionPermission) => Boolean(permission.workspacePath && permission.utility && hasApprovalPolicy(policies, permission.workspacePath, permission.utility));
+    const granted = new LocalActions({ projectPath: run.projectPath, historyDirectory: run.historyDirectory, onPermission: approve });
+    assert.equal((await granted.execute('write_file', { path: path.join(run.projectPath, 'stats.mjs'), content: 'granted\n' })).isError, undefined);
+    const otherProject = path.join(run.directory, 'project-other');
+    await mkdir(otherProject);
+    const other = new LocalActions({ projectPath: otherProject, historyDirectory: path.join(run.directory, 'other-history'), onPermission: approve });
+    assert.equal((await other.execute('write_file', { path: path.join(otherProject, 'stats.mjs'), content: 'denied\n' })).errorCode, 'PERMISSION_DENIED');
+    assert.deepEqual(await readdir(otherProject), []);
+    assert.equal(await granted.undo(), 1);
   } finally { await run.cleanup(); }
 });
 
@@ -967,4 +1220,50 @@ test('cancelled commands retain interruption records across service restart with
     assert.equal(approvals, 0);
     assert.equal(await readFile(path.join(run.projectPath, 'execution-count.txt'), 'utf8'), 'x');
   } finally { controller.abort(); await outputPromise; await run.cleanup(); }
+});
+
+
+test('readback effects begin before pending approval and settle after success, denial and cancellation', async () => {
+  const run = await setup();
+  try {
+    for (const decision of ['approved', 'denied', 'cancelled'] as const) {
+      const order: string[] = [], effects: { id: string; operation: string; phase: string }[] = [], controller = new AbortController();
+      const actions = new LocalActions({ projectPath: run.projectPath, historyDirectory: run.historyDirectory,
+        onReadbackEffect: event => { effects.push(event); order.push(event.phase); }, onTool: event => { order.push(event.status); },
+        onPermission: async (_permission, signal) => {
+          order.push('permission'); assert.equal(effects.length, 1); assert.equal(effects[0].phase, 'begin');
+          if (decision === 'cancelled') { controller.abort(new Error('User cancelled')); assert.equal(signal?.aborted, true); }
+          return decision === 'approved';
+        } });
+      const result = await actions.execute('write_file', { path: `${decision}.txt`, content: 'exact\n' }, { signal: controller.signal });
+      assert.deepEqual(effects.map(event => event.phase), ['begin', 'settled']);
+      assert.equal(effects[0].id, effects[1].id); assert.equal(effects[0].operation, 'write_file');
+      assert.equal(order[0], 'begin'); assert.equal(order.at(-1), 'settled'); assert(order.indexOf('begin') < order.indexOf('pending'));
+      if (decision === 'approved') assert.equal(result.isError, undefined);
+      else { assert.equal(result.isError, true); await assert.rejects(lstat(path.join(run.projectPath, `${decision}.txt`)), { code: 'ENOENT' }); }
+    }
+  } finally { await run.cleanup(); }
+});
+
+test('readback invalidation includes queued edits and undo but excludes retained command-output reads', async () => {
+  const run = await setup(), effects: { id: string; operation: string; phase: string }[] = [];
+  try {
+    let release!: (approved: boolean) => void, permissionStarted!: () => void;
+    const awaitingPermission = new Promise<void>(resolve => { permissionStarted = resolve; });
+    const actions = new LocalActions({ projectPath: run.projectPath, historyDirectory: run.historyDirectory,
+      onReadbackEffect: event => effects.push(event), onPermission: async () => new Promise<boolean>(resolve => { release = resolve; permissionStarted(); }) });
+    const pending = actions.execute('write_file', { path: 'queued.txt', content: 'after\n' });
+    // The BEFORE-effect callback is synchronous, including while approval has not yet started.
+    assert.equal(effects[0].phase, 'begin');
+    await awaitingPermission;
+    const undo = actions.undo(); assert.deepEqual(effects.slice(0, 2).map(event => [event.operation, event.phase]), [['write_file', 'begin'], ['undo', 'begin']]);
+    release(true); await pending; assert.equal(await undo, 1);
+    assert.deepEqual(effects.filter(event => event.operation === 'undo').map(event => event.phase), ['begin', 'settled']);
+    await assert.rejects(lstat(path.join(run.projectPath, 'queued.txt')), { code: 'ENOENT' });
+    const count = effects.length;
+    const missing = await actions.execute('read_command_output', { log_id: 'not-a-log' }); assert.equal(missing.isError, true); assert.equal(effects.length, count);
+    const cancelled = new AbortController(); cancelled.abort();
+    await actions.execute('edit_file', { path: 'none.txt', old_text: 'a', new_text: 'b' }, { signal: cancelled.signal });
+    assert.deepEqual(effects.slice(count).map(event => event.phase), ['begin', 'settled']);
+  } finally { await run.cleanup(); }
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createStatusLoader, modelIsUsable, modelSetupMessage, runtimePresentation, shouldOpenModelSetup } from '../renderer/status-flow.ts';
+import { createStatusLoader, modelFitAllowsUse, modelIsUsable, modelRequiresSlowModeToggle, modelSetupMessage, runtimePresentation, shouldOpenModelSetup } from '../renderer/status-flow.ts';
 import { isNearConversationEnd, shouldFollowConversation, workingStatus, workingDetailsIndexes } from '../renderer/conversation-flow.ts';
 import type { AgentStatus, LocalModel } from '../renderer/types.ts';
 
@@ -74,6 +74,11 @@ test('retained usable weights wait for engine preparation without unnecessary mo
 test('initialization, model loading, genuine engine errors, and library failures have distinct messages', () => {
   for (const state of ['stopped', 'starting', 'stopping'] as const) assert.deepEqual(runtimePresentation({ ...base, runtime: { ready: false, state } }), { phase: 'preparing', message: 'Preparing local engine…' });
   assert.deepEqual(runtimePresentation({ ...base, runtime: { ready: false, state: 'loading' } }), { phase: 'preparing', message: 'Loading local model…' });
+  for (const [preparationStage, message] of [
+    ['planning', 'Checking model memory…'], ['loading', 'Loading with memory monitoring…'], ['probing', 'Checking local chat and tools…'],
+  ] as const) {
+    assert.deepEqual(runtimePresentation({ ...base, runtime: { ready: false, state: 'loading', preparationStage } }, true), { phase: 'preparing', message });
+  }
   const failed = { ...base, runtime: { ready: false, state: 'error' as const, error: 'Bundled executable is missing.' } };
   assert.deepEqual(runtimePresentation(failed), { phase: 'error', message: 'Bundled executable is missing.' });
   assert.equal(modelSetupMessage(failed), 'Bundled executable is missing.');
@@ -87,6 +92,28 @@ test('blocked, oversized, and slow-mode models cannot enable send prematurely', 
   assert.equal(modelIsUsable({ ...base, runtime: { ready: false, state: 'loading' } }), false);
   assert.equal(modelIsUsable({ ...base, runtime: { ready: true, state: 'ready', error: 'Pinned model digest does not match.', errorCode: 'MODEL_DIGEST_MISMATCH' } }), false);
   assert.equal(modelIsUsable({ ...base, modelsError: 'Library could not be inspected.' }), false);
+});
+
+test('an explicit portable CPU preparation route permits Send without changing global Slow mode', () => {
+  const portable = { ...model, fit: 'slow' as const, preparationProfile: 'portable-cpu-4k-v1' as const, needsPreparation: true, toolCapable: false, toolValidationEligible: true, useBlocker: null, chatProbe: { status: 'unverified' as const }, toolProbe: { status: 'unverified' as const } };
+  const status = { ...base, memoryMode: 'automatic' as const, models: [portable] };
+  assert.equal(modelFitAllowsUse(status, portable.id), true); assert.equal(modelIsUsable(status), true); assert.equal(shouldOpenModelSetup(status), false);
+  assert.equal(modelRequiresSlowModeToggle(status, portable), false); assert.match(modelSetupMessage(status), /will load and check/);
+  assert.equal(portable.toolCapable, false); assert.equal(portable.toolProbe.status, 'unverified', 'Allowing preparation confers no probe or quality evidence.');
+  const legacy = { ...portable, preparationProfile: undefined };
+  assert.equal(modelRequiresSlowModeToggle(status, legacy), true); assert.equal(modelIsUsable({ ...status, models: [legacy] }), false, 'A null blocker alone never bypasses legacy Slow mode.');
+  assert.equal(modelIsUsable({ ...status, slowMode: true, models: [legacy] }), true); assert.equal(modelRequiresSlowModeToggle({ ...status, slowMode: true }, legacy), false);
+  assert.equal(modelIsUsable({ ...status, memoryMode: 'low-memory', models: [legacy] }), true);
+  for (const change of [{ fit: 'insufficient' as const }, { installed: false }, { verificationError: 'Corrupt artifact' }, { useBlocker: { code: 'MODEL_MEMORY_PLANNER_UNAVAILABLE', message: 'Missing verified planner' } }]) assert.equal(modelIsUsable({ ...status, models: [{ ...portable, ...change }] }), false);
+  assert.equal(modelIsUsable({ ...status, modelsError: 'Cache unavailable' }), false);
+  for (const memoryMode of ['ssd-experts', 'experimental-disk'] as const) {
+    const otherTrial = { ...status, memoryMode, experimentalTrial: { modelId: 'other-model', state: 'passed' as const } } as AgentStatus;
+    assert.equal(modelFitAllowsUse(otherTrial, portable.id), true, 'An unrelated experimental model does not gate this CPU preparation.');
+    assert.equal(modelIsUsable({ ...otherTrial, models: [model] }), true, 'A separate ordinary model also uses its normal idle Send route.');
+    const ownedTrial = { ...otherTrial, experimentalTrial: { modelId: portable.id, state: 'failed' as const } } as AgentStatus;
+    assert.equal(modelFitAllowsUse(ownedTrial, portable.id), false, 'Same-model experimental readiness still requires its actual proof.');
+    assert.equal(otherTrial.memoryMode, memoryMode, 'A view/gating check never resets the global mode.');
+  }
 });
 
 test('scrolling up or opening any Working details pauses streamed auto-follow', () => {
